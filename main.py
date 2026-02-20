@@ -60,6 +60,13 @@ async def set_role(interaction: discord.Interaction, role: str):
     try:
         role_lower = role.lower()
         
+        # Check if user is trying to set PM role
+        if role_lower == "pm":
+            # Only admins can assign PM role
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.followup.send("❌ Only server admins can set the Project Manager role.")
+                return
+        
         # Determine role parameters
         if role_lower == "developer":
             is_developer = True
