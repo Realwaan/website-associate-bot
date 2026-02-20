@@ -105,8 +105,17 @@ async def set_role(interaction: discord.Interaction, role: str):
             )
             logger.info(f"Created Discord role: {discord_role_name}")
         
-        # Assign Discord role to user
+        # Remove all bot-managed roles from user first
+        bot_role_names = ["Developer", "QA", "Project Manager"]
+        for role_name in bot_role_names:
+            old_role = discord.utils.get(guild.roles, name=role_name)
+            if old_role and old_role in interaction.user.roles:
+                await interaction.user.remove_roles(old_role)
+                logger.info(f"Removed {role_name} role from {interaction.user}")
+        
+        # Assign the new Discord role to user
         await interaction.user.add_roles(discord_role)
+        logger.info(f"Assigned {discord_role_name} role to {interaction.user}")
         
         # Set user role in database
         set_user_role(interaction.user.id, str(interaction.user), is_developer=is_developer, is_qa=is_qa, is_pm=is_pm)
