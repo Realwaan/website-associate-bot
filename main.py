@@ -6,7 +6,9 @@ import logging
 from config import DISCORD_TOKEN, TICKETS_DIR
 from database import (
     init_db, add_thread, get_thread, update_thread_status,
-    increment_resolved, get_leaderboard
+    increment_developer_resolved, increment_qa_reviewed, 
+    get_leaderboard_dev, get_leaderboard_qa,
+    set_user_role, get_user_roles, has_role
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
@@ -40,6 +42,51 @@ async def on_ready():
 
 
 @bot.tree.command(
+    name="set-role",
+    description="Set user roles (Developer or QA or both)"
+)
+@app_commands.describe(
+    user="The user to assign a role to",
+    developer="Check if user is a Developer",
+    qa="Check if user is a QA"
+)
+async def set_role(interaction: discord.Interaction, user: discord.User, developer: bool = False, qa: bool = False):
+    """Set user roles. User can have both Developer and QA roles."""
+    await interaction.response.defer()
+    
+    try:
+        if not developer and not qa:
+            await interaction.followup.send("❌ User must have at least one role (Developer or QA)")
+            return
+        
+        # Set user role in database
+        set_user_role(user.id, str(user), is_developer=developer, is_qa=qa)
+        
+        roles_assigned = []
+        if developer:
+            roles_assigned.append("👨‍💻 Developer")
+        if qa:
+            roles_assigned.append("🔍 QA")
+        
+        roles_text = " + ".join(roles_assigned)
+        
+        embed = discord.Embed(
+            title="Role Assigned",
+            description=f"Assigned to {user.mention}",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Roles", value=roles_text, inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Roles set for {user}: Developer={developer}, QA={qa}")
+        
+    except Exception as e:
+        logger.error(f"Error setting role: {e}")
+        await interaction.followup.send(f"❌ Error setting role: {e}")
+
+
+
+@bot.tree.command(
     name="load-tickets",
     description="Load tickets from a folder into a Discord channel"
 )
@@ -52,7 +99,7 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
     await interaction.response.defer()
     
     try:
-        # Load tickets from folder
+        # Load tickets from folder with parsing
         tickets = load_tickets_from_folder(folder)
         
         if not tickets:
@@ -65,7 +112,9 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
         
         for ticket in tickets:
             try:
-                thread_name = f"[OPEN] {ticket['name']}"
+                # Use parsed title if available, otherwise use name
+                display_name = ticket.get('title') or ticket['name']
+                thread_name = f"[OPEN] {display_name}"
                 
                 # Create thread in the specified channel
                 thread = await channel.create_thread(
@@ -76,25 +125,61 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
                 # Add to database
                 add_thread(
                     thread_id=thread.id,
-                    ticket_name=ticket['name'],
+                    ticket_name=display_name,
                     folder=folder,
                     channel_id=channel.id,
                     created_by=str(interaction.user)
                 )
                 
-                # Post initial message in thread
+                # Build detailed embed with parsed information
                 embed = discord.Embed(
-                    title=ticket['name'],
-                    description=f"Folder: `{folder}`\nStatus: OPEN\nCreated by: {interaction.user.mention}",
+                    title=display_name,
                     color=discord.Color.blue()
                 )
+                
+                # Add priority if present
+                if ticket.get('priority'):
+                    embed.add_field(name="🚨 Priority", value=f"**{ticket['priority']}**", inline=False)
+                
+                # Add problem section
+                if ticket.get('problem'):
+                    problem_text = ticket['problem'][:1024]  # Discord limit
+                    if len(ticket['problem']) > 1024:
+                        problem_text += "..."
+                    embed.add_field(name="Problem", value=problem_text, inline=False)
+                
+                # Add what to fix
+                if ticket.get('what_to_fix'):
+                    fix_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(ticket['what_to_fix'][:5])])
+                    if len(ticket['what_to_fix']) > 5:
+                        fix_text += f"\n... and {len(ticket['what_to_fix']) - 5} more"
+                    embed.add_field(name="What to Fix", value=fix_text, inline=False)
+                
+                # Add acceptance criteria
+                if ticket.get('acceptance_criteria'):
+                    criteria_text = "\n".join([f"✓ {item}" for item in ticket['acceptance_criteria'][:5]])
+                    if len(ticket['acceptance_criteria']) > 5:
+                        criteria_text += f"\n... and {len(ticket['acceptance_criteria']) - 5} more"
+                    embed.add_field(name="Acceptance Criteria", value=criteria_text, inline=False)
+                
+                # Add related files if present
+                if ticket.get('related_files'):
+                    files_text = "\n".join([f"• {file[:100]}" for file in ticket['related_files'][:3]])
+                    if len(ticket['related_files']) > 3:
+                        files_text += f"\n• ... and {len(ticket['related_files']) - 3} more"
+                    embed.add_field(name="Related Files", value=files_text, inline=False)
+                
+                embed.add_field(name="Status", value="🔵 OPEN", inline=True)
+                embed.add_field(name="Folder", value=f"`{folder}`", inline=True)
+                embed.set_footer(text=f"Created by {interaction.user}")
+                
                 await thread.send(embed=embed)
                 
                 created_count += 1
                 logger.info(f"Created thread: {thread_name} (ID: {thread.id})")
                 
             except Exception as e:
-                logger.error(f"Failed to create thread for {ticket['name']}: {e}")
+                logger.error(f"Failed to create thread for {ticket.get('title', ticket['name'])}: {e}")
                 failed_count += 1
         
         # Send summary
@@ -123,16 +208,21 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
 
 @bot.tree.command(
     name="claim",
-    description="Claim a ticket by updating its status to CLAIMED"
+    description="Claim a ticket by updating its status to CLAIMED (Developer only)"
 )
 @app_commands.describe(
     thread="The thread/ticket to claim"
 )
 async def claim_ticket(interaction: discord.Interaction, thread: discord.Thread):
-    """Claim a ticket and update its status to CLAIMED."""
+    """Claim a ticket and update its status to CLAIMED. Only Developers can claim."""
     await interaction.response.defer()
     
     try:
+        # Check if user is a Developer
+        if not has_role(interaction.user.id, "developer"):
+            await interaction.followup.send("❌ Only Developers can claim tickets. Use `/set-role` to assign a role.")
+            return
+        
         # Get thread info from database
         thread_info = get_thread(thread.id)
         
@@ -154,7 +244,7 @@ async def claim_ticket(interaction: discord.Interaction, thread: discord.Thread)
         new_name = f"[CLAIMED][{username}]{ticket_name}"
         
         await thread.edit(name=new_name)
-        update_thread_status(thread.id, "CLAIMED")
+        update_thread_status(thread.id, "CLAIMED", claimed_by_id=interaction.user.id, claimed_by_username=username)
         
         # Send notification
         embed = discord.Embed(
@@ -175,16 +265,21 @@ async def claim_ticket(interaction: discord.Interaction, thread: discord.Thread)
 
 @bot.tree.command(
     name="resolved",
-    description="Mark a ticket as RESOLVED and add to leaderboard"
+    description="Mark a ticket as PENDING-REVIEW and add developer score (Developer only)"
 )
 @app_commands.describe(
-    thread="The thread/ticket to mark as resolved"
+    thread="The thread/ticket to mark as pending review"
 )
 async def resolve_ticket(interaction: discord.Interaction, thread: discord.Thread):
-    """Mark a ticket as resolved and update leaderboard."""
+    """Mark a ticket as pending review. Only Developers can mark as resolved."""
     await interaction.response.defer()
     
     try:
+        # Check if user is a Developer
+        if not has_role(interaction.user.id, "developer"):
+            await interaction.followup.send("❌ Only Developers can mark tickets as pending review. Use `/set-role` to assign a role.")
+            return
+        
         # Get thread info from database
         thread_info = get_thread(thread.id)
         
@@ -192,8 +287,8 @@ async def resolve_ticket(interaction: discord.Interaction, thread: discord.Threa
             await interaction.followup.send("❌ This thread is not tracked in the database")
             return
         
-        if thread_info['status'] == 'RESOLVED':
-            await interaction.followup.send("⚠️ This ticket is already resolved")
+        if thread_info['status'] == 'PENDING-REVIEW':
+            await interaction.followup.send("⚠️ This ticket is already pending review")
             return
         
         # Get user's display name
@@ -202,29 +297,93 @@ async def resolve_ticket(interaction: discord.Interaction, thread: discord.Threa
         
         # Update thread name
         ticket_name = thread_info['ticket_name']
-        new_name = f"[RESOLVED][{username}]{ticket_name}"
+        new_name = f"[Pending-Review][{username}]{ticket_name}"
         
         await thread.edit(name=new_name)
-        update_thread_status(thread.id, "RESOLVED")
+        update_thread_status(thread.id, "PENDING-REVIEW", resolved_by_id=interaction.user.id, resolved_by_username=username)
         
-        # Update leaderboard
-        increment_resolved(interaction.user.id, str(interaction.user))
+        # Update developer leaderboard
+        increment_developer_resolved(interaction.user.id, str(interaction.user))
         
         # Send notification
         embed = discord.Embed(
-            title="Ticket Resolved",
-            description=f"Resolved by: {interaction.user.mention}",
-            color=discord.Color.green()
+            title="Ticket Pending Review",
+            description=f"Marked by: {interaction.user.mention}",
+            color=discord.Color.orange()
         )
         embed.add_field(name="Old Status", value=thread_info['status'], inline=True)
-        embed.add_field(name="New Status", value=f"[RESOLVED][{username}]", inline=True)
+        embed.add_field(name="New Status", value=f"[Pending-Review][{username}]", inline=True)
+        embed.add_field(name="Next Step", value="Waiting for QA review. Use `/reviewed` to approve.", inline=False)
         
         await interaction.followup.send(embed=embed)
-        logger.info(f"Ticket resolved: {thread.id} by {interaction.user}")
+        logger.info(f"Ticket marked pending review: {thread.id} by {interaction.user}")
         
     except Exception as e:
-        logger.error(f"Error resolving ticket: {e}")
-        await interaction.followup.send(f"❌ Error resolving ticket: {e}")
+        logger.error(f"Error marking ticket as pending review: {e}")
+        await interaction.followup.send(f"❌ Error marking ticket as pending review: {e}")
+
+
+@bot.tree.command(
+    name="reviewed",
+    description="Approve a ticket after review and add to QA score (QA only)"
+)
+@app_commands.describe(
+    thread="The thread/ticket to mark as reviewed"
+)
+async def reviewed_ticket(interaction: discord.Interaction, thread: discord.Thread):
+    """Mark a ticket as reviewed after QA approval. Only QAs can review."""
+    await interaction.response.defer()
+    
+    try:
+        # Check if user is a QA
+        if not has_role(interaction.user.id, "qa"):
+            await interaction.followup.send("❌ Only QAs can review tickets. Use `/set-role` to assign a role.")
+            return
+        
+        # Get thread info from database
+        thread_info = get_thread(thread.id)
+        
+        if not thread_info:
+            await interaction.followup.send("❌ This thread is not tracked in the database")
+            return
+        
+        if thread_info['status'] != 'PENDING-REVIEW':
+            await interaction.followup.send("⚠️ This ticket is not pending review. Only pending review tickets can be reviewed.")
+            return
+        
+        if thread_info['status'] == 'REVIEWED':
+            await interaction.followup.send("⚠️ This ticket is already reviewed")
+            return
+        
+        # Get user's display name
+        member = interaction.guild.get_member(interaction.user.id)
+        username = member.display_name if member else interaction.user.name
+        
+        # Update thread name
+        ticket_name = thread_info['ticket_name']
+        new_name = f"[Reviewed][{username}]{ticket_name}"
+        
+        await thread.edit(name=new_name)
+        update_thread_status(thread.id, "REVIEWED", reviewed_by_id=interaction.user.id, reviewed_by_username=username)
+        
+        # Update QA leaderboard
+        increment_qa_reviewed(interaction.user.id, str(interaction.user))
+        
+        # Send notification
+        embed = discord.Embed(
+            title="Ticket Reviewed",
+            description=f"Reviewed by: {interaction.user.mention}",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Old Status", value="[Pending-Review]", inline=True)
+        embed.add_field(name="New Status", value=f"[Reviewed][{username}]", inline=True)
+        
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Ticket reviewed: {thread.id} by {interaction.user}")
+        
+    except Exception as e:
+        logger.error(f"Error reviewing ticket: {e}")
+        await interaction.followup.send(f"❌ Error reviewing ticket: {e}")
 
 
 @bot.tree.command(
@@ -283,20 +442,41 @@ async def close_ticket(interaction: discord.Interaction, thread: discord.Thread)
     description="Show the leaderboard of resolved tickets"
 )
 @app_commands.describe(
+    role="Filter leaderboard by role: 'dev' for Developers or 'qa' for QAs (default: dev)",
     limit="Number of top resolvers to show (default: 10, max: 50)"
 )
-async def show_leaderboard(interaction: discord.Interaction, limit: int = 10):
+async def show_leaderboard(interaction: discord.Interaction, role: str = "dev", limit: int = 10):
     """Display the leaderboard of users who have resolved the most tickets."""
     await interaction.response.defer()
     
     try:
+        # Validate role parameter
+        role_lower = role.lower().strip()
+        if role_lower not in ["dev", "developer", "qa", "qas"]:
+            await interaction.followup.send("❌ Invalid role. Use 'dev' for Developers or 'qa' for QAs.")
+            return
+        
+        # Normalize role
+        if role_lower in ["dev", "developer"]:
+            role_param = "dev"
+            title_role = "👨‍💻 Developer Resolution Leaderboard"
+            stat_name = "Resolved"
+        else:
+            role_param = "qa"
+            title_role = "🔍 QA Review Leaderboard"
+            stat_name = "Reviewed"
+        
         # Clamp limit between 1 and 50
         limit = max(1, min(limit, 50))
         
-        leaderboard = get_leaderboard(limit)
+        # Get leaderboard based on role
+        if role_param == "dev":
+            leaderboard = get_leaderboard_dev(limit)
+        else:
+            leaderboard = get_leaderboard_qa(limit)
         
         if not leaderboard:
-            await interaction.followup.send("📊 No resolved tickets yet!")
+            await interaction.followup.send(f"📊 No {role_param.upper()} activity yet!")
             return
         
         # Build leaderboard description
@@ -305,17 +485,23 @@ async def show_leaderboard(interaction: discord.Interaction, limit: int = 10):
         
         for idx, entry in enumerate(leaderboard, 1):
             medal = medals[idx - 1] if idx <= 3 else f"{idx}️⃣"
-            description += f"{medal} **{entry['username']}** - {entry['resolved_count']} resolved\n"
+            
+            if role_param == "dev":
+                count = entry['dev_resolved_count']
+            else:
+                count = entry['qa_reviewed_count']
+            
+            description += f"{medal} **{entry['username']}** - {count} {stat_name}\n"
         
         embed = discord.Embed(
-            title="🏆 Ticket Resolution Leaderboard",
+            title=title_role,
             description=description,
             color=discord.Color.gold()
         )
-        embed.set_footer(text=f"Showing top {limit} resolvers")
+        embed.set_footer(text=f"Showing top {limit} {role_param.upper()}s")
         
         await interaction.followup.send(embed=embed)
-        logger.info(f"Leaderboard shown to {interaction.user}")
+        logger.info(f"Leaderboard shown to {interaction.user} (role: {role_param})")
         
     except Exception as e:
         logger.error(f"Error showing leaderboard: {e}")

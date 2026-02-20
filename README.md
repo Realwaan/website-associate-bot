@@ -1,24 +1,39 @@
 # Discord Ticket Management Bot
 
-A Discord bot for managing support tickets organized by folder and channel. Track ticket statuses and maintain a leaderboard of resolved tickets.
+A Discord bot for managing support tickets organized by folder and channel. Track ticket statuses with role-based workflows and maintain separate leaderboards for Developers and QAs.
 
 ## Features
 
 ✨ **Ticket Management**
 - Load tickets from markdown files organized in folders
 - Create Discord threads for each ticket with status prefixes
-- Track ticket status: `[OPEN]`, `[CLAIMED]`, `[RESOLVED]`, `[CLOSED]`
-- Update thread names to reflect current status
+- Parse detailed ticket information (problem, steps, acceptance criteria)
+- Track ticket status: `[OPEN]`, `[CLAIMED]`, `[Pending-Review]`, `[Reviewed]`, `[CLOSED]`
 
-📊 **Leaderboard**
-- Automatic leaderboard of users who have resolved tickets
-- View top resolvers with `/leaderboard` command
-- Persistent data storage using SQLite
+👥 **Role-Based Workflow**
+- **Developers:** Claim tickets and mark as Pending-Review
+- **QAs:** Review and approve completed tickets
+- Users can have both roles simultaneously
+- Use `/set-role` to assign roles
+
+📊 **Role-Based Leaderboards**
+- Developer leaderboard: Tracks tickets marked as pending review
+- QA leaderboard: Tracks tickets reviewed and approved
+- Separate scoring for each role
+- View with `/leaderboard dev` or `/leaderboard qa`
 
 🗂️ **Folder Organization**
 - Organize tickets into different folders (e.g., `support/`, `bugs/`, `features/`)
 - Load tickets from any folder into any Discord channel
 - Flexible folder structure
+
+## Workflow
+
+1. **Load Tickets:** `/load-tickets <folder> <channel>` creates threads from markdown files
+2. **Developer Claims:** `/claim <thread>` → `[CLAIMED][username]ticket-name`
+3. **Developer Submits:** `/resolved <thread>` → `[Pending-Review][username]ticket-name` (adds to dev leaderboard)
+4. **QA Reviews:** `/reviewed <thread>` → `[Reviewed][username]ticket-name` (adds to QA leaderboard)
+5. **Close Ticket:** `/closed <thread>` → `[CLOSED][username]ticket-name`
 
 ## Setup Instructions
 
@@ -52,19 +67,7 @@ To get a bot token:
 
 ### 4. Create Ticket Folders
 
-Create folders inside the `tickets/` directory:
-
-```
-tickets/
-├── support/
-│   ├── password-reset.md
-│   └── login-issue.md
-├── bugs/
-│   ├── ui-glitch.md
-│   └── api-timeout.md
-└── features/
-    └── dark-mode.md
-```
+Create folders inside the `tickets/` directory with your ticket markdown files.
 
 ### 5. Run the Bot
 
@@ -74,11 +77,25 @@ python main.py
 
 ## Commands
 
+### `/set-role <user> <developer> <qa>`
+Assign roles to users. Users can have both Developer and QA roles.
+
+**Parameters:**
+- `user` - The user to assign a role to
+- `developer` - Check if user is a Developer (true/false)
+- `qa` - Check if user is a QA (true/false)
+
+**Example:**
+```
+/set-role @John developer: true qa: false
+/set-role @Sarah developer: true qa: true
+```
+
 ### `/load-tickets <folder> <channel>`
 Load all markdown files from a specified folder into a Discord channel.
 
 **Parameters:**
-- `folder` - Folder name within `tickets/` directory (e.g., `support`, `bugs`)
+- `folder` - Folder name within `tickets/` directory
 - `channel` - Discord channel where threads will be created
 
 **Example:**
@@ -87,60 +104,119 @@ Load all markdown files from a specified folder into a Discord channel.
 /load-tickets bugs #bug-reports
 ```
 
-### `/claim <thread>`
-Mark a ticket as claimed (status: `[CLAIMED]`).
+### `/claim <thread>` (Developers only)
+Mark a ticket as claimed. Only users with the Developer role can use this.
 
 **Parameters:**
 - `thread` - The thread to claim
 
-### `/resolved <thread>`
-Mark a ticket as resolved (status: `[RESOLVED]`). Adds user to leaderboard.
+### `/resolved <thread>` (Developers only)
+Mark a ticket as pending review. Only Developers can use this. Adds to developer leaderboard.
 
 **Parameters:**
-- `thread` - The thread to mark as resolved
+- `thread` - The thread to mark as pending review
+
+### `/reviewed <thread>` (QAs only)
+Approve a ticket after review. Only users with the QA role can use this. Adds to QA leaderboard.
+
+**Parameters:**
+- `thread` - The thread to mark as reviewed (must be in Pending-Review status)
 
 ### `/closed <thread>`
-Mark a ticket as closed (status: `[CLOSED]`).
+Mark a ticket as closed.
 
 **Parameters:**
 - `thread` - The thread to close
 
-### `/leaderboard [limit]`
-Display the leaderboard of users who have resolved the most tickets.
+### `/leaderboard <role> [limit]`
+Display the leaderboard for a specific role.
 
 **Parameters:**
+- `role` - `dev` for Developers or `qa` for QAs (default: dev)
 - `limit` - Number of top resolvers to show (default: 10, max: 50)
+
+**Examples:**
+```
+/leaderboard dev
+/leaderboard qa limit: 20
+```
 
 ### `/ticket-folders`
 List all available ticket folders in the `tickets/` directory.
 
-## Ticket File Format
+## Ticket Format
 
-Create markdown files in your ticket folders. The filename (without `.md`) becomes the thread name.
+All ticket markdown files should follow this structure:
 
-**Example: `tickets/support/password-reset.md`**
 ```markdown
-# Password Reset Issue
+# Ticket Title
+
+**[PRIORITY]**
 
 ## Problem
-User is unable to reset their password.
 
-## Steps to Reproduce
-1. Click forgot password
-2. Enter email
-3. Check inbox
+Clear explanation of the issue, why it matters, and what needs to be fixed.
 
-## Expected Behavior
-Email should arrive within 5 minutes.
+## Potentially Related Files
+
+- File path and description
+- File path and description
+
+## What to Fix
+
+1. First step
+2. Second step
+3. Third step
+
+## Acceptance Criteria
+
+- Testable condition 1
+- Testable condition 2
+- Testable condition 3
 ```
 
-The thread will be created as: `[OPEN] password-reset`
+### Priority Markers (Optional)
+
+- `**[PRIORITY]**` - Feature blocks other work, critical for MVP
+- `**[CRITICAL]**` - Production bug, system broken
+
+### Example Ticket
+
+```markdown
+# Add Daily Facebook Updates Banner to Home Page
+
+## Problem
+
+The home page hero section should include a prominent banner promoting daily updates from the official Facebook page. Currently, no Facebook integration or banner exists.
+
+## Potentially Related Files
+
+- [components/public/home/hero-section.tsx](../app/components/public/home/hero-section.tsx) — Main hero section
+- [app/(public)/page.tsx](../app/app/(public)/page.tsx) — Home page entry point
+
+## What to Fix
+
+1. Create Facebook banner section in home page
+2. Include a call-to-action button linking to Facebook page
+3. Style banner to match existing branding
+4. Add copy about daily updates
+5. Position banner prominently
+6. Make mobile-responsive
+
+## Acceptance Criteria
+
+- Facebook banner is visible on desktop and mobile
+- Banner includes link to Facebook page
+- Design matches existing aesthetic
+- Button opens Facebook in new tab
+```
 
 ## Database
 
 The bot uses SQLite (`tickets.db`) to store:
 - **Thread tracking** - Maps Discord threads to ticket information
-- **Leaderboard** - Tracks number of resolved tickets per user
+- **User roles** - Developer and/or QA roles for each user
+- **Leaderboard** - Separate scores for developers (pending reviews) and QAs (reviewed)
 
 The database is automatically created and initialized on first run.
 
@@ -151,14 +227,18 @@ website-associate-bot/
 ├── main.py                    # Main bot code with commands
 ├── config.py                  # Configuration and environment variables
 ├── database.py                # SQLite database operations
-├── ticket_loader.py           # Ticket file parsing
+├── ticket_loader.py           # Markdown file parser
 ├── requirements.txt           # Python dependencies
 ├── .env                       # Environment variables (Discord token)
 ├── .gitignore                 # Git ignore patterns
 ├── tickets.db                 # SQLite database (auto-created)
 └── tickets/                   # Ticket markdown files
     ├── support/
+    │   ├── password-reset.md
+    │   └── login-timeout.md
     ├── bugs/
+    │   ├── button-overlap.md
+    │   └── api-timeout.md
     └── features/
 ```
 
@@ -169,14 +249,20 @@ website-associate-bot/
 - Check that `DISCORD_TOKEN` is set correctly in `.env`
 - Run `/ticket-folders` to verify bot is working
 
+**Role permissions not working:**
+- Use `/set-role` to assign Developer or QA role first
+- User must have at least one role to use relevant commands
+
 **Tickets not loading:**
 - Ensure folder exists in `tickets/` directory
 - Check that files have `.md` extension
 - Verify folder name matches what you pass to `/load-tickets`
+- Check markdown format follows the guidelines
 
-**Threads not created in correct channel:**
-- Make sure the channel parameter references the correct Discord channel
-- Verify bot has permission to create threads in that channel
+**Thread information not displaying:**
+- Verify markdown file follows the correct format
+- Parser will display raw ticket info if parsing fails
+- Check bot has permission to post embeds in channel
 
 ## License
 
