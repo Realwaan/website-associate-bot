@@ -74,6 +74,14 @@ def init_db():
         )
     """)
 
+    # Create settings table for bot configuration
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -333,3 +341,66 @@ def get_loaded_tickets(folder: str) -> list:
     conn.close()
 
     return [dict(row) for row in rows]
+
+# ===== Settings Management =====
+
+def set_setting(key: str, value: str):
+    """Set a persistent configuration value."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO settings (key, value)
+        VALUES (?, ?)
+    """, (key, value))
+
+    conn.commit()
+    conn.close()
+
+
+def get_setting(key: str) -> str | None:
+    """Get a persistent configuration value."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+
+    return row[0] if row else None
+
+
+# ===== Thread Statistics =====
+
+def get_threads_by_status() -> dict:
+    """Get all threads grouped by status."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT status, ticket_name, thread_id, channel_id
+        FROM threads
+        ORDER BY status, created_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    status_groups = {
+        "OPEN": [],
+        "CLAIMED": [],
+        "PENDING-REVIEW": [],
+        "REVIEWED": [],
+        "CLOSED": []
+    }
+
+    for row in rows:
+        status = row['status'].upper()
+        if status in status_groups:
+            status_groups[status].append(dict(row))
+        else:
+            # Handle unexpected statuses if any
+            if status not in status_groups:
+                status_groups[status] = []
+            status_groups[status].append(dict(row))
+
+    return status_groups

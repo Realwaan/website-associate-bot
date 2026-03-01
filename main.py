@@ -1,16 +1,18 @@
 """Discord Bot for managing support tickets."""
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import logging
 import re
+from datetime import datetime, time, timezone, timedelta
 from config import DISCORD_TOKEN, TICKETS_DIR
 from database import (
     init_db, add_thread, get_thread, update_thread_status,
     increment_developer_resolved, increment_qa_reviewed, 
     get_leaderboard_dev, get_leaderboard_qa,
     set_user_role, get_user_roles, has_role,
-    is_ticket_loaded, mark_ticket_loaded
+    is_ticket_loaded, mark_ticket_loaded,
+    set_setting, get_setting, get_threads_by_status
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
@@ -66,6 +68,11 @@ async def on_ready():
     # Initialize database
     init_db()
     logger.info("Database initialized")
+    
+    # Start scheduled task
+    if not scheduled_ticket_summary.is_running():
+        scheduled_ticket_summary.start()
+        logger.info("Scheduled ticket summary task started")
 
 
 @bot.tree.command(
@@ -160,6 +167,112 @@ async def set_role(interaction: discord.Interaction, role: str):
         logger.error(f"Error setting role: {e}")
         await interaction.followup.send(f"❌ Error setting role: {e}")
 
+
+
+
+@bot.tree.command(
+    name="setreminderschannel",
+    description="Set the channel for daily ticket summaries (PM only)"
+)
+@app_commands.describe(
+    channel="The channel where daily summaries should be sent"
+)
+async def set_reminders_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Set the channel for daily ticket summaries. Only PMs can use this."""
+    await interaction.response.defer()
+    
+    try:
+        # Check if user is a PM
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can set the reminders channel.")
+            return
+        
+        # Save to database
+        set_setting("reminders_channel_id", str(channel.id))
+        
+        embed = discord.Embed(
+            title="Reminders Channel Set",
+            description=f"Daily ticket summaries will be sent to {channel.mention} every 8:00 AM PH Time.",
+            color=discord.Color.green()
+        )
+        
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Reminders channel set to {channel.id} by {interaction.user}")
+        
+    except Exception as e:
+        logger.error(f"Error setting reminders channel: {e}")
+        await interaction.followup.send(f"❌ Error setting reminders channel: {e}")
+
+
+# ===== Scheduled Task =====
+
+def format_ticket_list(tickets: list) -> str:
+    """Format a list of tickets for the summary message."""
+    if not tickets:
+        return "None"
+    
+    lines = []
+    for t in tickets:
+        lines.append(f"• {t['ticket_name']} (ID: {t['thread_id']})")
+    
+    return "\n".join(lines)
+
+
+@tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))  # 8 AM PH Time
+async def scheduled_ticket_summary():
+    """Daily task to send ticket summary."""
+    try:
+        channel_id_str = get_setting("reminders_channel_id")
+        if not channel_id_str:
+            logger.warning("Scheduled task: No reminders channel set.")
+            return
+        
+        channel_id = int(channel_id_str)
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            # Try fetching if not in cache
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                logger.error(f"Scheduled task: Could not find channel {channel_id}")
+                return
+        
+        # Get status groups
+        status_groups = get_threads_by_status()
+        
+        # Format message
+        message = "@everyone\n"
+        message += "📅 **DAILY TICKET SUMMARY (8 AM PH TIME)**\n\n"
+        
+        # Open
+        message += "🔵 **Open**\n"
+        message += format_ticket_list(status_groups.get("OPEN")) + "\n\n"
+        
+        # Claimed
+        message += "🟡 **Claimed**\n"
+        message += format_ticket_list(status_groups.get("CLAIMED")) + "\n\n"
+        
+        # Pending-Review
+        message += "🟠 **Pending-Review**\n"
+        message += format_ticket_list(status_groups.get("PENDING-REVIEW")) + "\n\n"
+        
+        # Reviewed
+        message += "🟢 **Reviewed**\n"
+        message += format_ticket_list(status_groups.get("REVIEWED")) + "\n\n"
+        
+        # Closed
+        message += "🔴 **Closed**\n"
+        message += format_ticket_list(status_groups.get("CLOSED"))
+        
+        # Send message (ensure it's not too long for one message, if it is, it will be truncated)
+        if len(message) > 2000:
+            message = message[:1997] + "..."
+            
+        await channel.send(message)
+        logger.info(f"Sent scheduled summary to channel {channel_id}")
+        
+    except Exception as e:
+        logger.error(f"Error in scheduled task: {e}")
 
 
 @bot.tree.command(
@@ -879,6 +992,7 @@ async def show_help(interaction: discord.Interaction):
                   "**`/leaderboard <dev|qa> [limit]`** - View leaderboard\n" +
                   "  • `role`: `dev` (default) or `qa`\n" +
                   "  • `limit`: 1-50 (default: 10)\n" +
+                  "**`/setreminderschannel <channel>`** - Set channel for daily 8 AM summary (PM only)\n" +
                   "**`/ticket-folders`** - List all available ticket folders\n" +
                   "**`/help`** - Show this help message",
             inline=False
