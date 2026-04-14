@@ -13,7 +13,7 @@ from database import (
     get_leaderboard_dev, get_leaderboard_qa,
     set_user_role, get_user_roles, has_role,
     is_ticket_loaded, mark_ticket_loaded,
-    set_setting, get_setting, get_threads_by_status
+    set_setting, get_setting, delete_setting, get_threads_by_status
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
@@ -203,6 +203,56 @@ async def set_reminders_channel(interaction: discord.Interaction, channel: disco
     except Exception as e:
         logger.error(f"Error setting reminders channel: {e}")
         await interaction.followup.send(f"❌ Error setting reminders channel: {e}")
+
+
+@bot.tree.command(
+    name="unsetreminderschannel",
+    description="Unset the daily ticket summary channel (PM only, run in current reminders channel)"
+)
+async def unset_reminders_channel(interaction: discord.Interaction):
+    """Unset the channel for daily ticket summaries. Only PMs can use this in the configured channel."""
+    await interaction.response.defer()
+
+    try:
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can unset the reminders channel.")
+            return
+
+        channel_id_str = get_setting("reminders_channel_id")
+        if not channel_id_str:
+            await interaction.followup.send("❌ No reminders channel is currently set.")
+            return
+
+        try:
+            configured_channel_id = int(channel_id_str.strip())
+        except ValueError:
+            delete_setting("reminders_channel_id")
+            await interaction.followup.send("⚠️ Stored reminders channel was invalid and has been cleared.")
+            return
+
+        if interaction.channel_id != configured_channel_id:
+            await interaction.followup.send(
+                f"❌ This command can only be used in <#{configured_channel_id}>."
+            )
+            return
+
+        delete_setting("reminders_channel_id")
+
+        embed = discord.Embed(
+            title="Reminders Channel Unset",
+            description=(
+                "Daily ticket summaries have been disabled. "
+                "Use `/setreminderschannel` to enable them again."
+            ),
+            color=discord.Color.orange()
+        )
+
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Reminders channel unset by {interaction.user} in channel {interaction.channel_id}")
+
+    except Exception as e:
+        logger.error(f"Error unsetting reminders channel: {e}")
+        await interaction.followup.send(f"❌ Error unsetting reminders channel: {e}")
 
 
 # ===== Scheduled Task =====
@@ -1170,6 +1220,7 @@ async def show_help(interaction: discord.Interaction):
                   "  • `role`: `dev` (default) or `qa`\n" +
                   "  • `limit`: 1-50 (default: 10)\n" +
                   "**`/setreminderschannel <channel>`** - Set channel for daily 8 AM summary (PM only)\n" +
+                  "**`/unsetreminderschannel`** - Unset daily summary channel (PM only, in reminders channel)\n" +
                   "**`/ticket-folders`** - List all available ticket folders\n" +
                   "**`/help`** - Show this help message",
             inline=False

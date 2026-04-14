@@ -179,6 +179,24 @@ Display the leaderboard for a specific role.
 /leaderboard qa limit: 20
 ```
 
+### `/setreminderschannel <channel>`
+Set the channel where the daily 8:00 AM PH time ticket summary is posted (PM only).
+
+**Parameters:**
+- `channel` - Discord text channel for daily summary posts
+
+**Example:**
+```
+/setreminderschannel #support-squad
+```
+
+### `/unsetreminderschannel`
+Unset the current reminders channel and disable daily summary posting (PM only).
+
+**Rules:**
+- Must be run in the currently configured reminders channel
+- If no reminders channel is set, the command will fail with a clear message
+
 ### `/ticket-folders`
 List all available ticket folders in the `tickets/` directory.
 
