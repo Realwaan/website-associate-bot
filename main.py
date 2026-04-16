@@ -69,8 +69,16 @@ async def on_ready():
     """When the bot is ready, sync commands and initialize database."""
     logger.info(f"Logged in as {bot.user}")
     try:
+        # Global sync
         synced = await bot.tree.sync()
-        logger.info(f"Synced {len(synced)} command(s)")
+        logger.info(f"Globally synced {len(synced)} command(s)")
+        
+        # Clear guild-specific commands to fix "doubled" commands 
+        # (they were showing up once from global, once from guild)
+        for guild in bot.guilds:
+            bot.tree.clear_commands(guild=guild)
+            await bot.tree.sync(guild=guild)
+            logger.info(f"Cleared guild-specific commands for {guild.name} to prevent duplicates")
     except Exception as e:
         logger.error(f"Failed to sync commands: {e}")
     
@@ -82,6 +90,25 @@ async def on_ready():
     if not scheduled_ticket_summary.is_running():
         scheduled_ticket_summary.start()
         logger.info("Scheduled ticket summary task started")
+
+
+@bot.command(name="sync")
+async def sync(ctx):
+    """Force sync slash commands to the current guild (useful if global sync is delayed)."""
+    # Only allow administrators to run this
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("❌ Only administrators can force sync commands.")
+        return
+        
+    try:
+        # Copy global commands to the guild
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(f"✅ Successfully synced {len(synced)} command(s) to this server.")
+        logger.info(f"Forced sync of {len(synced)} commands to guild {ctx.guild.id} by {ctx.author}")
+    except Exception as e:
+        logger.error(f"Failed to force sync commands: {e}")
+        await ctx.send(f"❌ Failed to sync commands: {e}")
 
 
 @bot.tree.command(
@@ -1174,11 +1201,14 @@ async def show_help(interaction: discord.Interaction):
         embed.add_field(
             name="⚙️ General Commands",
             value="**`/closed`** (in thread) - Close a ticket\n" +
+                  "**`/ticket-info`** (in thread) - View ticket tracking details\n" +
                   "**`/leaderboard <dev|qa> [limit]`** - View leaderboard\n" +
-                  "  • `role`: `dev` (default) or `qa`\n" +
-                  "  • `limit`: 1-50 (default: 10)\n" +
+                  "**`/stats`** - Show project ticket overview\n" +
                   "**`/setreminderschannel <channel>`** - Set channel for daily 8 AM summary (PM only)\n" +
                   "**`/ticket-folders`** - List all available ticket folders\n" +
+                  "**`/archive-closed`** - Archive all closed threads in the channel (PM/Admin only)\n" +
+                  "**`/clear <amount>`** - Delete messages in the channel (PM/Admin only)\n" +
+                  "**`!sync`** (prefix command) - Force sync commands to the server (Admin only)\n" +
                   "**`/help`** - Show this help message",
             inline=False
         )
@@ -1365,6 +1395,175 @@ async def scan_project(interaction: discord.Interaction, path: str, folder: str,
     except Exception as e:
         logger.error(f"Error scanning project: {e}")
         await interaction.followup.send(f"❌ Error scanning project: {e}")
+
+
+@bot.tree.command(
+    name="clear",
+    description="Bulk delete messages in the current channel (PM/Admin only)"
+)
+@app_commands.describe(amount="The number of messages to delete (max 100)")
+async def clear_messages(interaction: discord.Interaction, amount: int = 10):
+    """Delete a specified number of messages in the channel."""
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Check if user is a PM or Admin
+        is_pm = has_role(interaction.user.id, "pm")
+        is_admin = interaction.user.guild_permissions.administrator
+        
+        if not (is_pm or is_admin):
+            await interaction.followup.send("❌ Only Project Managers or Administrators can use this command.")
+            return
+            
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.followup.send("❌ This command can only be used in regular text channels.")
+            return
+            
+        # Limit to 100 max
+        delete_amount = min(max(1, amount), 100)
+        
+        # Purge messages
+        deleted = await interaction.channel.purge(limit=delete_amount)
+        await interaction.followup.send(f"✅ Successfully deleted {len(deleted)} message(s).", ephemeral=True)
+        logger.info(f"Cleared {len(deleted)} messages in {interaction.channel.name} by {interaction.user}")
+        
+    except discord.Forbidden:
+        await interaction.followup.send("❌ The bot doesn't have permission to manage messages here.")
+    except Exception as e:
+        logger.error(f"Error clearing messages: {e}")
+        await interaction.followup.send(f"❌ Error clearing messages: {e}")
+
+
+@bot.tree.command(
+    name="archive-closed",
+    description="Archive all [CLOSED] threads in the current channel (PM/Admin only)"
+)
+async def archive_closed_threads(interaction: discord.Interaction):
+    """Finds all open threads with the [CLOSED] prefix and archives them."""
+    await interaction.response.defer()
+    
+    try:
+        is_pm = has_role(interaction.user.id, "pm")
+        is_admin = interaction.user.guild_permissions.administrator
+        
+        if not (is_pm or is_admin):
+            await interaction.followup.send("❌ Only Project Managers or Administrators can archive threads.")
+            return
+            
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.followup.send("❌ This command must be run in the parent text channel, not inside a thread.")
+            return
+            
+        archived_count = 0
+        for thread in interaction.channel.threads:
+            if thread.name.startswith("[CLOSED]"):
+                await thread.edit(archived=True, reason=f"Bulk archived by {interaction.user}")
+                archived_count += 1
+                
+        if archived_count > 0:
+            embed = discord.Embed(
+                title="Threads Archived",
+                description=f"✅ Successfully archived **{archived_count}** closed thread(s).",
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send("ℹ️ No active `[CLOSED]` threads found to archive.")
+            
+    except Exception as e:
+        logger.error(f"Error archiving threads: {e}")
+        await interaction.followup.send(f"❌ Error archiving threads: {e}")
+
+
+@bot.tree.command(
+    name="stats",
+    description="Show a dashboard overview of project ticket statistics"
+)
+async def project_stats(interaction: discord.Interaction):
+    """Display an overview of tickets grouped by status."""
+    await interaction.response.defer()
+    
+    try:
+        status_groups = get_threads_by_status()
+        
+        open_count = len(status_groups.get("OPEN", []))
+        claimed_count = len(status_groups.get("CLAIMED", []))
+        pending_count = len(status_groups.get("PENDING-REVIEW", []))
+        reviewed_count = len(status_groups.get("REVIEWED", []))
+        closed_count = len(status_groups.get("CLOSED", []))
+        
+        total_active = open_count + claimed_count + pending_count + reviewed_count
+        
+        embed = discord.Embed(
+            title="📊 Project Ticket Statistics",
+            color=discord.Color.blurple()
+        )
+        
+        embed.add_field(name="🔵 Open", value=str(open_count), inline=True)
+        embed.add_field(name="🟡 Claimed", value=str(claimed_count), inline=True)
+        embed.add_field(name="🟠 Pending Review", value=str(pending_count), inline=True)
+        
+        embed.add_field(name="🟢 Reviewed", value=str(reviewed_count), inline=True)
+        embed.add_field(name="🔴 Closed", value=str(closed_count), inline=True)
+        embed.add_field(name="📈 Total Active", value=str(total_active), inline=True)
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error viewing stats: {e}")
+        await interaction.followup.send(f"❌ Error viewing stats: {e}")
+
+
+@bot.tree.command(
+    name="ticket-info",
+    description="View tracking details for the current ticket (use inside a thread)"
+)
+async def ticket_info(interaction: discord.Interaction):
+    """Fetch database info about the current ticket."""
+    await interaction.response.defer()
+    
+    try:
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.followup.send("❌ This command must be used inside a ticket thread.")
+            return
+            
+        thread_info = get_thread(interaction.channel.id)
+        
+        if not thread_info:
+            await interaction.followup.send("❌ This thread is not tracked in the database as a ticket.")
+            return
+            
+        embed = discord.Embed(
+            title="🏷️ Ticket Information",
+            description=f"**{thread_info.get('ticket_name', 'Unknown')}**",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(name="📁 Folder", value=f"`{thread_info.get('folder', 'Unknown')}`", inline=True)
+        embed.add_field(name="📌 Status", value=f"`{thread_info.get('status', 'Unknown')}`", inline=True)
+        embed.add_field(name="📅 Created By", value=thread_info.get('created_by') or "Unknown", inline=True)
+        
+        claimed_by = thread_info.get('claimed_by_username')
+        if claimed_by:
+            embed.add_field(name="👨‍💻 Claimed By", value=claimed_by, inline=True)
+            
+        resolved_by = thread_info.get('resolved_by_username')
+        if resolved_by:
+            embed.add_field(name="🛠️ Resolved By", value=resolved_by, inline=True)
+            
+        reviewed_by = thread_info.get('reviewed_by_username')
+        if reviewed_by:
+            embed.add_field(name="🔍 Reviewed By", value=reviewed_by, inline=True)
+            
+        pr_url = thread_info.get('pr_url')
+        if pr_url:
+            embed.add_field(name="🔗 PR Link", value=pr_url, inline=False)
+            
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error fetching ticket info: {e}")
+        await interaction.followup.send(f"❌ Error fetching ticket info: {e}")
 
 
 def main():
