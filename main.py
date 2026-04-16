@@ -24,10 +24,15 @@ logger = logging.getLogger(__name__)
 
 # Initialize bot with intents
 intents = discord.Intents.default()
-intents.message_content = True
 intents.guilds = True
 intents.guild_messages = True
-intents.members = True
+# Privileged intents (require toggle in Discord Developer Portal):
+# - message_content: Not needed since the bot uses slash commands only.
+# - members: Only needed for /rebuild-db role syncing.
+# If you enable "SERVER MEMBERS INTENT" and "MESSAGE CONTENT INTENT"
+# in the Developer Portal, you can set these to True.
+intents.message_content = False
+intents.members = False
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
