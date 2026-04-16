@@ -1,39 +1,123 @@
-# Discord Ticket Management Bot
+# Website Associate Bot
 
-A Discord bot for managing support tickets organized by folder and channel. Track ticket statuses with role-based workflows and maintain separate leaderboards for Developers and QAs.
+A Discord bot that turns markdown files into trackable support tickets with role-based workflows, leaderboards, and automated project scanning. Built for small teams that need lightweight project management without leaving Discord.
+
+## What It Does
+
+- Reads `.md` ticket files from local folders and creates Discord threads for each one.
+- Tracks every ticket through a status pipeline: **OPEN → CLAIMED → Pending-Review → Reviewed → CLOSED**.
+- Enforces role-based permissions so Developers, QAs, and Project Managers each have clear responsibilities.
+- Maintains separate leaderboards for Developers (resolved count) and QAs (reviewed count).
+- Scans external project directories for common code issues (TODOs, debug statements, hardcoded secrets, etc.) and auto-generates ticket files.
+- Sends a daily ticket summary to a configured channel at 8:00 AM PH Time.
+
+---
 
 ## Features
 
-✨ **Ticket Management**
-- Load tickets from markdown files organized in folders
-- Create Discord threads for each ticket with status prefixes
-- Parse detailed ticket information (problem, steps, acceptance criteria)
-- Track ticket status: `[OPEN]`, `[CLAIMED]`, `[Pending-Review]`, `[Reviewed]`, `[CLOSED]`
+### Ticket Management
+- Load tickets from markdown files organized in folders.
+- Create Discord threads for each ticket with status prefixes.
+- Parse ticket sections: Problem, What to Fix, Acceptance Criteria, Related Files.
+- Prevent duplicate loading — already-loaded tickets are skipped.
 
-👥 **Role-Based Workflow**
-- **Developers:** Claim tickets and mark as Pending-Review
-- **QAs:** Review and approve completed tickets
-- Users can have both roles simultaneously
-- Use `/set-role` to assign roles
+### Role-Based Workflow
+Three roles, one per user at a time:
 
-📊 **Role-Based Leaderboards**
-- Developer leaderboard: Tracks tickets marked as pending review
-- QA leaderboard: Tracks tickets reviewed and approved
-- Separate scoring for each role
-- View with `/leaderboard dev` or `/leaderboard qa`
+| Role | Discord Role Created | Key Permissions |
+|------|---------------------|-----------------|
+| **Developer** | `Developer` | Claim, resolve, unclaim, unresolve tickets |
+| **QA** | `QA` | Review, unreview tickets |
+| **Project Manager** | `Project Manager` | All of the above, plus load tickets, rebuild database, scan projects, set reminders channel |
 
-🗂️ **Folder Organization**
-- Organize tickets into different folders (e.g., `support/`, `bugs/`, `features/`)
-- Load tickets from any folder into any Discord channel
-- Flexible folder structure
+PM role requires server admin to assign. Developer and QA can be self-assigned.
+
+### Undo Actions
+Every forward status change has a matching undo command to correct mistakes without database hacks:
+
+| Forward | Undo | Leaderboard Effect |
+|---------|------|--------------------|
+| `/claim` | `/unclaim` | None |
+| `/resolved` | `/unresolve` | Decrements dev count |
+| `/reviewed` | `/unreview` | Decrements QA count |
+
+### Project Scanner
+The `/scan-project` command walks an external codebase and detects:
+- TODO / FIXME / HACK / XXX comments
+- Leftover `console.log`, `print()`, `debugger` statements
+- Empty catch / except blocks
+- Oversized files (configurable threshold, default 300 lines)
+- Skipped / disabled tests
+- Hardcoded secrets and API keys
+
+Issues are grouped by area and category, then written as ticket `.md` files ready to load with `/load-tickets`.
+
+### Scheduled Summaries
+A daily task posts a ticket summary grouped by status to a channel set with `/setreminderschannel`. Runs at 8:00 AM PH Time (00:00 UTC).
+
+### Leaderboards
+Separate scoreboards for Developers and QAs. Scores update automatically when tickets move through the pipeline and decrement correctly on undo.
+
+---
+
+## MVP and Feature Suggestions
+
+When writing tickets or planning work, the bot is designed around a **ship-the-core-first** philosophy. Follow these rules to keep the project focused:
+
+### Suggesting an MVP or Best Feature
+
+A good MVP ticket answers **yes** to all of these:
+
+1. **Does the user see or interact with it directly?** If not, it is infrastructure — defer it.
+2. **Can you demo it in under 60 seconds?** If the demo needs a five-minute setup explanation, the scope is too large.
+3. **Does it work without other unbuilt features?** If it depends on three other tickets being done first, it is not MVP.
+4. **Can one person finish it in one sitting?** A ticket that takes a full sprint is a project, not a ticket.
+
+When the bot scans a project and generates tickets, each ticket already follows this pattern: one category of issue, in one area of the codebase, with concrete acceptance criteria.
+
+### Preventing Scope Creep
+
+Scope creep happens when a ticket quietly expands to include "while we're at it" work. The bot's ticket format fights this by design:
+
+- **One ticket = one problem.** The ticket guideline enforces this. If a ticket's "What to Fix" section has items touching unrelated parts of the codebase, split it.
+- **Acceptance criteria are the contract.** When a developer runs `/resolved`, QA checks the acceptance criteria — nothing more. If something is not listed, it is out of scope for this ticket.
+- **Priority markers exist for a reason.** Only use `[PRIORITY]` for work that blocks other tickets and `[CRITICAL]` for production-breaking bugs. Everything else is normal priority.
+- **The scanner groups issues tightly.** Auto-generated tickets are scoped to one issue category in one directory. They do not balloon into "fix everything in the project" tickets.
+- **Undo commands reduce pressure to over-deliver.** If a developer pushes a ticket to review and realizes they added unrelated changes, they can `/unresolve`, split the work, and re-submit cleanly.
+
+### Red Flags for Scope Creep
+
+When writing or reviewing a ticket, watch for:
+
+- "What to Fix" has more than 8–10 steps.
+- Steps reference files in 3+ unrelated directories.
+- Acceptance criteria include items that were not in the Problem section.
+- The ticket title uses "and" (e.g., "Fix navbar and add search and update footer").
+- Estimated effort exceeds what one person can finish before submitting for review.
+
+If any of these appear, split the ticket into smaller, independent tickets.
+
+---
 
 ## Workflow
 
-1. **Load Tickets:** `/load-tickets <folder> <channel>` creates threads from markdown files
-2. **Developer Claims:** `/claim <thread>` → `[CLAIMED][username]ticket-name`
-3. **Developer Submits:** `/resolved <thread>` → `[Pending-Review][username]ticket-name` (adds to dev leaderboard)
-4. **QA Reviews:** `/reviewed <thread>` → `[Reviewed][username]ticket-name` (adds to QA leaderboard)
-5. **Close Ticket:** `/closed <thread>` → `[CLOSED][username]ticket-name`
+```
+PM loads tickets          Developer works           QA verifies            PM closes
+─────────────────    ──────────────────────    ──────────────────    ──────────────
+/load-tickets          /claim                   /reviewed              /closed
+   │                      │                        │                     │
+   ▼                      ▼                        ▼                     ▼
+[OPEN]  ──────────▶  [CLAIMED]  ──────────▶  [Pending-Review]  ──▶  [Reviewed]  ──▶  [CLOSED]
+                     /unclaim ◀──── undo      /unresolve ◀── undo   /unreview ◀── undo
+```
+
+1. **PM loads tickets:** `/load-tickets <folder> <channel>` creates `[OPEN]` threads from markdown files.
+2. **Developer claims:** `/claim` inside a thread → `[CLAIMED][username]ticket-name`.
+3. **Developer submits:** `/resolved <pr_url>` inside a thread → `[Pending-Review][username]ticket-name`. Adds to dev leaderboard.
+4. **QA reviews:** `/reviewed` inside a thread → `[Reviewed][username]ticket-name`. Adds to QA leaderboard.
+5. **PM or involved user closes:** `/closed` inside a thread → `[CLOSED][username]ticket-name`.
+
+---
 
 ## Setup Instructions
 
@@ -45,29 +129,27 @@ pip install -r requirements.txt
 
 ### 2. Configure Environment
 
-Edit `.env` file and add your Discord bot token:
+Create or edit the `.env` file:
 
 ```
 DISCORD_TOKEN=your_bot_token_here
 ```
 
 To get a bot token:
-1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a new application
-3. Go to "Bot" section and click "Add Bot"
-4. Copy the token and paste it in `.env`
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Create a new application → go to **Bot** → click **Reset Token** and copy it.
+3. Paste the token into `.env`.
 
 ### 3. Invite Bot to Server
 
-1. In Developer Portal, go to "OAuth2" > "URL Generator"
-2. Select scopes: `bot`, `applications.commands`
-3. Select permissions: `Manage Channels`, `Manage Threads`, `Send Messages`, `Embed Links`
-4. Copy the generated URL and open it in browser
-5. Select your server and authorize
+1. In the Developer Portal, go to **OAuth2 → URL Generator**.
+2. Select scopes: `bot`, `applications.commands`.
+3. Select permissions: `Manage Channels`, `Manage Threads`, `Send Messages`, `Embed Links`, `Manage Roles`.
+4. Copy the generated URL, open it in a browser, and select your server.
 
-### 4. Create Ticket Folders
+### 4. Set Up Ticket Folders
 
-Create folders inside the `tickets/` directory with your ticket markdown files.
+Create folders inside the `tickets/` directory. Each folder holds `.md` ticket files for a specific project or category.
 
 ### 5. Run the Bot
 
@@ -75,7 +157,9 @@ Create folders inside the `tickets/` directory with your ticket markdown files.
 python main.py
 ```
 
-## Docker (uv)
+---
+
+## Docker
 
 Build the image:
 
@@ -89,105 +173,63 @@ Run the bot (loads `DISCORD_TOKEN` from your local `.env` file):
 docker run --rm --env-file .env website-associate-bot
 ```
 
-Optional: mount tickets if you want to edit them locally without rebuilding:
+Mount tickets locally to edit without rebuilding:
 
 ```bash
 docker run --rm --env-file .env -v $(pwd)/tickets:/app/tickets website-associate-bot
 ```
 
+---
+
 ## Commands
 
-### `/set-role <developer|qa>`
-Assign yourself a role. The Discord role will be created automatically.
+### Role Management
 
-**Parameters:**
-- `role` - Choose `developer` or `qa`
+| Command | Description | Who Can Use |
+|---------|-------------|-------------|
+| `/set-role developer` | Assign yourself the Developer role | Anyone |
+| `/set-role qa` | Assign yourself the QA role | Anyone |
+| `/set-role pm` | Assign yourself the Project Manager role | Server admins only |
 
-**Example:**
-```
-/set-role developer
-/set-role qa
-```
+### Ticket Loading (PM Only)
 
-### `/load-tickets <folder> <channel>`
-Load all markdown files from a specified folder into a Discord channel.
+| Command | Description |
+|---------|-------------|
+| `/load-tickets <folder> <channel>` | Load markdown files from a folder into a channel as threads |
+| `/rebuild-db <folder> <channel>` | Rebuild database entries from existing threads (recovery tool) |
+| `/scan-project <path> <folder> [threshold]` | Scan a project directory for issues and auto-generate ticket files |
 
-**Parameters:**
-- `folder` - Folder name within `tickets/` directory
-- `channel` - Discord channel where threads will be created
+### Developer Commands (Use Inside a Thread)
 
-**Example:**
-```
-/load-tickets support #support-squad
-/load-tickets bugs #bug-reports
-```
+| Command | Description | Leaderboard |
+|---------|-------------|-------------|
+| `/claim` | Claim a ticket to work on | — |
+| `/unclaim` | Unclaim; resets to OPEN | — |
+| `/resolved <pr_url>` | Submit for QA review with PR link | +1 dev |
+| `/unresolve` | Revert to CLAIMED | -1 dev |
 
-### `/rebuild-db <folder> <channel>`
-Rebuild database entries from existing threads in a Discord channel (PM only).
+### QA Commands (Use Inside a Thread)
 
-**Parameters:**
-- `folder` - Folder name within `tickets/` directory
-- `channel` - Discord channel where threads already exist
+| Command | Description | Leaderboard |
+|---------|-------------|-------------|
+| `/reviewed` | Approve a Pending-Review ticket | +1 QA |
+| `/unreview` | Revert to Pending-Review | -1 QA |
 
-**Example:**
-```
-/rebuild-db intramurals2026 #support-squad
-```
+### General Commands
 
-### `/claim`
-Mark a ticket as claimed. Must be used **inside a ticket thread**. Only Developers can use this.
+| Command | Description |
+|---------|-------------|
+| `/closed` | Close a ticket (PM or involved Dev/QA) |
+| `/leaderboard <dev\|qa> [limit]` | Show leaderboard (default: dev, limit: 10) |
+| `/setreminderschannel <channel>` | Set channel for daily ticket summary (PM only) |
+| `/ticket-folders` | List all available ticket folders |
+| `/help` | Show in-Discord help with workflow and role info |
 
-**Example workflow:**
-1. Go to the ticket thread
-2. Run `/claim` to claim it
-
-### `/resolved`
-Mark a ticket as pending review. Must be used **inside a ticket thread**. Only Developers can use this. Adds to developer leaderboard.
-
-**Example workflow:**
-1. Go to the ticket thread
-2. Run `/resolved` to submit for QA review
-
-### `/reviewed`
-Approve a ticket after review. Must be used **inside a ticket thread**. Only QAs can use this. Adds to QA leaderboard.
-
-**Requirements:**
-- Ticket must be in Pending-Review status
-- Only QAs can use this
-
-**Example workflow:**
-1. Go to the ticket thread (in Pending-Review status)
-2. Run `/reviewed` to approve
-
-### `/closed`
-Mark a ticket as closed. Must be used **inside a ticket thread**.
-
-**Example workflow:**
-1. Go to the ticket thread
-2. Run `/closed` to close the ticket
-
-### `/leaderboard [role] [limit]`
-Display the leaderboard for a specific role.
-
-**Parameters:**
-- `role` - `dev` for Developers (default) or `qa` for QAs
-- `limit` - Number of top resolvers to show (default: 10, max: 50)
-
-**Examples:**
-```
-/leaderboard dev
-/leaderboard qa limit: 20
-```
-
-### `/ticket-folders`
-List all available ticket folders in the `tickets/` directory.
-
-### `/help`
-Show comprehensive help information about all commands and workflows.
+---
 
 ## Ticket Format
 
-All ticket markdown files should follow this structure:
+All ticket markdown files follow this structure:
 
 ```markdown
 # Ticket Title
@@ -216,99 +258,105 @@ Clear explanation of the issue, why it matters, and what needs to be fixed.
 - Testable condition 3
 ```
 
-### Priority Markers (Optional)
+### Priority Markers
 
-- `**[PRIORITY]**` - Feature blocks other work, critical for MVP
-- `**[CRITICAL]**` - Production bug, system broken
+| Marker | When to Use |
+|--------|-------------|
+| `**[PRIORITY]**` | Feature blocks other work or is critical for MVP |
+| `**[CRITICAL]**` | Production is broken |
+| *(none)* | Standard ticket |
 
-### Example Ticket
+See [ticketsguideline.md](ticketsguideline.md) for the full writing guide, naming conventions, and examples.
 
-```markdown
-# Add Daily Facebook Updates Banner to Home Page
+---
 
-## Problem
+## Scanner Configuration
 
-The home page hero section should include a prominent banner promoting daily updates from the official Facebook page. Currently, no Facebook integration or banner exists.
+The project scanner's behavior is controlled in `config.py`:
 
-## Potentially Related Files
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `SCAN_IGNORE_DIRS` | `node_modules`, `.git`, `.next`, `dist`, etc. | Directories the scanner skips |
+| `SCAN_FILE_EXTENSIONS` | `.ts`, `.tsx`, `.js`, `.py`, `.css`, etc. | File types the scanner reads |
+| `SCAN_LARGE_FILE_THRESHOLD` | `300` lines | Files above this get flagged |
 
-- [components/public/home/hero-section.tsx](../app/components/public/home/hero-section.tsx) — Main hero section
-- [app/(public)/page.tsx](../app/app/(public)/page.tsx) — Home page entry point
-
-## What to Fix
-
-1. Create Facebook banner section in home page
-2. Include a call-to-action button linking to Facebook page
-3. Style banner to match existing branding
-4. Add copy about daily updates
-5. Position banner prominently
-6. Make mobile-responsive
-
-## Acceptance Criteria
-
-- Facebook banner is visible on desktop and mobile
-- Banner includes link to Facebook page
-- Design matches existing aesthetic
-- Button opens Facebook in new tab
-```
+---
 
 ## Database
 
-The bot uses SQLite (`tickets.db`) to store:
-- **Thread tracking** - Maps Discord threads to ticket information
-- **User roles** - Developer and/or QA roles for each user
-- **Leaderboard** - Separate scores for developers (pending reviews) and QAs (reviewed)
+The bot uses SQLite (`tickets.db`) with migration-based schema management:
 
-The database is automatically created and initialized on first run.
+| Table | Purpose |
+|-------|---------|
+| `threads` | Maps Discord threads to ticket info with full status history |
+| `user_roles` | Stores Developer / QA / PM role assignments |
+| `leaderboard` | Separate dev resolved and QA reviewed counters |
+| `loaded_tickets` | Tracks which tickets have been loaded to prevent duplicates |
+| `settings` | Key-value store for bot configuration (e.g., reminders channel) |
+| `migrations` | Tracks which SQL migrations have been applied |
+
+The database and all tables are created automatically on first run via `migrations/001_initial_schema.sql`.
+
+---
 
 ## Project Structure
 
 ```
 website-associate-bot/
-├── main.py                    # Main bot code with commands
-├── config.py                  # Configuration and environment variables
-├── database.py                # SQLite database operations
+├── main.py                    # Bot commands and event handlers
+├── config.py                  # Environment variables and scanner settings
+├── database.py                # SQLite operations and migrations
 ├── ticket_loader.py           # Markdown file parser
 ├── requirements.txt           # Python dependencies
-├── .env                       # Environment variables (Discord token)
+├── Dockerfile                 # Docker build (uses uv for fast installs)
+├── .env                       # Discord token (not committed)
 ├── .gitignore                 # Git ignore patterns
+├── ticketsguideline.md        # Ticket writing guide
 ├── tickets.db                 # SQLite database (auto-created)
-└── tickets/                   # Ticket markdown files
-    ├── support/
-    │   ├── password-reset.md
-    │   └── login-timeout.md
-    ├── bugs/
-    │   ├── button-overlap.md
-    │   └── api-timeout.md
-    └── features/
+├── migrations/
+│   └── 001_initial_schema.sql # Database schema
+├── scripts/
+│   ├── scan_project.py        # Code scanner and ticket generator
+│   └── migrate_db.py          # Standalone migration runner
+└── tickets/                   # Ticket markdown files by folder
+    ├── intramurals2026/
+    ├── borneo/
+    ├── my-scan/
+    └── SideQuest/
 ```
+
+---
 
 ## Troubleshooting
 
-**Bot doesn't respond to commands:**
-- Verify bot has correct permissions in your server
-- Check that `DISCORD_TOKEN` is set correctly in `.env`
-- Run `/ticket-folders` to verify bot is working
+**Bot does not respond to commands:**
+- Verify `DISCORD_TOKEN` is set correctly in `.env`.
+- Check that the bot has `applications.commands` scope and the required permissions.
+- Run `/ticket-folders` to confirm the bot is online.
+
+**PM commands say "Only Project Managers can...":**
+- The PM role requires a server admin to run `/set-role pm`. Regular members cannot self-assign it.
 
 **Role permissions not working:**
-- Use `/set-role` to assign Developer or QA role first
-- User must have at least one role to use relevant commands
+- Use `/set-role` to assign a role first. Roles are one-per-user; setting a new role replaces the old one.
 
 **Tickets not loading:**
-- Ensure folder exists in `tickets/` directory
-- Check that files have `.md` extension
-- Verify folder name matches what you pass to `/load-tickets`
-- Check markdown format follows the guidelines
+- Check that the folder exists inside `tickets/` and contains `.md` files.
+- Verify the folder name matches what you pass to `/load-tickets`.
+- Already-loaded tickets are skipped. Check the bot's response for the skip count.
 
-**Thread information not displaying:**
-- Verify markdown file follows the correct format
-- Parser will display raw ticket info if parsing fails
-- Check bot has permission to post embeds in channel
+**Thread info not displaying correctly:**
+- Verify the markdown file follows the correct format (see [ticketsguideline.md](ticketsguideline.md)).
+- The parser falls back to raw content if section parsing fails.
+- Confirm the bot has permission to post embeds in the target channel.
+
+**Scanner not finding issues:**
+- Make sure the project path is absolute (e.g., `F:\my-project`).
+- Check `config.py` to confirm file extensions and ignored directories match your project.
+- Adjust the `threshold` parameter if your codebase uses larger files intentionally.
+
+---
 
 ## License
 
 MIT
-
-## Support
-
-For issues or suggestions, contact the development team.

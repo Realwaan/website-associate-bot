@@ -5,7 +5,7 @@ from discord import app_commands
 import logging
 import re
 from datetime import datetime, time, timezone, timedelta
-from config import DISCORD_TOKEN, TICKETS_DIR
+from config import DISCORD_TOKEN, TICKETS_DIR, SCAN_IGNORE_DIRS, SCAN_FILE_EXTENSIONS, SCAN_LARGE_FILE_THRESHOLD
 from database import (
     init_db, add_thread, get_thread, update_thread_status,
     increment_developer_resolved, increment_qa_reviewed, 
@@ -17,6 +17,9 @@ from database import (
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent / "scripts"))
+from scan_project import scan_and_generate
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -1281,6 +1284,87 @@ async def show_help(interaction: discord.Interaction):
     except Exception as e:
         logger.error(f"Error showing help: {e}")
         await interaction.followup.send(f"❌ Error showing help: {e}")
+
+
+@bot.tree.command(
+    name="scan-project",
+    description="Scan a project folder for issues and auto-generate tickets (PM only)"
+)
+@app_commands.describe(
+    path="Absolute path to the project folder to scan (e.g. F:\\my-project)",
+    folder="Output folder name in tickets/ for generated ticket files",
+    threshold="Line count threshold for large file detection (default: 300)"
+)
+async def scan_project(interaction: discord.Interaction, path: str, folder: str, threshold: int = SCAN_LARGE_FILE_THRESHOLD):
+    """Scan a project directory for code issues and generate ticket markdown files.
+    Only PMs can use this command."""
+    await interaction.response.defer()
+
+    try:
+        # Check if user is a PM
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can scan projects. Use `/set-role pm` first.")
+            return
+
+        # Validate path
+        project_path = Path(path)
+        if not project_path.exists() or not project_path.is_dir():
+            await interaction.followup.send(f"❌ Path not found or not a directory: `{path}`")
+            return
+
+        # Send "scanning" message
+        await interaction.followup.send(f"🔍 Scanning `{path}`... this may take a moment.")
+
+        # Run the scanner
+        total_issues, total_tickets, generated_files = scan_and_generate(
+            project_path=str(project_path),
+            output_folder=folder,
+            tickets_dir=TICKETS_DIR,
+            ignore_dirs=SCAN_IGNORE_DIRS,
+            file_extensions=SCAN_FILE_EXTENSIONS,
+            large_file_threshold=threshold,
+        )
+
+        if total_issues == 0:
+            embed = discord.Embed(
+                title="✨ No Issues Found",
+                description=f"Scanned `{path}` — no issues detected!",
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        # Build results embed
+        embed = discord.Embed(
+            title="📋 Scan Complete",
+            description=f"Scanned `{path}`",
+            color=discord.Color.blurple()
+        )
+        embed.add_field(name="Issues Found", value=str(total_issues), inline=True)
+        embed.add_field(name="Tickets Generated", value=str(total_tickets), inline=True)
+        embed.add_field(name="Output Folder", value=f"`tickets/{folder}/`", inline=True)
+
+        # List generated tickets
+        if generated_files:
+            file_list = "\n".join([f"• `{Path(f).name}`" for f in generated_files[:20]])
+            if len(generated_files) > 20:
+                file_list += f"\n• ... and {len(generated_files) - 20} more"
+            embed.add_field(name="Generated Tickets", value=file_list, inline=False)
+
+        embed.add_field(
+            name="Next Step",
+            value=f"Run `/load-tickets {folder} #channel` to create Discord threads from these tickets.",
+            inline=False
+        )
+
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Project scan complete: {total_issues} issues, {total_tickets} tickets in {folder}/")
+
+    except FileNotFoundError as e:
+        await interaction.followup.send(f"❌ {e}")
+    except Exception as e:
+        logger.error(f"Error scanning project: {e}")
+        await interaction.followup.send(f"❌ Error scanning project: {e}")
 
 
 def main():

@@ -14,3 +14,19 @@ if not DISCORD_TOKEN:
 COMMAND_PREFIX = "/"
 DATABASE_FILE = "tickets.db"
 TICKETS_DIR = "tickets"
+
+# Scanner configuration
+SCAN_IGNORE_DIRS = {
+    "node_modules", ".git", ".next", "dist", "build", "out",
+    "__pycache__", ".venv", "venv", ".cache", "coverage",
+    ".turbo", ".vercel", ".svelte-kit", "vendor", ".idea",
+    ".vscode", "public", "static",
+}
+
+SCAN_FILE_EXTENSIONS = {
+    ".ts", ".tsx", ".js", ".jsx", ".py", ".css", ".scss",
+    ".java", ".go", ".rb", ".php", ".svelte", ".vue",
+    ".html", ".rs", ".cs",
+}
+
+SCAN_LARGE_FILE_THRESHOLD = 300  # lines
