@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import logging
+import os
 import re
 from datetime import datetime, time, timezone, timedelta
 from config import DISCORD_TOKEN, TICKETS_DIR, SCAN_IGNORE_DIRS, SCAN_FILE_EXTENSIONS, SCAN_LARGE_FILE_THRESHOLD
@@ -37,7 +38,18 @@ intents.guild_messages = True
 intents.message_content = False
 intents.members = False
 
-bot = commands.Bot(command_prefix="/", intents=intents)
+bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
+
+
+async def safe_defer(interaction: discord.Interaction, ephemeral: bool = False):
+    """Defer interaction safely and ignore already-acknowledged race conditions."""
+    if interaction.response.is_done():
+        return
+    try:
+        await interaction.response.defer(ephemeral=ephemeral)
+    except discord.HTTPException as e:
+        if getattr(e, "code", None) != 40060:
+            raise
 
 
 def normalize_ticket_name(name: str) -> str:
@@ -92,23 +104,49 @@ async def on_ready():
         logger.info("Scheduled ticket summary task started")
 
 
-@bot.command(name="sync")
-async def sync(ctx):
-    """Force sync slash commands to the current guild (useful if global sync is delayed)."""
-    # Only allow administrators to run this
-    if not ctx.author.guild_permissions.administrator:
-        await ctx.send("❌ Only administrators can force sync commands.")
-        return
-        
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Ensure users always receive a response when a slash command fails unexpectedly."""
+    logger.exception("Unhandled app command error: %s", error)
+
+    message = "❌ Something went wrong while processing this command. Please try again."
     try:
-        # Copy global commands to the guild
-        bot.tree.copy_global_to(guild=ctx.guild)
-        synced = await bot.tree.sync(guild=ctx.guild)
-        await ctx.send(f"✅ Successfully synced {len(synced)} command(s) to this server.")
-        logger.info(f"Forced sync of {len(synced)} commands to guild {ctx.guild.id} by {ctx.author}")
+        try:
+            await interaction.followup.send(message, ephemeral=True)
+        except discord.HTTPException:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception:
+        logger.exception("Failed to send app command error response")
+
+
+@bot.tree.command(
+    name="sync-commands",
+    description="Force sync slash commands to this server (admins only)"
+)
+async def sync_commands(interaction: discord.Interaction):
+    """Force sync slash commands to the current guild (useful if global sync is delayed)."""
+    await safe_defer(interaction, ephemeral=True)
+
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.followup.send("❌ Only administrators can force sync commands.", ephemeral=True)
+        return
+
+    try:
+        bot.tree.copy_global_to(guild=interaction.guild)
+        synced = await bot.tree.sync(guild=interaction.guild)
+        await interaction.followup.send(
+            f"✅ Successfully synced {len(synced)} command(s) to this server.",
+            ephemeral=True,
+        )
+        logger.info(
+            "Forced sync of %s commands to guild %s by %s",
+            len(synced),
+            interaction.guild.id,
+            interaction.user,
+        )
     except Exception as e:
         logger.error(f"Failed to force sync commands: {e}")
-        await ctx.send(f"❌ Failed to sync commands: {e}")
+        await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
 
 
 @bot.tree.command(
@@ -125,7 +163,7 @@ async def sync(ctx):
 ])
 async def set_role(interaction: discord.Interaction, role: str):
     """Assign yourself a Developer, QA, or PM role."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         role_lower = role.lower()
@@ -215,7 +253,7 @@ async def set_role(interaction: discord.Interaction, role: str):
 )
 async def set_reminders_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     """Set the channel for daily ticket summaries. Only PMs can use this."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is a PM
@@ -321,7 +359,7 @@ async def scheduled_ticket_summary():
 )
 async def load_tickets(interaction: discord.Interaction, folder: str, channel: discord.TextChannel):
     """Load tickets from a folder and create threads in the specified channel. Only PMs can use this."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is a PM
@@ -472,7 +510,7 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
 )
 async def rebuild_db(interaction: discord.Interaction, folder: str, channel: discord.TextChannel):
     """Rebuild database from existing threads in a channel."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
 
     try:
         if not has_role(interaction.user.id, "pm"):
@@ -576,7 +614,7 @@ async def rebuild_db(interaction: discord.Interaction, folder: str, channel: dis
 )
 async def claim_ticket(interaction: discord.Interaction):
     """Claim a ticket and update its status to CLAIMED. Only Developers can claim. Must be used inside a ticket thread."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is in a thread
@@ -637,7 +675,7 @@ async def claim_ticket(interaction: discord.Interaction):
 )
 async def unclaim_ticket(interaction: discord.Interaction):
     """Unclaim a ticket and reset its status back to OPEN. Only Developers can unclaim. Must be used inside a ticket thread."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is in a thread
@@ -697,7 +735,7 @@ async def unclaim_ticket(interaction: discord.Interaction):
 )
 async def resolve_ticket(interaction: discord.Interaction, pr_url: str):
     """Mark a ticket as pending review with PR URL. Only Developers can mark as resolved. Must be used inside a ticket thread."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is in a thread
@@ -763,7 +801,7 @@ async def resolve_ticket(interaction: discord.Interaction, pr_url: str):
 )
 async def unresolve_ticket(interaction: discord.Interaction):
     """Revert a ticket from PENDING-REVIEW to CLAIMED. Only Developers can unresolve. Must be used inside a ticket thread."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is in a thread
@@ -834,7 +872,7 @@ async def unresolve_ticket(interaction: discord.Interaction):
 )
 async def reviewed_ticket(interaction: discord.Interaction):
     """Mark a ticket as reviewed after QA approval. Only QAs can review. Must be used inside a ticket thread."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is in a thread
@@ -902,7 +940,7 @@ async def reviewed_ticket(interaction: discord.Interaction):
 )
 async def unreview_ticket(interaction: discord.Interaction):
     """Revert a ticket from REVIEWED back to PENDING-REVIEW. Only QAs can unreview. Must be used inside a ticket thread."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is in a thread
@@ -970,7 +1008,7 @@ async def unreview_ticket(interaction: discord.Interaction):
 )
 async def close_ticket(interaction: discord.Interaction):
     """Mark a ticket as closed. Must be used inside a ticket thread. Restrict to PM or involved users."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Check if user is in a thread
@@ -1045,7 +1083,7 @@ async def close_ticket(interaction: discord.Interaction):
 )
 async def show_leaderboard(interaction: discord.Interaction, role: str = "dev", limit: int = 10):
     """Display the leaderboard of users who have resolved the most tickets."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Validate role parameter
@@ -1112,7 +1150,7 @@ async def show_leaderboard(interaction: discord.Interaction, role: str = "dev", 
 )
 async def list_folders(interaction: discord.Interaction):
     """List all available ticket folders."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         folders = get_available_folders()
@@ -1143,7 +1181,7 @@ async def list_folders(interaction: discord.Interaction):
 )
 async def show_help(interaction: discord.Interaction):
     """Display help information for all commands."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         # Create main help embed
@@ -1208,7 +1246,7 @@ async def show_help(interaction: discord.Interaction):
                   "**`/ticket-folders`** - List all available ticket folders\n" +
                   "**`/archive-closed`** - Archive all closed threads in the channel (PM/Admin only)\n" +
                   "**`/clear <amount>`** - Delete messages in the channel (PM/Admin only)\n" +
-                  "**`!sync`** (prefix command) - Force sync commands to the server (Admin only)\n" +
+                  "**`/sync-commands`** - Force sync commands to this server (Admin only)\n" +
                   "**`/help`** - Show this help message",
             inline=False
         )
@@ -1328,7 +1366,7 @@ async def show_help(interaction: discord.Interaction):
 async def scan_project(interaction: discord.Interaction, path: str, folder: str, threshold: int = SCAN_LARGE_FILE_THRESHOLD):
     """Scan a project directory for code issues and generate ticket markdown files.
     Only PMs can use this command."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
 
     try:
         # Check if user is a PM
@@ -1404,7 +1442,7 @@ async def scan_project(interaction: discord.Interaction, path: str, folder: str,
 @app_commands.describe(amount="The number of messages to delete (max 100)")
 async def clear_messages(interaction: discord.Interaction, amount: int = 10):
     """Delete a specified number of messages in the channel."""
-    await interaction.response.defer(ephemeral=True)
+    await safe_defer(interaction, ephemeral=True)
     
     try:
         # Check if user is a PM or Admin
@@ -1440,7 +1478,7 @@ async def clear_messages(interaction: discord.Interaction, amount: int = 10):
 )
 async def archive_closed_threads(interaction: discord.Interaction):
     """Finds all open threads with the [CLOSED] prefix and archives them."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         is_pm = has_role(interaction.user.id, "pm")
@@ -1481,7 +1519,7 @@ async def archive_closed_threads(interaction: discord.Interaction):
 )
 async def project_stats(interaction: discord.Interaction):
     """Display an overview of tickets grouped by status."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         status_groups = get_threads_by_status()
@@ -1520,7 +1558,7 @@ async def project_stats(interaction: discord.Interaction):
 )
 async def ticket_info(interaction: discord.Interaction):
     """Fetch database info about the current ticket."""
-    await interaction.response.defer()
+    await safe_defer(interaction)
     
     try:
         if not isinstance(interaction.channel, discord.Thread):
@@ -1572,8 +1610,12 @@ def main():
         if not verify_database_connection():
             raise RuntimeError("Database startup verification failed. Check DATABASE_URL credentials and host settings.")
 
-        from keep_alive import keep_alive
-        keep_alive()
+        if os.getenv("KEEP_ALIVE_ENABLED", "false").lower() == "true":
+            from keep_alive import keep_alive
+            keep_alive()
+        else:
+            logger.info("Keep-alive server disabled (set KEEP_ALIVE_ENABLED=true to enable).")
+
         bot.run(DISCORD_TOKEN)
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
@@ -1582,3 +1624,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -12,6 +12,9 @@ from config import DATABASE_URL
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "10"))
+DB_STATEMENT_TIMEOUT_MS = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "15000"))
+
 
 def get_database_url_summary() -> dict:
     """Return a safe, non-secret summary of DATABASE_URL for diagnostics."""
@@ -95,7 +98,12 @@ def get_connection():
         return None
     # For Supabase pooler connections, credentials must be used exactly as encoded
     # in DATABASE_URL (e.g. user can be 'postgres.<project_ref>').
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    conn = psycopg2.connect(
+        DATABASE_URL,
+        sslmode='require',
+        connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
+        options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
+    )
     conn.cursor_factory = DictCursor
     return conn
 
