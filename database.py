@@ -18,13 +18,24 @@ def get_connection():
         return None
     from urllib.parse import urlparse, unquote
     p = urlparse(DATABASE_URL)
+    
+    # Supabase specific: extract tenant from 'postgres.tenant_id'
+    raw_user = unquote(p.username)
+    if "." in raw_user:
+        user_part, tenant_id = raw_user.split(".", 1)
+        options = f"-c project={tenant_id}"
+    else:
+        user_part = raw_user
+        options = ""
+
     conn = psycopg2.connect(
         host=p.hostname,
         port=p.port or 5432,
         dbname=p.path.lstrip('/'),
-        user=unquote(p.username),
+        user=user_part,
         password=unquote(p.password),
-        sslmode='require'
+        sslmode='require',
+        options=options
     )
     conn.cursor_factory = DictCursor
     return conn
