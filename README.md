@@ -129,10 +129,17 @@ pip install -r requirements.txt
 
 ### 2. Configure Environment
 
-Create or edit the `.env` file:
+Copy `.env.example` to `.env`, then fill in your real values:
+
+```bash
+cp .env.example .env
+```
+
+Or create/edit the `.env` file directly:
 
 ```
 DISCORD_TOKEN=your_bot_token_here
+DATABASE_URL=postgresql://postgres.<project_ref>:<password>@aws-<region>.pooler.supabase.com:5432/postgres
 ```
 
 To get a bot token:
@@ -178,6 +185,64 @@ Mount tickets locally to edit without rebuilding:
 ```bash
 docker run --rm --env-file .env -v $(pwd)/tickets:/app/tickets website-associate-bot
 ```
+
+---
+
+## Deploy Independently (Render + Supabase + Uptime)
+
+This bot can run 24/7 without your local machine by deploying to Render and using Supabase PostgreSQL.
+
+### 1. Push this repository to GitHub
+
+Render deploys from your Git repository, so make sure the latest code is pushed.
+
+### 2. Create a Render Web Service
+
+1. In Render, click **New +** → **Blueprint** (recommended) or **Web Service**.
+2. Connect your GitHub repository.
+3. If using Blueprint, Render will read `render.yaml` automatically.
+
+### 3. Set Environment Variables in Render
+
+Add these values in Render service settings:
+
+```env
+DISCORD_TOKEN=your_discord_bot_token
+DATABASE_URL=postgresql://postgres.<project_ref>:<password>@aws-<region>.pooler.supabase.com:5432/postgres
+KEEP_ALIVE_ENABLED=true
+DB_CONNECT_TIMEOUT_SECONDS=10
+DB_STATEMENT_TIMEOUT_MS=15000
+```
+
+Tip:
+- Use `.env.example` in this repository as the source-of-truth template for variable names and defaults.
+
+Notes:
+- Use the **Supabase Session Pooler** URL (`pooler.supabase.com:5432`) for IPv4-friendly connectivity.
+- Keep credentials in Render secrets, not in source control.
+
+### 4. Health Endpoint for Render and Uptime
+
+The bot now exposes:
+- `/` → basic alive message
+- `/health` → returns `ok`
+
+Render health checks use `/health` via `render.yaml`.
+
+### 5. Uptime Monitor (Optional but useful)
+
+Set your uptime tool (for example UptimeRobot) to `GET` this URL every 5 minutes:
+
+`https://<your-render-service>.onrender.com/health`
+
+This verifies service availability and can help keep free-tier services warm where applicable.
+
+### 6. Verify Deployment
+
+In Render logs, confirm:
+- Database startup connectivity check passed
+- Logged in as `<your bot name>`
+- Scheduled ticket summary task started
 
 ---
 
@@ -309,7 +374,8 @@ website-associate-bot/
 ├── ticket_loader.py           # Markdown file parser
 ├── requirements.txt           # Python dependencies
 ├── Dockerfile                 # Docker build (uses uv for fast installs)
-├── .env                       # Discord token (not committed)
+├── .env.example               # Safe environment template (committable)
+├── .env                       # Local secrets (not committed)
 ├── .gitignore                 # Git ignore patterns
 ├── ticketsguideline.md        # Ticket writing guide
 ├── tickets.db                 # SQLite database (auto-created)

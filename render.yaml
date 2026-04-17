@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: website-associate-bot
+    env: docker
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: KEEP_ALIVE_ENABLED
+        value: "true"
+      - key: DB_CONNECT_TIMEOUT_SECONDS
+        value: "10"
+      - key: DB_STATEMENT_TIMEOUT_MS
+        value: "15000"

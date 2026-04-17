@@ -1610,7 +1610,12 @@ def main():
         if not verify_database_connection():
             raise RuntimeError("Database startup verification failed. Check DATABASE_URL credentials and host settings.")
 
-        if os.getenv("KEEP_ALIVE_ENABLED", "false").lower() == "true":
+        # Auto-enable keep-alive in Render unless explicitly overridden.
+        keep_alive_enabled = os.getenv("KEEP_ALIVE_ENABLED")
+        if keep_alive_enabled is None:
+            keep_alive_enabled = "true" if os.getenv("RENDER") else "false"
+
+        if keep_alive_enabled.lower() == "true":
             from keep_alive import keep_alive
             keep_alive()
         else:

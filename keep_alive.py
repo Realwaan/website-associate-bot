@@ -15,6 +15,11 @@ app = Flask('')
 def home():
     return "Bot is alive!"
 
+
+@app.route('/health')
+def health():
+    return "ok", 200
+
 def run(host: str = "0.0.0.0", port: int = 8080):
     """Run a tiny WSGI server for health checks without Flask dev-server noise."""
     try:
@@ -27,6 +32,7 @@ def run(host: str = "0.0.0.0", port: int = 8080):
 def keep_alive():
     """Starts the Flask server in a separate thread."""
     host = os.getenv("KEEP_ALIVE_HOST", "0.0.0.0")
-    port = int(os.getenv("KEEP_ALIVE_PORT", "8080"))
+    # Render sets PORT dynamically for web services.
+    port = int(os.getenv("PORT") or os.getenv("KEEP_ALIVE_PORT", "8080"))
     t = Thread(target=run, args=(host, port), daemon=True)
     t.start()
