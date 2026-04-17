@@ -1569,6 +1569,8 @@ async def ticket_info(interaction: discord.Interaction):
 def main():
     """Start the bot."""
     try:
+        from keep_alive import keep_alive
+        keep_alive()
         bot.run(DISCORD_TOKEN)
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")

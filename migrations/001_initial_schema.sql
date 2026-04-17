@@ -1,26 +1,26 @@
--- Initial schema for website-associate-bot
+-- Initial schema for website-associate-bot (PostgreSQL)
 
 -- Create threads table
 CREATE TABLE IF NOT EXISTS threads (
-    thread_id INTEGER PRIMARY KEY,
+    thread_id BIGINT PRIMARY KEY,
     ticket_name TEXT NOT NULL,
     folder TEXT NOT NULL,
-    channel_id INTEGER NOT NULL,
+    channel_id BIGINT NOT NULL,
     status TEXT DEFAULT 'OPEN',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by TEXT,
-    claimed_by_id INTEGER,
+    claimed_by_id BIGINT,
     claimed_by_username TEXT,
-    resolved_by_id INTEGER,
+    resolved_by_id BIGINT,
     resolved_by_username TEXT,
     pr_url TEXT,
-    reviewed_by_id INTEGER,
+    reviewed_by_id BIGINT,
     reviewed_by_username TEXT
 );
 
 -- Create user_roles table
 CREATE TABLE IF NOT EXISTS user_roles (
-    user_id INTEGER PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     is_developer INTEGER DEFAULT 0,
     is_qa INTEGER DEFAULT 0,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
 
 -- Create leaderboard table
 CREATE TABLE IF NOT EXISTS leaderboard (
-    user_id INTEGER PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY,
     username TEXT NOT NULL,
     dev_resolved_count INTEGER DEFAULT 0,
     qa_reviewed_count INTEGER DEFAULT 0,
@@ -40,11 +40,11 @@ CREATE TABLE IF NOT EXISTS leaderboard (
 
 -- Create loaded_tickets table
 CREATE TABLE IF NOT EXISTS loaded_tickets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     ticket_filename TEXT NOT NULL,
     folder TEXT NOT NULL,
-    thread_id INTEGER NOT NULL,
-    channel_id INTEGER NOT NULL,
+    thread_id BIGINT NOT NULL,
+    channel_id BIGINT NOT NULL,
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(ticket_filename, folder)
 );

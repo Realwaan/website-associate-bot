@@ -12,7 +12,9 @@ if not DISCORD_TOKEN:
 
 # Bot configuration
 COMMAND_PREFIX = "/"
-DATABASE_FILE = "tickets.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    print("Warning: DATABASE_URL not found in environment variables. Database operations may fail.")
 TICKETS_DIR = "tickets"
 
 # Scanner configuration
