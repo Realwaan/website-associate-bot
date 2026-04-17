@@ -3,6 +3,7 @@ import os
 import logging
 from datetime import datetime
 import glob
+from urllib.parse import urlparse, unquote
 import psycopg2
 from psycopg2.extras import DictCursor
 from config import DATABASE_URL
@@ -11,32 +12,90 @@ from config import DATABASE_URL
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def get_database_url_summary() -> dict:
+    """Return a safe, non-secret summary of DATABASE_URL for diagnostics."""
+    if not DATABASE_URL:
+        return {"configured": False}
+
+    parsed = urlparse(DATABASE_URL)
+    raw_user = unquote(parsed.username or "")
+    db_name = parsed.path.lstrip("/") if parsed.path else ""
+
+    return {
+        "configured": True,
+        "scheme": parsed.scheme,
+        "host": parsed.hostname,
+        "port": parsed.port,
+        "db": db_name,
+        "user": raw_user,
+        "has_tenant_suffix": "." in raw_user,
+    }
+
+
+def validate_database_url() -> tuple[bool, str]:
+    """Validate DATABASE_URL shape without exposing secrets."""
+    if not DATABASE_URL:
+        return False, "DATABASE_URL is missing."
+
+    parsed = urlparse(DATABASE_URL)
+    if parsed.scheme not in {"postgresql", "postgres"}:
+        return False, "DATABASE_URL must start with postgres:// or postgresql://"
+
+    if not parsed.hostname:
+        return False, "DATABASE_URL is missing host."
+
+    if not parsed.path or parsed.path == "/":
+        return False, "DATABASE_URL is missing database name in path."
+
+    if not parsed.username:
+        return False, "DATABASE_URL is missing username."
+
+    if parsed.password is None:
+        return False, "DATABASE_URL is missing password."
+
+    return True, "ok"
+
+
+def verify_database_connection() -> bool:
+    """Validate URL and verify that a simple query can run successfully."""
+    is_valid, reason = validate_database_url()
+    if not is_valid:
+        logger.error("Database configuration invalid: %s", reason)
+        return False
+
+    summary = get_database_url_summary()
+    logger.info(
+        "Database startup check: host=%s port=%s db=%s user=%s tenant_suffix=%s",
+        summary.get("host"),
+        summary.get("port") or 5432,
+        summary.get("db"),
+        summary.get("user"),
+        summary.get("has_tenant_suffix"),
+    )
+
+    try:
+        conn = get_connection()
+        if not conn:
+            return False
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        conn.close()
+        logger.info("Database startup connectivity check passed.")
+        return True
+    except psycopg2.Error as e:
+        logger.error("Database startup connectivity check failed: %s", e)
+        return False
+
 def get_connection():
     """Get a connection to the PostgreSQL database."""
     if not DATABASE_URL:
         logger.error("DATABASE_URL is not set. Database operations will fail.")
         return None
-    from urllib.parse import urlparse, unquote
-    p = urlparse(DATABASE_URL)
-    
-    # Supabase specific: extract tenant from 'postgres.tenant_id'
-    raw_user = unquote(p.username)
-    if "." in raw_user:
-        user_part, tenant_id = raw_user.split(".", 1)
-        options = f"-c project={tenant_id}"
-    else:
-        user_part = raw_user
-        options = ""
-
-    conn = psycopg2.connect(
-        host=p.hostname,
-        port=p.port or 5432,
-        dbname=p.path.lstrip('/'),
-        user=user_part,
-        password=unquote(p.password),
-        sslmode='require',
-        options=options
-    )
+    # For Supabase pooler connections, credentials must be used exactly as encoded
+    # in DATABASE_URL (e.g. user can be 'postgres.<project_ref>').
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     conn.cursor_factory = DictCursor
     return conn
 

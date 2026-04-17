@@ -7,7 +7,7 @@ import re
 from datetime import datetime, time, timezone, timedelta
 from config import DISCORD_TOKEN, TICKETS_DIR, SCAN_IGNORE_DIRS, SCAN_FILE_EXTENSIONS, SCAN_LARGE_FILE_THRESHOLD
 from database import (
-    init_db, add_thread, get_thread, update_thread_status,
+    init_db, verify_database_connection, add_thread, get_thread, update_thread_status,
     increment_developer_resolved, increment_qa_reviewed, 
     decrement_developer_resolved, decrement_qa_reviewed,
     get_leaderboard_dev, get_leaderboard_qa,
@@ -1569,6 +1569,9 @@ async def ticket_info(interaction: discord.Interaction):
 def main():
     """Start the bot."""
     try:
+        if not verify_database_connection():
+            raise RuntimeError("Database startup verification failed. Check DATABASE_URL credentials and host settings.")
+
         from keep_alive import keep_alive
         keep_alive()
         bot.run(DISCORD_TOKEN)
