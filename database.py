@@ -16,8 +16,17 @@ def get_connection():
     if not DATABASE_URL:
         logger.error("DATABASE_URL is not set. Database operations will fail.")
         return None
-    # Connect using the connection string
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
+    from urllib.parse import urlparse, unquote
+    p = urlparse(DATABASE_URL)
+    conn = psycopg2.connect(
+        host=p.hostname,
+        port=p.port or 5432,
+        dbname=p.path.lstrip('/'),
+        user=unquote(p.username),
+        password=unquote(p.password),
+        sslmode='require'
+    )
+    conn.cursor_factory = DictCursor
     return conn
 
 def init_db():
