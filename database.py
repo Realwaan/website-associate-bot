@@ -278,15 +278,17 @@ def get_user_roles(user_id: int) -> dict:
     conn.close()
 
     if row:
+        is_pm = bool(row['is_pm'])
         return {
-            "is_developer": bool(row['is_developer']),
-            "is_qa": bool(row['is_qa']),
-            "is_pm": bool(row['is_pm'])
+            # PM inherits both developer and QA permissions.
+            "is_developer": bool(row['is_developer']) or is_pm,
+            "is_qa": bool(row['is_qa']) or is_pm,
+            "is_pm": is_pm
         }
     return {"is_developer": False, "is_qa": False, "is_pm": False}
 
 def has_role(user_id: int, role: str) -> bool:
-    """Check if user has a specific role (developer or qa)."""
+    """Check if user has a specific role permission."""
     roles = get_user_roles(user_id)
     return roles.get(f"is_{role.lower()}", False)
 

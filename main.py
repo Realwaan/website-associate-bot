@@ -265,8 +265,8 @@ async def set_role(interaction: discord.Interaction, role: str):
             discord_role_name = "QA"
             emoji = "🔍"
         elif role_lower == "pm":
-            is_developer = False
-            is_qa = False
+            is_developer = True
+            is_qa = True
             is_pm = True
             discord_role_name = "Project Manager"
             emoji = "📋"
@@ -651,6 +651,11 @@ async def rebuild_db(interaction: discord.Interaction, folder: str, channel: dis
                 is_dev = "Developer" in role_names
                 is_qa = "QA" in role_names
                 is_pm = "Project Manager" in role_names
+
+                # PM inherits both developer and QA permissions.
+                if is_pm:
+                    is_dev = True
+                    is_qa = True
 
                 if is_dev or is_qa or is_pm:
                     set_user_role(member.id, str(member), is_developer=is_dev, is_qa=is_qa, is_pm=is_pm)
