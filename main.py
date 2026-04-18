@@ -45,6 +45,18 @@ intents.members = False
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
 
 
+async def clear_global_app_commands() -> int:
+    """Remove all globally registered slash commands for this application."""
+    app_id = bot.application_id
+    if app_id is None:
+        app_info = await bot.application_info()
+        app_id = app_info.id
+
+    # Empty bulk upsert deletes existing global app commands.
+    await bot.http.bulk_upsert_global_commands(app_id, [])
+    return app_id
+
+
 async def safe_defer(interaction: discord.Interaction, ephemeral: bool = False):
     """Defer interaction safely and ignore already-acknowledged race conditions."""
     if interaction.response.is_done():
@@ -85,15 +97,17 @@ async def on_ready():
     """When the bot is ready, sync commands and initialize database."""
     logger.info(f"Logged in as {bot.user}")
     try:
-        # Use global commands as the single source of truth.
-        synced = await bot.tree.sync()
-        logger.info(f"Globally synced {len(synced)} command(s)")
+        # Strict guild-only strategy:
+        # 1) Clear all global commands to avoid duplicate listings.
+        # 2) Sync all commands to each guild for immediate propagation.
+        app_id = await clear_global_app_commands()
+        logger.info(f"Cleared all global app commands for application {app_id}")
 
-        # Remove guild-specific command copies to prevent doubled command entries.
         for guild in bot.guilds:
             bot.tree.clear_commands(guild=guild)
+            bot.tree.copy_global_to(guild=guild)
             guild_synced = await bot.tree.sync(guild=guild)
-            logger.info(f"Cleared guild-specific commands for {guild.name}; remaining guild command count: {len(guild_synced)}")
+            logger.info(f"Guild-only sync complete: {guild.name} -> {len(guild_synced)} command(s)")
     except Exception as e:
         logger.error(f"Failed to sync commands: {e}")
     
@@ -127,7 +141,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     description="Force sync slash commands to this server (admins only)"
 )
 async def sync_commands(interaction: discord.Interaction):
-    """Force sync slash commands to the current guild (useful if global sync is delayed)."""
+    """Force a guild-only slash command sync for the current server."""
     await safe_defer(interaction, ephemeral=True)
 
     if not interaction.user.guild_permissions.administrator:
@@ -135,24 +149,80 @@ async def sync_commands(interaction: discord.Interaction):
         return
 
     try:
-        # Deduplicate by clearing guild-specific commands and syncing globals.
+        app_id = await clear_global_app_commands()
+
+        # Rebuild current guild command set from the code-defined global set.
         bot.tree.clear_commands(guild=interaction.guild)
-        await bot.tree.sync(guild=interaction.guild)
-        synced = await bot.tree.sync()
+        bot.tree.copy_global_to(guild=interaction.guild)
+        guild_synced = await bot.tree.sync(guild=interaction.guild)
+
+        global_commands = await bot.tree.fetch_commands()
+        guild_commands = await bot.tree.fetch_commands(guild=interaction.guild)
+        global_names = sorted({cmd.name for cmd in global_commands})
+        guild_names = sorted({cmd.name for cmd in guild_commands})
+        overlap = sorted(set(global_names).intersection(set(guild_names)))
+
         await interaction.followup.send(
-            f"✅ Synced {len(synced)} global command(s) and removed duplicated guild copies."
-            " If commands are newly added, Discord may take a short time to propagate globally.",
+            f"✅ Guild-only sync complete with {len(guild_synced)} command(s)."
+            f"\nCleared global commands for app: {app_id}"
+            f"\nGlobal visible: {len(global_commands)} | Guild visible: {len(guild_commands)}"
+            f"\nOverlap: {len(overlap)}"
+            "\nIf duplicates still appear, reopen Discord and run /debug-commands.",
             ephemeral=True,
         )
         logger.info(
-            "Forced global sync of %s commands and cleared guild copies in guild %s by %s",
-            len(synced),
+            "Forced guild-only sync of %s commands in guild %s by %s (global cleared for app %s)",
+            len(guild_synced),
             interaction.guild.id,
             interaction.user,
+            app_id,
         )
     except Exception as e:
         logger.error(f"Failed to force sync commands: {e}")
         await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
+
+
+@bot.tree.command(
+    name="debug-commands",
+    description="Show global/guild command counts and overlaps (admins only)"
+)
+async def debug_commands(interaction: discord.Interaction):
+    """Debug slash command registration to diagnose duplicate entries."""
+    await safe_defer(interaction, ephemeral=True)
+
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.followup.send("❌ Only administrators can use this command.", ephemeral=True)
+        return
+
+    try:
+        global_commands = await bot.tree.fetch_commands()
+        guild_commands = await bot.tree.fetch_commands(guild=interaction.guild)
+
+        global_names = sorted(cmd.name for cmd in global_commands)
+        guild_names = sorted(cmd.name for cmd in guild_commands)
+        overlap = sorted(set(global_names).intersection(set(guild_names)))
+
+        embed = discord.Embed(
+            title="🧪 Command Registration Debug",
+            color=discord.Color.orange(),
+            description="Shows command registration sources that can cause duplicate entries.",
+        )
+        embed.add_field(name="Global Commands", value=str(len(global_names)), inline=True)
+        embed.add_field(name="Guild Commands", value=str(len(guild_names)), inline=True)
+        embed.add_field(name="Overlapping Names", value=str(len(overlap)), inline=True)
+
+        if overlap:
+            text = "\n".join([f"• {name}" for name in overlap[:20]])
+            if len(overlap) > 20:
+                text += f"\n• ... and {len(overlap) - 20} more"
+            embed.add_field(name="Overlap List", value=text, inline=False)
+        else:
+            embed.add_field(name="Overlap List", value="None detected", inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        logger.error(f"Failed to debug command registration: {e}")
+        await interaction.followup.send(f"❌ Failed to debug command registration: {e}", ephemeral=True)
 
 
 @bot.tree.command(
