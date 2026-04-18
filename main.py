@@ -85,16 +85,15 @@ async def on_ready():
     """When the bot is ready, sync commands and initialize database."""
     logger.info(f"Logged in as {bot.user}")
     try:
-        # Global sync
+        # Use global commands as the single source of truth.
         synced = await bot.tree.sync()
         logger.info(f"Globally synced {len(synced)} command(s)")
-        
-        # Clear guild-specific commands to fix "doubled" commands 
-        # (they were showing up once from global, once from guild)
+
+        # Remove guild-specific command copies to prevent doubled command entries.
         for guild in bot.guilds:
             bot.tree.clear_commands(guild=guild)
-            await bot.tree.sync(guild=guild)
-            logger.info(f"Cleared guild-specific commands for {guild.name} to prevent duplicates")
+            guild_synced = await bot.tree.sync(guild=guild)
+            logger.info(f"Cleared guild-specific commands for {guild.name}; remaining guild command count: {len(guild_synced)}")
     except Exception as e:
         logger.error(f"Failed to sync commands: {e}")
     
@@ -136,14 +135,17 @@ async def sync_commands(interaction: discord.Interaction):
         return
 
     try:
-        bot.tree.copy_global_to(guild=interaction.guild)
-        synced = await bot.tree.sync(guild=interaction.guild)
+        # Deduplicate by clearing guild-specific commands and syncing globals.
+        bot.tree.clear_commands(guild=interaction.guild)
+        await bot.tree.sync(guild=interaction.guild)
+        synced = await bot.tree.sync()
         await interaction.followup.send(
-            f"✅ Successfully synced {len(synced)} command(s) to this server.",
+            f"✅ Synced {len(synced)} global command(s) and removed duplicated guild copies."
+            " If commands are newly added, Discord may take a short time to propagate globally.",
             ephemeral=True,
         )
         logger.info(
-            "Forced sync of %s commands to guild %s by %s",
+            "Forced global sync of %s commands and cleared guild copies in guild %s by %s",
             len(synced),
             interaction.guild.id,
             interaction.user,
