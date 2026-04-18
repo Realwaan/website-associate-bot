@@ -1455,7 +1455,7 @@ async def scan_project(interaction: discord.Interaction, path: str, folder: str,
     description="Scan full project and generate a roadmap + suggestions (PM only)"
 )
 @app_commands.describe(
-    path="Absolute path to the project folder to scan (e.g. F:\\my-project)",
+    path="Absolute folder path OR HTTPS Git repo URL to scan",
     folder="Output folder name in tickets/ for roadmap and generated tickets",
     threshold="Line count threshold for large file detection (default: 300)",
     generate_tickets="Also generate issue ticket files in the same folder (default: true)"
@@ -1475,26 +1475,57 @@ async def scan_roadmap(
             await interaction.followup.send("❌ Only Project Managers can generate roadmaps. Use `/set-role pm` first.")
             return
 
-        project_path = Path(path)
-        if not project_path.exists() or not project_path.is_dir():
-            await interaction.followup.send(f"❌ Path not found or not a directory: `{path}`")
-            return
+        source_label = path
+        if path.startswith("http://") or path.startswith("https://"):
+            await interaction.followup.send(f"🌐 Cloning repository for roadmap scan: `{path}`")
+            with tempfile.TemporaryDirectory(prefix="roadmap-scan-") as tmp:
+                clone_target = Path(tmp) / "repo"
+                clone_proc = subprocess.run(
+                    ["git", "clone", "--depth", "1", path, str(clone_target)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=240,
+                )
 
-        await interaction.followup.send(f"🧭 Building roadmap from `{path}`... this may take a moment.")
+                if clone_proc.returncode != 0:
+                    stderr = (clone_proc.stderr or "").strip()
+                    short_error = stderr[:900] if stderr else "Unknown clone error"
+                    await interaction.followup.send(
+                        "❌ Failed to clone repository. Ensure URL is valid and accessible from cloud runtime.\n"
+                        f"Details: `{short_error}`"
+                    )
+                    return
 
-        result = build_project_roadmap(
-            project_path=str(project_path),
-            output_folder=folder,
-            tickets_dir=TICKETS_DIR,
-            ignore_dirs=SCAN_IGNORE_DIRS,
-            file_extensions=SCAN_FILE_EXTENSIONS,
-            large_file_threshold=threshold,
-            generate_issue_tickets=generate_tickets,
-        )
+                result = build_project_roadmap(
+                    project_path=str(clone_target),
+                    output_folder=folder,
+                    tickets_dir=TICKETS_DIR,
+                    ignore_dirs=SCAN_IGNORE_DIRS,
+                    file_extensions=SCAN_FILE_EXTENSIONS,
+                    large_file_threshold=threshold,
+                    generate_issue_tickets=generate_tickets,
+                )
+        else:
+            project_path = Path(path)
+            if not project_path.exists() or not project_path.is_dir():
+                await interaction.followup.send(f"❌ Path not found or not a directory: `{path}`")
+                return
+
+            await interaction.followup.send(f"🧭 Building roadmap from `{path}`... this may take a moment.")
+            result = build_project_roadmap(
+                project_path=str(project_path),
+                output_folder=folder,
+                tickets_dir=TICKETS_DIR,
+                ignore_dirs=SCAN_IGNORE_DIRS,
+                file_extensions=SCAN_FILE_EXTENSIONS,
+                large_file_threshold=threshold,
+                generate_issue_tickets=generate_tickets,
+            )
 
         embed = discord.Embed(
             title="🧭 Roadmap Generated",
-            description=f"Scanned `{path}` and built execution roadmap",
+            description=f"Scanned `{source_label}` and built execution roadmap",
             color=discord.Color.green(),
         )
         embed.add_field(name="Scanned Files", value=str(result.total_files_scanned), inline=True)
@@ -1527,6 +1558,8 @@ async def scan_roadmap(
         )
     except FileNotFoundError as e:
         await interaction.followup.send(f"❌ {e}")
+    except subprocess.TimeoutExpired:
+        await interaction.followup.send("❌ Repository clone timed out. Try a smaller repo or use `/scan-repo` with a specific branch.")
     except Exception as e:
         logger.error(f"Error generating roadmap: {e}")
         await interaction.followup.send(f"❌ Error generating roadmap: {e}")
