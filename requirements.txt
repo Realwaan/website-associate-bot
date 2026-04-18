@@ -1,5 +1,5 @@
 discord.py>=2.7.1
-audioop-lts>=0.2.2
+audioop-lts>=0.2.2; python_version >= "3.13"
 python-dotenv>=1.0.0
 psycopg2-binary>=2.9.9
 Flask>=3.0.0
