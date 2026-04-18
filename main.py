@@ -5,6 +5,9 @@ from discord import app_commands
 import logging
 import os
 import re
+import tempfile
+import subprocess
+from urllib.parse import urlparse
 from datetime import datetime, time, timezone, timedelta
 from config import DISCORD_TOKEN, TICKETS_DIR, SCAN_IGNORE_DIRS, SCAN_FILE_EXTENSIONS, SCAN_LARGE_FILE_THRESHOLD
 from database import (
@@ -21,6 +24,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 from scan_project import scan_and_generate
+from roadmap_builder import build_project_roadmap
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -1209,6 +1213,12 @@ async def show_help(interaction: discord.Interaction):
                   "Creates threads for each markdown file.\n" +
                   "**`/rebuild-db <folder> <channel>`**\n" +
                   "Rebuild database entries from existing threads in a channel.\n" +
+                  "**`/scan-project <path> <folder> [threshold]`**\n" +
+                  "Scan a codebase and generate issue-based ticket files.\n" +
+                  "**`/scan-roadmap <path> <folder> [threshold] [generate_tickets]`**\n" +
+                  "Generate a full-project roadmap with prioritized milestones and suggestions.\n" +
+                  "**`/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]`**\n" +
+                  "Cloud-safe scan by cloning a repository URL before analysis.\n" +
                   "*Only Project Managers can use this*\n" +
                   "`/load-tickets support #support-channel`",
             inline=False
@@ -1309,6 +1319,9 @@ async def show_help(interaction: discord.Interaction):
             name="🔧 Project Manager (Admin)",
             value="✓ `/load-tickets` - Load tickets into channels\n" +
                   "✓ `/rebuild-db` - Rebuild database from existing threads\n" +
+                  "✓ `/scan-project` - Scan local/runtime-accessible folder\n" +
+                  "✓ `/scan-roadmap` - Build roadmap from local/runtime-accessible folder\n" +
+                  "✓ `/scan-repo` - Clone and scan repository URL (cloud-safe)\n" +
                   "✓ `/claim` - Claim tickets (like Dev)\n" +
                   "✓ `/resolved` - Submit for review (like Dev)\n" +
                   "✓ `/reviewed` - Approve tickets (like QA)\n" +
@@ -1433,6 +1446,205 @@ async def scan_project(interaction: discord.Interaction, path: str, folder: str,
     except Exception as e:
         logger.error(f"Error scanning project: {e}")
         await interaction.followup.send(f"❌ Error scanning project: {e}")
+
+
+@bot.tree.command(
+    name="scan-roadmap",
+    description="Scan full project and generate a roadmap + suggestions (PM only)"
+)
+@app_commands.describe(
+    path="Absolute path to the project folder to scan (e.g. F:\\my-project)",
+    folder="Output folder name in tickets/ for roadmap and generated tickets",
+    threshold="Line count threshold for large file detection (default: 300)",
+    generate_tickets="Also generate issue ticket files in the same folder (default: true)"
+)
+async def scan_roadmap(
+    interaction: discord.Interaction,
+    path: str,
+    folder: str,
+    threshold: int = SCAN_LARGE_FILE_THRESHOLD,
+    generate_tickets: bool = True,
+):
+    """Generate a project roadmap from scanner findings. Only PMs can use this command."""
+    await safe_defer(interaction)
+
+    try:
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can generate roadmaps. Use `/set-role pm` first.")
+            return
+
+        project_path = Path(path)
+        if not project_path.exists() or not project_path.is_dir():
+            await interaction.followup.send(f"❌ Path not found or not a directory: `{path}`")
+            return
+
+        await interaction.followup.send(f"🧭 Building roadmap from `{path}`... this may take a moment.")
+
+        result = build_project_roadmap(
+            project_path=str(project_path),
+            output_folder=folder,
+            tickets_dir=TICKETS_DIR,
+            ignore_dirs=SCAN_IGNORE_DIRS,
+            file_extensions=SCAN_FILE_EXTENSIONS,
+            large_file_threshold=threshold,
+            generate_issue_tickets=generate_tickets,
+        )
+
+        embed = discord.Embed(
+            title="🧭 Roadmap Generated",
+            description=f"Scanned `{path}` and built execution roadmap",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Scanned Files", value=str(result.total_files_scanned), inline=True)
+        embed.add_field(name="Issues Found", value=str(result.total_issues), inline=True)
+        embed.add_field(name="Tickets Generated", value=str(result.total_tickets), inline=True)
+        embed.add_field(name="Roadmap File", value=f"`tickets/{folder}/ROADMAP.md`", inline=False)
+
+        if result.top_categories:
+            top = "\n".join([f"• {name}: {count}" for name, count in result.top_categories[:5]])
+            embed.add_field(name="Top Findings", value=top, inline=False)
+
+        if result.suggested_features:
+            suggestions = "\n".join([f"• {item}" for item in result.suggested_features[:4]])
+            embed.add_field(name="Suggested Features", value=suggestions, inline=False)
+
+        embed.add_field(
+            name="Next Step",
+            value=f"Review `tickets/{folder}/ROADMAP.md`, then run `/load-tickets {folder} #channel`.",
+            inline=False,
+        )
+
+        await interaction.followup.send(embed=embed)
+        logger.info(
+            "Roadmap generated for %s: files=%s issues=%s tickets=%s folder=%s",
+            path,
+            result.total_files_scanned,
+            result.total_issues,
+            result.total_tickets,
+            folder,
+        )
+    except FileNotFoundError as e:
+        await interaction.followup.send(f"❌ {e}")
+    except Exception as e:
+        logger.error(f"Error generating roadmap: {e}")
+        await interaction.followup.send(f"❌ Error generating roadmap: {e}")
+
+
+def _repo_default_folder(repo_url: str) -> str:
+    """Create a safe default folder name from repository URL."""
+    parsed = urlparse(repo_url)
+    name = Path(parsed.path).name or "repo-scan"
+    if name.endswith(".git"):
+        name = name[:-4]
+    name = re.sub(r"[^a-zA-Z0-9_-]", "-", name).strip("-")
+    return name.lower() or "repo-scan"
+
+
+@bot.tree.command(
+    name="scan-repo",
+    description="Clone and scan a Git repo URL in cloud-safe mode (PM only)"
+)
+@app_commands.describe(
+    repo_url="Git repository URL (HTTPS)",
+    folder="Output folder name in tickets/ (optional)",
+    branch="Branch to scan (optional, default: repo default branch)",
+    threshold="Line count threshold for large file detection (default: 300)",
+    generate_tickets="Also generate issue ticket files in the same folder (default: true)"
+)
+async def scan_repo(
+    interaction: discord.Interaction,
+    repo_url: str,
+    folder: str | None = None,
+    branch: str | None = None,
+    threshold: int = SCAN_LARGE_FILE_THRESHOLD,
+    generate_tickets: bool = True,
+):
+    """Clone a repo to temp storage and run roadmap scanner. Only PMs can use this command."""
+    await safe_defer(interaction)
+
+    try:
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can scan repositories. Use `/set-role pm` first.")
+            return
+
+        if not repo_url.startswith("http://") and not repo_url.startswith("https://"):
+            await interaction.followup.send("❌ Please provide a valid HTTP/HTTPS Git repository URL.")
+            return
+
+        output_folder = folder or _repo_default_folder(repo_url)
+        await interaction.followup.send(f"🌐 Cloning and scanning repository: `{repo_url}`")
+
+        with tempfile.TemporaryDirectory(prefix="repo-scan-") as tmp:
+            clone_target = Path(tmp) / "repo"
+            clone_cmd = ["git", "clone", "--depth", "1"]
+            if branch:
+                clone_cmd.extend(["--branch", branch])
+            clone_cmd.extend([repo_url, str(clone_target)])
+
+            clone_proc = subprocess.run(
+                clone_cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=240,
+            )
+
+            if clone_proc.returncode != 0:
+                stderr = (clone_proc.stderr or "").strip()
+                short_error = stderr[:900] if stderr else "Unknown clone error"
+                await interaction.followup.send(
+                    "❌ Failed to clone repository. Ensure URL is valid and accessible from cloud runtime.\n"
+                    f"Details: `{short_error}`"
+                )
+                return
+
+            result = build_project_roadmap(
+                project_path=str(clone_target),
+                output_folder=output_folder,
+                tickets_dir=TICKETS_DIR,
+                ignore_dirs=SCAN_IGNORE_DIRS,
+                file_extensions=SCAN_FILE_EXTENSIONS,
+                large_file_threshold=threshold,
+                generate_issue_tickets=generate_tickets,
+            )
+
+        embed = discord.Embed(
+            title="🌐 Repo Scan Complete",
+            description=f"Scanned `{repo_url}`",
+            color=discord.Color.teal(),
+        )
+        embed.add_field(name="Scanned Files", value=str(result.total_files_scanned), inline=True)
+        embed.add_field(name="Issues Found", value=str(result.total_issues), inline=True)
+        embed.add_field(name="Tickets Generated", value=str(result.total_tickets), inline=True)
+        embed.add_field(name="Output Folder", value=f"`tickets/{output_folder}/`", inline=False)
+        embed.add_field(name="Roadmap File", value=f"`tickets/{output_folder}/ROADMAP.md`", inline=False)
+
+        if result.top_categories:
+            top = "\n".join([f"• {name}: {count}" for name, count in result.top_categories[:5]])
+            embed.add_field(name="Top Findings", value=top, inline=False)
+
+        embed.add_field(
+            name="Next Step",
+            value=f"Review `tickets/{output_folder}/ROADMAP.md`, then run `/load-tickets {output_folder} #channel`.",
+            inline=False,
+        )
+
+        await interaction.followup.send(embed=embed)
+        logger.info(
+            "Repo scan complete: repo=%s files=%s issues=%s tickets=%s folder=%s",
+            repo_url,
+            result.total_files_scanned,
+            result.total_issues,
+            result.total_tickets,
+            output_folder,
+        )
+    except subprocess.TimeoutExpired:
+        await interaction.followup.send("❌ Repository clone timed out. Try a smaller repo or specify a branch.")
+    except FileNotFoundError:
+        await interaction.followup.send("❌ Git is not available in this runtime. Install git in deployment image to use `/scan-repo`.")
+    except Exception as e:
+        logger.error(f"Error scanning repository URL: {e}")
+        await interaction.followup.send(f"❌ Error scanning repository URL: {e}")
 
 
 @bot.tree.command(

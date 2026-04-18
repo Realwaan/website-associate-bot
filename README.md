@@ -52,6 +52,21 @@ The `/scan-project` command walks an external codebase and detects:
 
 Issues are grouped by area and category, then written as ticket `.md` files ready to load with `/load-tickets`.
 
+### Roadmap Generator
+The `/scan-roadmap` command scans the full project and creates:
+- `tickets/<folder>/ROADMAP.md` with prioritized milestones
+- Suggested product/engineering improvements based on findings
+- Optional issue ticket generation in the same folder for execution
+
+This helps PMs turn raw scanner findings into a usable roadmap with clear sequencing.
+
+### Cloud-Safe Repository Scanner
+If your bot is deployed in cloud (Render), it cannot access local paths like `F:\...` from your machine.
+Use `/scan-repo` instead:
+- Clones an HTTPS Git repository URL into temporary runtime storage
+- Scans the cloned codebase
+- Generates roadmap and optional issue tickets under `tickets/<folder>/`
+
 ### Scheduled Summaries
 A daily task posts a ticket summary grouped by status to a channel set with `/setreminderschannel`. Runs at 8:00 AM PH Time (00:00 UTC).
 
@@ -263,6 +278,8 @@ In Render logs, confirm:
 | `/load-tickets <folder> <channel>` | Load markdown files from a folder into a channel as threads |
 | `/rebuild-db <folder> <channel>` | Rebuild database entries from existing threads (recovery tool) |
 | `/scan-project <path> <folder> [threshold]` | Scan a project directory for issues and auto-generate ticket files |
+| `/scan-roadmap <path> <folder> [threshold] [generate_tickets]` | Scan whole project and generate roadmap markdown with suggested improvements |
+| `/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]` | Cloud-safe scan by cloning a repo URL and generating roadmap/tickets |
 
 ### Developer Commands (Use Inside a Thread)
 
@@ -420,6 +437,10 @@ website-associate-bot/
 - Make sure the project path is absolute (e.g., `F:\my-project`).
 - Check `config.py` to confirm file extensions and ignored directories match your project.
 - Adjust the `threshold` parameter if your codebase uses larger files intentionally.
+
+**Cloud bot cannot scan local machine path:**
+- This is expected for Render/containers; cloud runtime cannot read your local `F:\` drive.
+- Use `/scan-repo` with a Git URL, or run scanner locally and push generated ticket files to the deployed bot repository.
 
 ---
 
