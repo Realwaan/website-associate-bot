@@ -132,6 +132,139 @@ def _suggest_features(category_counts: dict[str, int], extension_counts: dict[st
     return deduped[:6]
 
 
+def _pick_most_impactful_feature(
+    category_counts: dict[str, int],
+    extension_counts: dict[str, int],
+) -> dict[str, object]:
+    """Select one high-impact feature aligned to scan findings and constraints."""
+
+    candidates = [
+        {
+            "key": "hardcoded-secret",
+            "title": "Secrets Health Check Command",
+            "description": "Add a command that validates required environment variables before deploy/runtime actions.",
+            "weight": 12,
+            "tasks": [
+                "Define a required-variables manifest in config and environment docs.",
+                "Implement a bot command that checks variable presence and basic format.",
+                "Return safe, non-secret output (missing names only, never values).",
+                "Wire command access to PM/admin roles and add usage guidance.",
+                "Add tests for complete, partial, and missing-env scenarios.",
+            ],
+            "scope_boundaries": [
+                "No secret rotation or vault integration.",
+                "No automatic environment mutation/fixes.",
+                "No deployment pipeline redesign.",
+            ],
+        },
+        {
+            "key": "large-file",
+            "title": "Module Refactor Tracking Board",
+            "description": "Add automated progress tracking for oversized-module refactors to reduce delivery risk.",
+            "weight": 8,
+            "tasks": [
+                "Define thresholds and metadata for large-file refactor tickets.",
+                "Generate a compact markdown board from scanner results grouped by area.",
+                "Link each item to ticket status and owner for execution visibility.",
+                "Add a refresh step to update board after each scan cycle.",
+                "Validate board output with existing SideQuest roadmap format.",
+            ],
+            "scope_boundaries": [
+                "No automatic code refactor generation.",
+                "No changes to ticket workflow states or role model.",
+                "No UI dashboard outside markdown/report files.",
+            ],
+        },
+        {
+            "key": "skipped-test",
+            "title": "Skipped-Test Quality Gate",
+            "description": "Add a quality gate that flags or blocks release readiness when skipped tests are detected.",
+            "weight": 9,
+            "tasks": [
+                "Define release-readiness rules for skipped tests and acceptable exceptions.",
+                "Implement scanner aggregation for skipped tests by area and severity.",
+                "Expose a command/report that surfaces gate status clearly.",
+                "Add override documentation with explicit PM approval trail.",
+                "Add tests for pass/fail/override gate behavior.",
+            ],
+            "scope_boundaries": [
+                "No full CI/CD platform migration.",
+                "No test framework rewrite.",
+                "No performance benchmarking expansion.",
+            ],
+        },
+        {
+            "key": "todo",
+            "title": "Technical Debt Trend Report",
+            "description": "Add a report that tracks TODO/FIXME backlog trends to guide incremental cleanup.",
+            "weight": 5,
+            "tasks": [
+                "Normalize TODO/FIXME finding categories and metadata.",
+                "Build a trend summary grouped by folder and age.",
+                "Publish the report as markdown alongside roadmap outputs.",
+                "Add simple thresholds for warning escalation.",
+                "Add tests for trend calculations and markdown rendering.",
+            ],
+            "scope_boundaries": [
+                "No automatic TODO deletion or code edits.",
+                "No mandatory deadline enforcement workflow.",
+                "No cross-repo aggregation.",
+            ],
+        },
+    ]
+
+    has_web_stack = any(ext in extension_counts for ext in (".ts", ".tsx", ".js", ".jsx", ".html", ".css"))
+    has_python = ".py" in extension_counts
+
+    best = None
+    best_score = -1
+
+    for candidate in candidates:
+        score = category_counts.get(candidate["key"], 0) * candidate["weight"]
+
+        # Slightly favor features aligned to current stack.
+        if candidate["key"] == "large-file" and has_web_stack:
+            score += 3
+        if candidate["key"] in ("hardcoded-secret", "todo", "skipped-test") and has_python:
+            score += 2
+
+        if score > best_score:
+            best = candidate
+            best_score = score
+
+    if not best:
+        return {
+            "title": "Product Health Baseline Report",
+            "description": "Create a baseline health report from current scan findings.",
+            "justification": "This keeps improvements scoped to existing project goals by prioritizing measurable risk reduction before adding new product surface area.",
+            "tasks": [
+                "Aggregate findings by category and directory.",
+                "Generate markdown output with prioritized remediation order.",
+                "Include owner/status placeholders for execution tracking.",
+            ],
+            "scope_boundaries": [
+                "No architecture rewrite.",
+                "No workflow state changes.",
+                "No new deployment dependencies.",
+            ],
+        }
+
+    top_driver = category_counts.get(best["key"], 0)
+    justification = (
+        f"This is the best choice because it directly targets the highest-impact scan pressure "
+        f"for `{best['key']}` ({top_driver} finding(s)) while staying inside current roadmap goals "
+        f"of stability, quality, and predictable delivery."
+    )
+
+    return {
+        "title": best["title"],
+        "description": best["description"],
+        "justification": justification,
+        "tasks": best["tasks"],
+        "scope_boundaries": best["scope_boundaries"],
+    }
+
+
 def _build_roadmap_markdown(
     project_path: str,
     output_folder: str,
@@ -141,6 +274,7 @@ def _build_roadmap_markdown(
     top_dirs: list[tuple[str, int]],
     top_categories: list[tuple[str, int]],
     suggestions: list[str],
+    impactful_feature: dict[str, object],
     ticket_count: int,
 ) -> str:
     """Create a markdown roadmap document."""
@@ -151,6 +285,10 @@ def _build_roadmap_markdown(
     dir_lines = "\n".join([f"- `{d}`: {count} scanned file(s)" for d, count in top_dirs]) or "- No directories scanned"
     profile_lines = "\n".join([f"- {p}" for p in profile])
     suggestions_lines = "\n".join([f"{idx}. {item}" for idx, item in enumerate(suggestions, start=1)])
+    feature_tasks = impactful_feature.get("tasks", [])
+    feature_scope = impactful_feature.get("scope_boundaries", [])
+    feature_tasks_lines = "\n".join([f"1. {task}" for task in feature_tasks]) or "1. No tasks specified"
+    feature_scope_lines = "\n".join([f"- {item}" for item in feature_scope]) or "- No boundaries specified"
 
     hardcoded = category_counts.get("hardcoded-secret", 0)
     empty_catch = category_counts.get("empty-catch", 0)
@@ -181,6 +319,26 @@ Generated from automated scan of `{project_path}` on **{now}**.
 ## Suggested Feature Improvements
 
 {suggestions_lines}
+
+## Most Impactful Feature To Add
+
+### Feature
+
+**{impactful_feature.get("title", "N/A")}**
+
+{impactful_feature.get("description", "")}
+
+### Why This Is The Best Choice
+
+{impactful_feature.get("justification", "")}
+
+### Necessary Tasks
+
+{feature_tasks_lines}
+
+### Scope Boundaries
+
+{feature_scope_lines}
 
 ## Roadmap (Execution Order)
 
@@ -245,6 +403,7 @@ def build_project_roadmap(
     top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:8]
     top_dirs = sorted(dir_counts.items(), key=lambda x: x[1], reverse=True)[:8]
     suggestions = _suggest_features(dict(category_counts), ext_counts, total_files)
+    impactful_feature = _pick_most_impactful_feature(dict(category_counts), ext_counts)
 
     out_dir = Path(tickets_dir) / output_folder
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -259,6 +418,7 @@ def build_project_roadmap(
         top_dirs=top_dirs,
         top_categories=top_categories,
         suggestions=suggestions,
+        impactful_feature=impactful_feature,
         ticket_count=len(generated_files),
     )
 
