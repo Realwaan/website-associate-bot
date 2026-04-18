@@ -538,3 +538,33 @@ def get_threads_by_status() -> dict:
             status_groups[status].append(dict(row))
 
     return status_groups
+
+
+def get_stale_threads(threshold_hours: int = 48) -> list:
+    """Get threads that have remained in active statuses beyond threshold hours."""
+    conn = get_connection()
+    if not conn:
+        return []
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            thread_id,
+            ticket_name,
+            folder,
+            channel_id,
+            status,
+            created_at,
+            FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) / 3600) AS age_hours
+        FROM threads
+        WHERE status IN ('OPEN', 'CLAIMED', 'PENDING-REVIEW')
+          AND EXTRACT(EPOCH FROM (NOW() - created_at)) >= (%s * 3600)
+        ORDER BY created_at ASC
+        """,
+        (max(1, int(threshold_hours)),),
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

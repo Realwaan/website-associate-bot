@@ -268,6 +268,7 @@ def _pick_most_impactful_feature(
 def _build_roadmap_markdown(
     project_path: str,
     output_folder: str,
+    scan_source: str,
     total_files: int,
     profile: list[str],
     category_counts: dict[str, int],
@@ -299,7 +300,7 @@ def _build_roadmap_markdown(
 
     return f"""# Project Roadmap: {output_folder}
 
-Generated from automated scan of `{project_path}` on **{now}**.
+Generated from automated scan of `{scan_source}` on **{now}**.
 
 ## Snapshot
 
@@ -372,6 +373,7 @@ Generated from automated scan of `{project_path}` on **{now}**.
 def build_project_roadmap(
     project_path: str,
     output_folder: str,
+    scan_source: str | None = None,
     tickets_dir: str = "tickets",
     ignore_dirs: set[str] | None = None,
     file_extensions: set[str] | None = None,
@@ -412,6 +414,7 @@ def build_project_roadmap(
     roadmap_md = _build_roadmap_markdown(
         project_path=project_path,
         output_folder=output_folder,
+        scan_source=scan_source or project_path,
         total_files=total_files,
         profile=profile,
         category_counts=dict(category_counts),

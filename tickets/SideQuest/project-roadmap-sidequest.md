@@ -62,3 +62,40 @@ The current SideQuest backlog is heavily concentrated on oversized modules and l
 - Shared `lib` modules are refactored with no broken imports.
 - UI/component refactors preserve existing behavior in key user flows.
 - A re-scan produces fewer large-file/debug findings than the current baseline.
+
+---
+
+## Next Feature Roadmap (No Scope Creep)
+
+### Feature: Stale Ticket Reminder Digest
+
+Add a daily digest that highlights tickets stuck in `OPEN`, `CLAIMED`, or `PENDING-REVIEW` longer than a configurable threshold (for example, 48 hours). This keeps momentum high and helps PMs unblock work without adding a new dashboard or changing the core workflow.
+
+### Why This Is The Best Next Feature
+
+- High impact with low risk: it improves execution discipline using data the bot already has.
+- No workflow disruption: teams keep the current claim -> review -> close process.
+- Fast to ship: mostly query + formatting + one scheduled message path.
+
+### Implementation Tasks
+
+1. Add a DB query helper to return stale tickets by status and age.
+2. Add a setting key for stale threshold hours (default: 48).
+3. Extend the existing daily summary task to include a "Stale Tickets" section.
+4. Include ticket thread mentions and age in hours/days for quick triage.
+5. Add a PM command to update threshold (for example `/set-stale-threshold`).
+6. Add basic tests for empty, partial, and populated stale-ticket outputs.
+
+### Scope Boundaries
+
+- No new web UI or external dashboard.
+- No automatic reassignment, escalation DMs, or role changes.
+- No AI prioritization engine.
+- No new ticket statuses.
+- No changes to developer/QA leaderboard logic.
+
+### Done Criteria
+
+- Daily summary includes stale-ticket section when stale items exist.
+- PM can configure threshold without redeploy.
+- Output is readable in Discord threads/channels and stays under message limits.

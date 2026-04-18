@@ -339,6 +339,9 @@ def generate_tickets(
 
     generated: list[str] = []
 
+    # Track canonical filenames generated in this run to avoid accidental duplicates.
+    generated_names: set[str] = set()
+
     for key, issues in grouped.items():
         area, category, parent_dir = key.split("|", 2)
         parent_slug = _slugify(parent_dir.replace("/", "-").replace("\\", "-"))
@@ -347,9 +350,25 @@ def generate_tickets(
         label_slug = _slugify(_CATEGORY_LABELS.get(category, category))
         filename = f"{area}-{label_slug}-{parent_slug}.md" if parent_slug != "root" else f"{area}-{label_slug}.md"
 
-        # De-duplicate filename
-        if (out_path / filename).exists():
-            filename = f"{area}-{label_slug}-{parent_slug}-extra.md"
+        # Keep scanner output idempotent: always target the canonical filename.
+        # If legacy duplicate files (e.g. *-extra.md) exist from older scans,
+        # remove them so repeated scans don't multiply loadable tickets.
+        if parent_slug != "root":
+            legacy_extra = out_path / f"{area}-{label_slug}-{parent_slug}-extra.md"
+        else:
+            legacy_extra = out_path / f"{area}-{label_slug}-extra.md"
+
+        if legacy_extra.exists():
+            try:
+                legacy_extra.unlink()
+                logger.info(f"Removed legacy duplicate ticket: {legacy_extra.name}")
+            except OSError as e:
+                logger.warning(f"Could not remove legacy duplicate ticket {legacy_extra.name}: {e}")
+
+        if filename in generated_names:
+            logger.warning(f"Skipping duplicate canonical ticket key in this scan run: {filename}")
+            continue
+        generated_names.add(filename)
 
         # Build ticket content
         title = _CATEGORY_LABELS.get(category, category.title())

@@ -17,7 +17,7 @@ from database import (
     get_leaderboard_dev, get_leaderboard_qa,
     set_user_role, get_user_roles, has_role,
     is_ticket_loaded, mark_ticket_loaded, get_loaded_tickets, remove_thread_record,
-    set_setting, get_setting, get_threads_by_status
+    set_setting, get_setting, get_threads_by_status, get_stale_threads
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
@@ -368,6 +368,58 @@ def format_ticket_list(tickets: list) -> str:
     return "\n".join(lines)
 
 
+def format_stale_ticket_list(tickets: list) -> str:
+    """Format stale tickets with status and age for summary messages."""
+    if not tickets:
+        return "None"
+
+    lines = []
+    for t in tickets:
+        age_hours = int(t.get('age_hours') or 0)
+        if age_hours >= 24:
+            age_text = f"{age_hours // 24}d {age_hours % 24}h"
+        else:
+            age_text = f"{age_hours}h"
+
+        lines.append(
+            f"• {t['ticket_name']} [{t['status']}] (age: {age_text}) - <#{t['thread_id']}>"
+        )
+
+    return "\n".join(lines)
+
+
+@bot.tree.command(
+    name="setstalethreshold",
+    description="Set stale ticket threshold (hours) for daily summaries (PM only)"
+)
+@app_commands.describe(
+    hours="Mark tickets as stale after this many hours (min: 1, max: 336)"
+)
+async def set_stale_threshold(interaction: discord.Interaction, hours: int):
+    """Set stale ticket threshold used by daily summary digest."""
+    await safe_defer(interaction)
+
+    try:
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can set stale threshold.")
+            return
+
+        hours = max(1, min(hours, 336))
+        set_setting("stale_threshold_hours", str(hours))
+
+        embed = discord.Embed(
+            title="Stale Threshold Updated",
+            description=f"Tickets older than **{hours}** hour(s) in OPEN/CLAIMED/PENDING-REVIEW will be listed as stale.",
+            color=discord.Color.green(),
+        )
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Stale threshold set to {hours} hours by {interaction.user}")
+
+    except Exception as e:
+        logger.error(f"Error setting stale threshold: {e}")
+        await interaction.followup.send(f"❌ Error setting stale threshold: {e}")
+
+
 @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))  # 8 AM PH Time
 async def scheduled_ticket_summary():
     """Daily task to send ticket summary."""
@@ -389,6 +441,16 @@ async def scheduled_ticket_summary():
         
         # Get status groups
         status_groups = get_threads_by_status()
+
+        stale_threshold_str = get_setting("stale_threshold_hours")
+        stale_threshold_hours = 48
+        if stale_threshold_str:
+            try:
+                stale_threshold_hours = max(1, int(stale_threshold_str))
+            except ValueError:
+                stale_threshold_hours = 48
+
+        stale_tickets = get_stale_threads(stale_threshold_hours)
         
         # Format message
         message = "@everyone\n"
@@ -412,7 +474,11 @@ async def scheduled_ticket_summary():
         
         # Closed
         message += "🔴 **Closed**\n"
-        message += format_ticket_list(status_groups.get("CLOSED"))
+        message += format_ticket_list(status_groups.get("CLOSED")) + "\n\n"
+
+        # Stale tickets digest
+        message += f"⏰ **Stale Tickets ({stale_threshold_hours}h+)**\n"
+        message += format_stale_ticket_list(stale_tickets)
         
         # Send message (ensure it's not too long for one message, if it is, it will be truncated)
         if len(message) > 2000:
@@ -1444,6 +1510,7 @@ async def show_help(interaction: discord.Interaction):
                   "**`/setreminderschannel <channel>`** - Set channel for daily 8 AM summary (PM only)\n" +
                   "**`/ticket-folders`** - List all available ticket folders\n" +
                   "**`/archive-closed`** - Archive all closed threads in the channel (PM/Admin only)\n" +
+                  "**`/setstalethreshold <hours>`** - Set stale-ticket threshold for daily summary (PM only)\n" +
                   "**`/clear <amount>`** - Delete messages in the channel (PM/Admin only)\n" +
                   "**`/sync-commands`** - Force sync commands to this server (Admin only)\n" +
                   "**`/help`** - Show this help message",
@@ -1687,6 +1754,7 @@ async def scan_roadmap(
                 result = build_project_roadmap(
                     project_path=str(clone_target),
                     output_folder=folder,
+                    scan_source=source_label,
                     tickets_dir=TICKETS_DIR,
                     ignore_dirs=SCAN_IGNORE_DIRS,
                     file_extensions=SCAN_FILE_EXTENSIONS,
@@ -1703,6 +1771,7 @@ async def scan_roadmap(
             result = build_project_roadmap(
                 project_path=str(project_path),
                 output_folder=folder,
+                scan_source=source_label,
                 tickets_dir=TICKETS_DIR,
                 ignore_dirs=SCAN_IGNORE_DIRS,
                 file_extensions=SCAN_FILE_EXTENSIONS,
@@ -1823,6 +1892,7 @@ async def scan_repo(
             result = build_project_roadmap(
                 project_path=str(clone_target),
                 output_folder=output_folder,
+                scan_source=repo_url,
                 tickets_dir=TICKETS_DIR,
                 ignore_dirs=SCAN_IGNORE_DIRS,
                 file_extensions=SCAN_FILE_EXTENSIONS,
