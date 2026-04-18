@@ -16,7 +16,7 @@ from database import (
     decrement_developer_resolved, decrement_qa_reviewed,
     get_leaderboard_dev, get_leaderboard_qa,
     set_user_role, get_user_roles, has_role,
-    is_ticket_loaded, mark_ticket_loaded,
+    is_ticket_loaded, mark_ticket_loaded, get_loaded_tickets, remove_thread_record,
     set_setting, get_setting, get_threads_by_status
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
@@ -449,6 +449,82 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
         if not tickets:
             await interaction.followup.send(f"❌ No markdown files found in `{folder}/` folder")
             return
+
+        ticket_entries = []
+        ticket_filename_by_norm = {}
+        for ticket in tickets:
+            ticket_filename = ticket.get('name', '')
+            display_name = ticket.get('title') or ticket.get('name', '')
+            normalized_name = normalize_ticket_name(display_name)
+            ticket_entries.append({
+                "ticket": ticket,
+                "ticket_filename": ticket_filename,
+                "display_name": display_name,
+                "normalized_name": normalized_name,
+            })
+            if normalized_name and normalized_name not in ticket_filename_by_norm:
+                ticket_filename_by_norm[normalized_name] = ticket_filename
+
+        loaded_rows = get_loaded_tickets(folder)
+        loaded_by_filename = {row['ticket_filename']: row for row in loaded_rows}
+
+        active_threads = list(channel.threads)
+        archived_threads = []
+        try:
+            async for archived in channel.archived_threads(limit=None):
+                archived_threads.append(archived)
+        except Exception as e:
+            logger.warning(f"Could not fetch archived threads for dedupe in channel {channel.id}: {e}")
+
+        existing_threads_by_ticket = {}
+        for existing_thread in (active_threads + archived_threads):
+            _, parsed_ticket_name = parse_thread_name(existing_thread.name)
+            display_ticket_name = parsed_ticket_name or re.sub(r"^\[[^\]]+\]\s*", "", existing_thread.name).strip()
+            normalized_existing = normalize_ticket_name(display_ticket_name)
+            if normalized_existing in ticket_filename_by_norm:
+                existing_threads_by_ticket.setdefault(normalized_existing, []).append(existing_thread)
+
+        duplicates_removed_count = 0
+        duplicate_cleanup_failed_count = 0
+        for normalized_name, thread_group in list(existing_threads_by_ticket.items()):
+            if len(thread_group) <= 1:
+                continue
+
+            ticket_filename = ticket_filename_by_norm.get(normalized_name)
+            preferred_thread_id = None
+            if ticket_filename and ticket_filename in loaded_by_filename:
+                preferred_thread_id = loaded_by_filename[ticket_filename].get('thread_id')
+
+            keeper = None
+            if preferred_thread_id is not None:
+                keeper = next((t for t in thread_group if t.id == preferred_thread_id), None)
+            if keeper is None:
+                keeper = min(thread_group, key=lambda t: t.id)
+
+            duplicates = [t for t in thread_group if t.id != keeper.id]
+            for duplicate_thread in duplicates:
+                try:
+                    await duplicate_thread.delete(reason="Removing duplicate ticket thread")
+                except Exception:
+                    try:
+                        await duplicate_thread.edit(archived=True, locked=True)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to remove duplicate thread {duplicate_thread.id}: {cleanup_error}")
+                        duplicate_cleanup_failed_count += 1
+                        continue
+
+                remove_thread_record(duplicate_thread.id)
+                duplicates_removed_count += 1
+
+            existing_threads_by_ticket[normalized_name] = [keeper]
+
+            if ticket_filename:
+                mark_ticket_loaded(ticket_filename, folder, keeper.id, channel.id)
+                loaded_by_filename[ticket_filename] = {
+                    "ticket_filename": ticket_filename,
+                    "thread_id": keeper.id,
+                    "channel_id": channel.id,
+                }
         
         # Create threads for each ticket
         created_count = 0
@@ -483,17 +559,32 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
 
             return chunks
         
-        for ticket in tickets:
+        for entry in ticket_entries:
             try:
+                ticket = entry['ticket']
+                ticket_filename = entry['ticket_filename']
+                display_name = entry['display_name']
+                normalized_name = entry['normalized_name']
+
                 # Check if this ticket has already been loaded
-                ticket_filename = ticket.get('name', '')
-                if is_ticket_loaded(ticket_filename, folder):
+                existing_group = existing_threads_by_ticket.get(normalized_name, [])
+                if existing_group:
+                    canonical_thread = existing_group[0]
+                    mark_ticket_loaded(ticket_filename, folder, canonical_thread.id, channel.id)
+                    loaded_by_filename[ticket_filename] = {
+                        "ticket_filename": ticket_filename,
+                        "thread_id": canonical_thread.id,
+                        "channel_id": channel.id,
+                    }
+                    logger.info(f"Ticket already exists as thread {canonical_thread.id}: {ticket_filename} (skipping)")
+                    skipped_count += 1
+                    continue
+
+                if ticket_filename in loaded_by_filename or is_ticket_loaded(ticket_filename, folder):
                     logger.info(f"Ticket already loaded: {ticket_filename} (skipping)")
                     skipped_count += 1
                     continue
                 
-                # Use parsed title if available, otherwise use name
-                display_name = ticket.get('title') or ticket['name']
                 thread_name = f"[OPEN] {display_name}"
                 
                 # Create thread in the specified channel
@@ -513,6 +604,12 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
                 
                 # Mark ticket as loaded
                 mark_ticket_loaded(ticket_filename, folder, thread.id, channel.id)
+                loaded_by_filename[ticket_filename] = {
+                    "ticket_filename": ticket_filename,
+                    "thread_id": thread.id,
+                    "channel_id": channel.id,
+                }
+                existing_threads_by_ticket[normalized_name] = [thread]
                 
                 # Send plain sectioned messages instead of a single embed.
                 messages = []
@@ -540,6 +637,17 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
                     files_text = "\n".join([f"- {file}" for file in ticket['related_files']])
                     messages.extend(build_section_messages("Related Files", files_text))
 
+                # Fallback for roadmap-like markdown that does not use the
+                # standard ticket section headers (Problem/What to Fix/Acceptance Criteria).
+                if len(messages) == 1 and ticket.get('raw_content'):
+                    raw_content = ticket['raw_content'].strip()
+                    if raw_content:
+                        # Remove the first H1 and priority marker to avoid repeating the header.
+                        raw_content = re.sub(r"^#\s+.+?$", "", raw_content, count=1, flags=re.MULTILINE).strip()
+                        raw_content = re.sub(r"^\*\*\[(PRIORITY|CRITICAL)\]\*\*\s*$", "", raw_content, flags=re.MULTILINE).strip()
+                        if raw_content:
+                            messages.extend(build_section_messages("Details", raw_content))
+
                 for message in messages:
                     await thread.send(message)
                 
@@ -556,6 +664,10 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
             summary += f"\n⏭️ **{skipped_count}** ticket(s) already loaded (skipped)"
         if failed_count > 0:
             summary += f"\n⚠️ Failed to create **{failed_count}** thread(s)"
+        if duplicates_removed_count > 0:
+            summary += f"\n🧹 Removed **{duplicates_removed_count}** duplicate thread(s)"
+        if duplicate_cleanup_failed_count > 0:
+            summary += f"\n⚠️ Could not remove **{duplicate_cleanup_failed_count}** duplicate thread(s); check bot permissions"
         
         embed = discord.Embed(
             title="Tickets Loaded",

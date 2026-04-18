@@ -438,8 +438,23 @@ def mark_ticket_loaded(ticket_filename: str, folder: str, thread_id: int, channe
     cursor.execute("""
         INSERT INTO loaded_tickets (ticket_filename, folder, thread_id, channel_id)
         VALUES (%s, %s, %s, %s)
-        ON CONFLICT (ticket_filename, folder) DO NOTHING
+        ON CONFLICT (ticket_filename, folder) DO UPDATE SET
+            thread_id = EXCLUDED.thread_id,
+            channel_id = EXCLUDED.channel_id,
+            loaded_at = CURRENT_TIMESTAMP
     """, (ticket_filename, folder, thread_id, channel_id))
+
+    conn.commit()
+    conn.close()
+
+def remove_thread_record(thread_id: int):
+    """Remove a thread and any loaded-ticket mapping that points to it."""
+    conn = get_connection()
+    if not conn: return
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM loaded_tickets WHERE thread_id = %s", (thread_id,))
+    cursor.execute("DELETE FROM threads WHERE thread_id = %s", (thread_id,))
 
     conn.commit()
     conn.close()
