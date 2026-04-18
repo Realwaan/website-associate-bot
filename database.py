@@ -3,6 +3,7 @@ import os
 import logging
 from datetime import datetime
 import glob
+from pathlib import Path
 from urllib.parse import urlparse, unquote
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -100,11 +101,11 @@ def get_connection():
     # in DATABASE_URL (e.g. user can be 'postgres.<project_ref>').
     conn = psycopg2.connect(
         DATABASE_URL,
+        cursor_factory=DictCursor,
         sslmode='require',
         connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
         options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
     )
-    conn.cursor_factory = DictCursor
     return conn
 
 def init_db():
@@ -112,6 +113,9 @@ def init_db():
     if not DATABASE_URL:
         return
     conn = get_connection()
+    if not conn:
+        logger.error("Database initialization skipped because a connection could not be established.")
+        return
     cursor = conn.cursor()
 
     # Create migrations table if it doesn't exist
@@ -131,6 +135,9 @@ def init_db():
 def run_migrations():
     """Run all pending SQL migrations."""
     conn = get_connection()
+    if not conn:
+        logger.error("Migration run skipped because a connection could not be established.")
+        return
     cursor = conn.cursor()
 
     # Get applied migrations
@@ -138,7 +145,7 @@ def run_migrations():
     applied_migrations = {row['name'] for row in cursor.fetchall()}
 
     # Get all migration files
-    migration_files = sorted(glob.glob("migrations/*.sql"))
+    migration_files = sorted((Path(__file__).resolve().parent / "migrations").glob("*.sql"))
 
     for migration_file in migration_files:
         migration_name = os.path.basename(migration_file)
