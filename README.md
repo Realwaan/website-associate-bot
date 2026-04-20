@@ -56,9 +56,11 @@ Issues are grouped by area and category, then written as ticket `.md` files read
 The `/scan-roadmap` command scans the full project and creates:
 - `tickets/<folder>/ROADMAP.md` with prioritized milestones
 - Suggested product/engineering improvements based on findings
+- Full repository structure analysis (top-level components, risk, and feature map)
+- A 12-week (3-month) development roadmap with weekly progress targets
 - Optional issue ticket generation in the same folder for execution
 
-This helps PMs turn raw scanner findings into a usable roadmap with clear sequencing.
+This helps PMs turn raw scanner findings into a usable execution roadmap with clear sequencing across 3 months.
 
 ### Cloud-Safe Repository Scanner
 If your bot is deployed in cloud (Render), it cannot access local paths like `F:\...` from your machine.

@@ -1,8 +1,9 @@
-"""Project roadmap builder based on code scan findings.
+"""Project roadmap builder based on full repository analysis.
 
-Generates a roadmap markdown file with prioritized milestones and
-suggested features. Can also generate scanner ticket files in the same
-output folder to keep roadmap and execution tasks aligned.
+Scans the entire repository structure, analyzes each component and existing
+features, then generates a prioritized 12-week (3-month) development roadmap.
+It can also generate scanner ticket files in the same output folder to keep
+planning and execution aligned.
 """
 from __future__ import annotations
 
@@ -21,6 +22,20 @@ from scan_project import (
 )
 
 
+FEATURE_SIGNATURES: dict[str, tuple[str, ...]] = {
+    "Authentication & Accounts": ("auth", "login", "register", "signup", "password", "session"),
+    "User Profile": ("profile", "account", "avatar", "settings", "user"),
+    "Community & Social": ("community", "thread", "comment", "mention", "share", "report"),
+    "Notifications": ("notification", "alerts", "feed", "reminder"),
+    "Admin & Moderation": ("admin", "dashboard", "moderation", "rbac", "role", "permission"),
+    "Reports & Exports": ("report", "analytics", "stats", "pdf", "export"),
+    "Search & Discovery": ("search", "filter", "query", "leaderboard"),
+    "Media & Uploads": ("upload", "image", "photo", "video", "attachment"),
+    "Integrations & API": ("api", "webhook", "integration", "provider", "client"),
+    "Automation & Scheduling": ("cron", "schedule", "worker", "job", "task"),
+}
+
+
 @dataclass
 class RoadmapResult:
     """Result object returned by build_project_roadmap."""
@@ -28,9 +43,13 @@ class RoadmapResult:
     total_files_scanned: int
     total_issues: int
     total_tickets: int
+    total_components: int
+    roadmap_weeks: int
     roadmap_file: str
     generated_ticket_files: list[str]
     top_categories: list[tuple[str, int]]
+    top_components: list[tuple[str, int]]
+    detected_features: list[tuple[str, int]]
     suggested_features: list[str]
 
 
@@ -91,7 +110,132 @@ def _detect_project_profile(extension_counts: dict[str, int]) -> list[str]:
     return profile
 
 
-def _suggest_features(category_counts: dict[str, int], extension_counts: dict[str, int], total_files: int) -> list[str]:
+def _infer_component_type(component_name: str, ext_counts: Counter[str]) -> str:
+    """Infer component type based on name hints and dominant extensions."""
+
+    name = component_name.lower()
+    web_ext = ext_counts.get(".tsx", 0) + ext_counts.get(".ts", 0) + ext_counts.get(".jsx", 0) + ext_counts.get(".js", 0)
+    py_ext = ext_counts.get(".py", 0)
+    style_ext = ext_counts.get(".css", 0) + ext_counts.get(".scss", 0) + ext_counts.get(".html", 0)
+
+    if any(k in name for k in ("script", "migrations", "migration", "tool", "utils")):
+        return "automation"
+    if any(k in name for k in ("api", "server", "backend", "bot", "service")):
+        return "backend"
+    if any(k in name for k in ("client", "frontend", "web", "ui", "pages", "components")):
+        return "frontend"
+    if web_ext > 0 and py_ext > 0:
+        return "full-stack"
+    if web_ext + style_ext > py_ext and (web_ext + style_ext) > 0:
+        return "frontend"
+    if py_ext > 0:
+        return "backend"
+    return "shared"
+
+
+def _extract_feature_hits(rel_path: str) -> set[str]:
+    """Detect likely implemented features from file paths."""
+
+    value = rel_path.lower()
+    hits: set[str] = set()
+
+    for feature_name, keywords in FEATURE_SIGNATURES.items():
+        if any(keyword in value for keyword in keywords):
+            hits.add(feature_name)
+
+    return hits
+
+
+def _analyze_repository_components(
+    project_path: str,
+    ignore_dirs: set[str],
+    file_extensions: set[str],
+    issues_by_component: dict[str, int],
+) -> tuple[list[dict[str, object]], dict[str, int]]:
+    """Analyze repository structure and each top-level component."""
+
+    project = Path(project_path).resolve()
+    buckets: dict[str, dict[str, object]] = {}
+    feature_component_counts: Counter[str] = Counter()
+
+    for path in project.rglob("*"):
+        if not path.is_file():
+            continue
+
+        rel = path.relative_to(project)
+        parts = rel.parts
+
+        if any(p.startswith(".") for p in parts):
+            continue
+        if any(p in ignore_dirs for p in parts):
+            continue
+
+        ext = path.suffix.lower()
+        if ext not in file_extensions:
+            continue
+
+        component_name = parts[0] if len(parts) > 1 else "root"
+        rel_path = str(rel).replace("\\", "/")
+
+        if component_name not in buckets:
+            buckets[component_name] = {
+                "name": component_name,
+                "file_count": 0,
+                "ext_counts": Counter(),
+                "sample_files": [],
+                "features": set(),
+            }
+
+        comp = buckets[component_name]
+        comp["file_count"] += 1
+        comp["ext_counts"][ext] += 1
+
+        sample_files = comp["sample_files"]
+        if len(sample_files) < 5:
+            sample_files.append(rel_path)
+
+        comp["features"].update(_extract_feature_hits(rel_path))
+
+    components: list[dict[str, object]] = []
+    for component_name, data in buckets.items():
+        file_count = int(data["file_count"])
+        issue_count = issues_by_component.get(component_name, 0)
+        issue_density = issue_count / max(file_count, 1)
+
+        base_health = 100 - int(issue_density * 35) - min(15, file_count // 20)
+        if issue_count == 0:
+            base_health += 4
+        health_score = max(35, min(100, base_health))
+
+        ext_counts = data["ext_counts"]
+        dominant_exts = [ext for ext, _ in ext_counts.most_common(3)]
+        features = sorted(data["features"])
+        for feature in features:
+            feature_component_counts[feature] += 1
+
+        components.append(
+            {
+                "name": component_name,
+                "type": _infer_component_type(component_name, ext_counts),
+                "file_count": file_count,
+                "issue_count": issue_count,
+                "health_score": health_score,
+                "dominant_exts": dominant_exts,
+                "features": features,
+                "sample_files": data["sample_files"],
+            }
+        )
+
+    components.sort(key=lambda c: (int(c["issue_count"]), int(c["file_count"])), reverse=True)
+    return components, dict(feature_component_counts)
+
+
+def _suggest_features(
+    category_counts: dict[str, int],
+    extension_counts: dict[str, int],
+    total_files: int,
+    feature_component_counts: dict[str, int],
+) -> list[str]:
     """Generate practical feature/roadmap suggestions from findings."""
 
     suggestions: list[str] = []
@@ -117,24 +261,30 @@ def _suggest_features(category_counts: dict[str, int], extension_counts: dict[st
     if has_python:
         suggestions.append("Add automated lint/type checks for Python commands and scheduled jobs.")
 
+    if feature_component_counts.get("Community & Social", 0) > 0:
+        suggestions.append("Improve in-app moderation tooling and automate report triage for community features.")
+
+    if feature_component_counts.get("Reports & Exports", 0) > 0:
+        suggestions.append("Add scheduled exports and role-based report views to reduce manual PM operations.")
+
     if total_files >= 200:
         suggestions.append("Add a weekly architecture review note generated from scan hotspots to keep roadmap realistic.")
 
-    # Keep output focused and readable.
     deduped: list[str] = []
-    for s in suggestions:
-        if s not in deduped:
-            deduped.append(s)
+    for item in suggestions:
+        if item not in deduped:
+            deduped.append(item)
 
     if not deduped:
         deduped.append("Add a monthly product-health report combining issue trends, ticket throughput, and top risk areas.")
 
-    return deduped[:6]
+    return deduped[:8]
 
 
 def _pick_most_impactful_feature(
     category_counts: dict[str, int],
     extension_counts: dict[str, int],
+    feature_component_counts: dict[str, int],
 ) -> dict[str, object]:
     """Select one high-impact feature aligned to scan findings and constraints."""
 
@@ -159,15 +309,15 @@ def _pick_most_impactful_feature(
         },
         {
             "key": "large-file",
-            "title": "Module Refactor Tracking Board",
-            "description": "Add automated progress tracking for oversized-module refactors to reduce delivery risk.",
+            "title": "Component Refactor Progress Board",
+            "description": "Add automated progress tracking for oversized-module refactors by component to reduce delivery risk.",
             "weight": 8,
             "tasks": [
                 "Define thresholds and metadata for large-file refactor tickets.",
-                "Generate a compact markdown board from scanner results grouped by area.",
+                "Generate a compact markdown board grouped by component risk.",
                 "Link each item to ticket status and owner for execution visibility.",
                 "Add a refresh step to update board after each scan cycle.",
-                "Validate board output with existing SideQuest roadmap format.",
+                "Validate board output with existing roadmap ticket format.",
             ],
             "scope_boundaries": [
                 "No automatic code refactor generation.",
@@ -196,19 +346,37 @@ def _pick_most_impactful_feature(
         {
             "key": "todo",
             "title": "Technical Debt Trend Report",
-            "description": "Add a report that tracks TODO/FIXME backlog trends to guide incremental cleanup.",
+            "description": "Add a report that tracks TODO/FIXME backlog trends by component to guide cleanup.",
             "weight": 5,
             "tasks": [
                 "Normalize TODO/FIXME finding categories and metadata.",
-                "Build a trend summary grouped by folder and age.",
+                "Build a trend summary grouped by component and age.",
                 "Publish the report as markdown alongside roadmap outputs.",
-                "Add simple thresholds for warning escalation.",
+                "Add thresholds for warning escalation and PM follow-up.",
                 "Add tests for trend calculations and markdown rendering.",
             ],
             "scope_boundaries": [
                 "No automatic TODO deletion or code edits.",
                 "No mandatory deadline enforcement workflow.",
                 "No cross-repo aggregation.",
+            ],
+        },
+        {
+            "key": "community",
+            "title": "Community Moderation Automation",
+            "description": "Improve community safety by automating report triage and moderation workload visibility.",
+            "weight": 7,
+            "tasks": [
+                "Add moderation queue summaries grouped by risk level.",
+                "Track report turnaround metrics and stale moderation items.",
+                "Expose a weekly moderation health note for PM review.",
+                "Add permission checks for admin-only moderation actions.",
+                "Add tests for role restrictions and queue state transitions.",
+            ],
+            "scope_boundaries": [
+                "No ML moderation classifier rollout.",
+                "No policy rewrite or legal policy changes.",
+                "No external moderation platform migration.",
             ],
         },
     ]
@@ -220,9 +388,11 @@ def _pick_most_impactful_feature(
     best_score = -1
 
     for candidate in candidates:
-        score = category_counts.get(candidate["key"], 0) * candidate["weight"]
+        if candidate["key"] == "community":
+            score = feature_component_counts.get("Community & Social", 0) * candidate["weight"]
+        else:
+            score = category_counts.get(candidate["key"], 0) * candidate["weight"]
 
-        # Slightly favor features aligned to current stack.
         if candidate["key"] == "large-file" and has_web_stack:
             score += 3
         if candidate["key"] in ("hardcoded-secret", "todo", "skipped-test") and has_python:
@@ -236,7 +406,7 @@ def _pick_most_impactful_feature(
         return {
             "title": "Product Health Baseline Report",
             "description": "Create a baseline health report from current scan findings.",
-            "justification": "This keeps improvements scoped to existing project goals by prioritizing measurable risk reduction before adding new product surface area.",
+            "justification": "This keeps improvements scoped to current goals by prioritizing measurable risk reduction before adding new product surface area.",
             "tasks": [
                 "Aggregate findings by category and directory.",
                 "Generate markdown output with prioritized remediation order.",
@@ -249,11 +419,16 @@ def _pick_most_impactful_feature(
             ],
         }
 
-    top_driver = category_counts.get(best["key"], 0)
+    if best["key"] == "community":
+        top_driver = feature_component_counts.get("Community & Social", 0)
+        driver_label = "community components"
+    else:
+        top_driver = category_counts.get(best["key"], 0)
+        driver_label = f"{best['key']} findings"
+
     justification = (
         f"This is the best choice because it directly targets the highest-impact scan pressure "
-        f"for `{best['key']}` ({top_driver} finding(s)) while staying inside current roadmap goals "
-        f"of stability, quality, and predictable delivery."
+        f"for {driver_label} ({top_driver}) while keeping delivery scope within the next three months."
     )
 
     return {
@@ -263,6 +438,109 @@ def _pick_most_impactful_feature(
         "tasks": best["tasks"],
         "scope_boundaries": best["scope_boundaries"],
     }
+
+
+def _build_twelve_week_plan(
+    top_components: list[dict[str, object]],
+    category_counts: dict[str, int],
+    impactful_feature: dict[str, object],
+) -> list[dict[str, object]]:
+    """Build a 12-week implementation plan with progress checkpoints."""
+
+    component_names = [str(c["name"]) for c in top_components[:4]]
+    while len(component_names) < 4:
+        component_names.append("core")
+
+    impactful_title = str(impactful_feature.get("title", "Top priority feature"))
+
+    weekly_plan = [
+        {
+            "week": 1,
+            "target_progress": 8,
+            "focus": "Repository baseline and architecture map",
+            "components": [component_names[0], component_names[1]],
+            "deliverable": "Finalize component owners, risks, and acceptance criteria for each area.",
+        },
+        {
+            "week": 2,
+            "target_progress": 16,
+            "focus": "Security and runtime hardening",
+            "components": [component_names[0], "root"],
+            "deliverable": f"Resolve secret and exception risks (hardcoded: {category_counts.get('hardcoded-secret', 0)}, empty-catch: {category_counts.get('empty-catch', 0)}).",
+        },
+        {
+            "week": 3,
+            "target_progress": 24,
+            "focus": "Observability and debug cleanup",
+            "components": [component_names[1], component_names[2]],
+            "deliverable": f"Remove runtime debug artifacts ({category_counts.get('debug', 0)}) and establish logging conventions.",
+        },
+        {
+            "week": 4,
+            "target_progress": 32,
+            "focus": "Technical debt triage",
+            "components": [component_names[0], component_names[3]],
+            "deliverable": f"Convert TODO/FIXME backlog ({category_counts.get('todo', 0)}) into prioritized execution tickets.",
+        },
+        {
+            "week": 5,
+            "target_progress": 40,
+            "focus": "Component sprint 1",
+            "components": [component_names[0]],
+            "deliverable": "Ship first high-risk component improvements and complete QA review loop.",
+        },
+        {
+            "week": 6,
+            "target_progress": 50,
+            "focus": "Component sprint 2",
+            "components": [component_names[1]],
+            "deliverable": "Ship second high-risk component improvements with regression checklist.",
+        },
+        {
+            "week": 7,
+            "target_progress": 60,
+            "focus": "Quality gates and reliability",
+            "components": [component_names[2], "tests"],
+            "deliverable": f"Stabilize skipped tests ({category_counts.get('skipped-test', 0)}) and enforce release-readiness checks.",
+        },
+        {
+            "week": 8,
+            "target_progress": 70,
+            "focus": "Refactor oversized modules",
+            "components": [component_names[2], component_names[3]],
+            "deliverable": f"Reduce oversized-module pressure ({category_counts.get('large-file', 0)}) and document new boundaries.",
+        },
+        {
+            "week": 9,
+            "target_progress": 80,
+            "focus": "Most impactful feature build - phase 1",
+            "components": [component_names[0], component_names[1]],
+            "deliverable": f"Implement core slice of {impactful_title} with internal validation.",
+        },
+        {
+            "week": 10,
+            "target_progress": 90,
+            "focus": "Most impactful feature build - phase 2",
+            "components": [component_names[0], component_names[1]],
+            "deliverable": f"Complete integration, permission checks, and rollout notes for {impactful_title}.",
+        },
+        {
+            "week": 11,
+            "target_progress": 95,
+            "focus": "UAT, bug bash, and release prep",
+            "components": ["cross-component"],
+            "deliverable": "Run full regression, fix blockers, and finalize release checklist.",
+        },
+        {
+            "week": 12,
+            "target_progress": 100,
+            "focus": "Release and roadmap refresh",
+            "components": ["cross-component"],
+            "deliverable": "Release improvements, compare baseline vs endline metrics, and generate next-quarter roadmap seed.",
+        },
+    ]
+
+    return weekly_plan
 
 
 def _build_roadmap_markdown(
@@ -277,6 +555,9 @@ def _build_roadmap_markdown(
     suggestions: list[str],
     impactful_feature: dict[str, object],
     ticket_count: int,
+    components: list[dict[str, object]],
+    feature_component_counts: dict[str, int],
+    weekly_plan: list[dict[str, object]],
 ) -> str:
     """Create a markdown roadmap document."""
 
@@ -291,12 +572,37 @@ def _build_roadmap_markdown(
     feature_tasks_lines = "\n".join([f"1. {task}" for task in feature_tasks]) or "1. No tasks specified"
     feature_scope_lines = "\n".join([f"- {item}" for item in feature_scope]) or "- No boundaries specified"
 
-    hardcoded = category_counts.get("hardcoded-secret", 0)
-    empty_catch = category_counts.get("empty-catch", 0)
-    debug = category_counts.get("debug", 0)
-    todo = category_counts.get("todo", 0)
-    large_file = category_counts.get("large-file", 0)
-    skipped = category_counts.get("skipped-test", 0)
+    component_lines = []
+    for component in components[:10]:
+        features = component["features"] or ["General"]
+        feature_text = ", ".join(features[:4])
+        exts = ", ".join(component["dominant_exts"]) if component["dominant_exts"] else "n/a"
+        component_lines.append(
+            f"- **{component['name']}** ({component['type']}): {component['file_count']} file(s), "
+            f"{component['issue_count']} issue(s), health {component['health_score']}/100, "
+            f"stack [{exts}], features [{feature_text}]"
+        )
+    component_block = "\n".join(component_lines) or "- No components detected"
+
+    feature_inventory = sorted(feature_component_counts.items(), key=lambda x: x[1], reverse=True)
+    feature_inventory_lines = "\n".join([f"- **{name}**: present in {count} component(s)" for name, count in feature_inventory[:10]])
+    if not feature_inventory_lines:
+        feature_inventory_lines = "- No explicit feature signatures detected"
+
+    month_one_progress = weekly_plan[3]["target_progress"] if len(weekly_plan) >= 4 else 0
+    month_two_progress = weekly_plan[7]["target_progress"] if len(weekly_plan) >= 8 else 0
+    month_three_progress = weekly_plan[11]["target_progress"] if len(weekly_plan) >= 12 else 100
+
+    week_lines = []
+    for item in weekly_plan:
+        components_line = ", ".join(item["components"])
+        week_lines.append(
+            f"### Week {item['week']} (Target Progress: {item['target_progress']}%)\n"
+            f"- Focus: {item['focus']}\n"
+            f"- Components: {components_line}\n"
+            f"- Deliverable: {item['deliverable']}"
+        )
+    weekly_block = "\n\n".join(week_lines)
 
     return f"""# Project Roadmap: {output_folder}
 
@@ -305,9 +611,19 @@ Generated from automated scan of `{scan_source}` on **{now}**.
 ## Snapshot
 
 - Scanned files: **{total_files}**
+- Detected components: **{len(components)}**
 - Generated issue tickets: **{ticket_count}**
+- Roadmap horizon: **12 weeks (3 months)**
 - Primary project profile:
 {profile_lines}
+
+## Repository Structure and Component Analysis
+
+{component_block}
+
+## Current Feature Inventory
+
+{feature_inventory_lines}
 
 ## Current Hotspots
 
@@ -341,32 +657,22 @@ Generated from automated scan of `{scan_source}` on **{now}**.
 
 {feature_scope_lines}
 
-## Roadmap (Execution Order)
+## 12-Week Development Roadmap (3 Months)
 
-### Milestone 1: Stability and Risk Control (Week 1)
+### Month Targets
 
-- Remove all detected hardcoded secrets (**{hardcoded}** finding(s)).
-- Fix swallowed exception paths (**{empty_catch}** finding(s)).
-- Remove accidental debug statements in runtime code (**{debug}** finding(s)).
+- **Month 1 (Weeks 1-4):** baseline hardening and debt triage, target **{month_one_progress}%** completion.
+- **Month 2 (Weeks 5-8):** component-level execution and quality gates, target **{month_two_progress}%** completion.
+- **Month 3 (Weeks 9-12):** impactful feature delivery and release readiness, target **{month_three_progress}%** completion.
 
-### Milestone 2: Code Quality and Delivery Confidence (Week 2)
-
-- Resolve or convert TODO/FIXME backlog (**{todo}** finding(s)).
-- Re-enable and stabilize skipped tests (**{skipped}** finding(s)).
-- Break down oversized files into maintainable modules (**{large_file}** finding(s)).
-
-### Milestone 3: Product Smoothing and Roadmap Cadence (Week 3+)
-
-- Pick 2 to 3 suggested features above and convert them into tickets.
-- Review scan trends weekly and update priorities by impact and effort.
-- Keep generated scanner tickets in sync with delivered work to avoid roadmap drift.
+{weekly_block}
 
 ## How to Use This Roadmap
 
 1. Load generated tickets from `tickets/{output_folder}/` into Discord.
-2. Prioritize Milestone 1 tickets first.
-3. Track completion in your normal claim -> review -> close workflow.
-4. Re-run scan monthly and compare category counts to validate improvement.
+2. Prioritize Weeks 1-4 first to reduce technical risk.
+3. Track weekly progress target completion in your claim -> review -> close workflow.
+4. Re-run scan monthly and compare category/component metrics to validate improvement.
 """
 
 
@@ -392,6 +698,12 @@ def build_project_roadmap(
         large_file_threshold=large_file_threshold,
     )
 
+    issues_by_component: Counter[str] = Counter()
+    for issue in issues:
+        parts = Path(issue.file_path).parts
+        component_name = parts[0] if len(parts) > 1 else "root"
+        issues_by_component[component_name] += 1
+
     category_counts: Counter[str] = Counter(issue.category for issue in issues)
     grouped = group_issues(issues) if issues else {}
 
@@ -402,10 +714,18 @@ def build_project_roadmap(
     total_files, ext_counts, dir_counts = _collect_file_stats(project_path, ignore, extensions)
     profile = _detect_project_profile(ext_counts)
 
+    components, feature_component_counts = _analyze_repository_components(
+        project_path=project_path,
+        ignore_dirs=ignore,
+        file_extensions=extensions,
+        issues_by_component=dict(issues_by_component),
+    )
+
     top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:8]
     top_dirs = sorted(dir_counts.items(), key=lambda x: x[1], reverse=True)[:8]
-    suggestions = _suggest_features(dict(category_counts), ext_counts, total_files)
-    impactful_feature = _pick_most_impactful_feature(dict(category_counts), ext_counts)
+    suggestions = _suggest_features(dict(category_counts), ext_counts, total_files, feature_component_counts)
+    impactful_feature = _pick_most_impactful_feature(dict(category_counts), ext_counts, feature_component_counts)
+    weekly_plan = _build_twelve_week_plan(components, dict(category_counts), impactful_feature)
 
     out_dir = Path(tickets_dir) / output_folder
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -423,16 +743,26 @@ def build_project_roadmap(
         suggestions=suggestions,
         impactful_feature=impactful_feature,
         ticket_count=len(generated_files),
+        components=components,
+        feature_component_counts=feature_component_counts,
+        weekly_plan=weekly_plan,
     )
 
     roadmap_file.write_text(roadmap_md.strip() + "\n", encoding="utf-8")
+
+    top_components = [(str(c["name"]), int(c["issue_count"])) for c in components[:8]]
+    detected_features = sorted(feature_component_counts.items(), key=lambda x: x[1], reverse=True)[:8]
 
     return RoadmapResult(
         total_files_scanned=total_files,
         total_issues=len(issues),
         total_tickets=len(generated_files),
+        total_components=len(components),
+        roadmap_weeks=len(weekly_plan),
         roadmap_file=str(roadmap_file),
         generated_ticket_files=generated_files,
         top_categories=top_categories,
+        top_components=top_components,
+        detected_features=detected_features,
         suggested_features=suggestions,
     )

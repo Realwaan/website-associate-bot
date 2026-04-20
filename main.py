@@ -1471,7 +1471,7 @@ async def show_help(interaction: discord.Interaction):
                   "**`/scan-project <path> <folder> [threshold]`**\n" +
                   "Scan a codebase and generate issue-based ticket files.\n" +
                   "**`/scan-roadmap <path> <folder> [threshold] [generate_tickets]`**\n" +
-                  "Generate a full-project roadmap with prioritized milestones and suggestions.\n" +
+                  "Generate full repo structure/component analysis and a 12-week (3-month) roadmap.\n" +
                   "**`/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]`**\n" +
                   "Cloud-safe scan by cloning a repository URL before analysis.\n" +
                   "*Only Project Managers can use this*\n" +
@@ -1785,6 +1785,8 @@ async def scan_roadmap(
             color=discord.Color.green(),
         )
         embed.add_field(name="Scanned Files", value=str(result.total_files_scanned), inline=True)
+        embed.add_field(name="Components", value=str(result.total_components), inline=True)
+        embed.add_field(name="Roadmap Weeks", value=str(result.roadmap_weeks), inline=True)
         embed.add_field(name="Issues Found", value=str(result.total_issues), inline=True)
         embed.add_field(name="Tickets Generated", value=str(result.total_tickets), inline=True)
         embed.add_field(name="Roadmap File", value=f"`tickets/{folder}/ROADMAP.md`", inline=False)
@@ -1796,6 +1798,14 @@ async def scan_roadmap(
         if result.suggested_features:
             suggestions = "\n".join([f"• {item}" for item in result.suggested_features[:4]])
             embed.add_field(name="Suggested Features", value=suggestions, inline=False)
+
+        if result.top_components:
+            comp_lines = "\n".join([f"• {name}: {count} issue(s)" for name, count in result.top_components[:4]])
+            embed.add_field(name="Top Components", value=comp_lines, inline=False)
+
+        if result.detected_features:
+            feature_lines = "\n".join([f"• {name}: {count} component(s)" for name, count in result.detected_features[:4]])
+            embed.add_field(name="Detected Feature Map", value=feature_lines, inline=False)
 
         embed.add_field(
             name="Next Step",
@@ -1906,6 +1916,8 @@ async def scan_repo(
             color=discord.Color.teal(),
         )
         embed.add_field(name="Scanned Files", value=str(result.total_files_scanned), inline=True)
+        embed.add_field(name="Components", value=str(result.total_components), inline=True)
+        embed.add_field(name="Roadmap Weeks", value=str(result.roadmap_weeks), inline=True)
         embed.add_field(name="Issues Found", value=str(result.total_issues), inline=True)
         embed.add_field(name="Tickets Generated", value=str(result.total_tickets), inline=True)
         embed.add_field(name="Output Folder", value=f"`tickets/{output_folder}/`", inline=False)
@@ -1914,6 +1926,14 @@ async def scan_repo(
         if result.top_categories:
             top = "\n".join([f"• {name}: {count}" for name, count in result.top_categories[:5]])
             embed.add_field(name="Top Findings", value=top, inline=False)
+
+        if result.top_components:
+            comp_lines = "\n".join([f"• {name}: {count} issue(s)" for name, count in result.top_components[:4]])
+            embed.add_field(name="Top Components", value=comp_lines, inline=False)
+
+        if result.detected_features:
+            feature_lines = "\n".join([f"• {name}: {count} component(s)" for name, count in result.detected_features[:4]])
+            embed.add_field(name="Detected Feature Map", value=feature_lines, inline=False)
 
         embed.add_field(
             name="Next Step",
