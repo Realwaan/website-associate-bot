@@ -504,6 +504,17 @@ def get_setting(key: str) -> str | None:
     return row['value'] if row else None
 
 
+def delete_setting(key: str):
+    """Delete a persistent configuration value."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+    conn.commit()
+    conn.close()
+
+
 # ===== Thread Statistics =====
 
 def get_threads_by_status() -> dict:
