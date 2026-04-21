@@ -25,6 +25,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 from scan_project import scan_and_generate
 from roadmap_builder import build_project_roadmap
+from ai_client import NvidiaAIClient, AIClientError
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +44,7 @@ intents.message_content = False
 intents.members = False
 
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
+ai_client = NvidiaAIClient()
 
 
 async def clear_global_app_commands() -> int:
@@ -1505,6 +1507,7 @@ async def show_help(interaction: discord.Interaction):
             name="⚙️ General Commands",
             value="**`/closed`** (in thread) - Close a ticket\n" +
                   "**`/ticket-info`** (in thread) - View ticket tracking details\n" +
+                  "**`/ask-ai <prompt>`** - Ask configured NVIDIA model (PM only)\n" +
                   "**`/leaderboard <dev|qa> [limit]`** - View leaderboard\n" +
                   "**`/stats`** - Show project ticket overview\n" +
                   "**`/setreminderschannel <channel>`** - Set channel for daily 8 AM summary (PM only)\n" +
@@ -1621,6 +1624,67 @@ async def show_help(interaction: discord.Interaction):
     except Exception as e:
         logger.error(f"Error showing help: {e}")
         await interaction.followup.send(f"❌ Error showing help: {e}")
+
+
+@bot.tree.command(
+    name="ask-ai",
+    description="Ask the configured NVIDIA AI model (PM only)"
+)
+@app_commands.describe(
+    prompt="What you want the model to answer",
+    temperature="Creativity level from 0.0 to 2.0 (default: 0.7)"
+)
+async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: float = 0.7):
+    """Run a prompt against NVIDIA chat-completions and return the response."""
+    await safe_defer(interaction)
+
+    try:
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can use `/ask-ai`.")
+            return
+
+        if len(prompt.strip()) < 2:
+            await interaction.followup.send("❌ Prompt is too short.")
+            return
+
+        if len(prompt) > 4000:
+            await interaction.followup.send("❌ Prompt is too long. Keep it under 4000 characters.")
+            return
+
+        if not ai_client.is_configured():
+            await interaction.followup.send(
+                "❌ AI is not configured. Set `NVIDIA_API_KEY`, `NVIDIA_MODEL`, and `NVIDIA_INVOKE_URL` in environment variables."
+            )
+            return
+
+        answer = ai_client.chat(
+            prompt,
+            temperature=temperature,
+            max_tokens=2048,
+            top_p=0.95,
+            enable_thinking=True,
+        )
+
+        header = f"🤖 **Model:** `{ai_client.model}`\n\n"
+        full_text = header + answer
+
+        max_len = 1900
+        parts = [full_text[i:i + max_len] for i in range(0, len(full_text), max_len)]
+        for idx, part in enumerate(parts[:5], start=1):
+            if len(parts) > 1:
+                await interaction.followup.send(f"**AI Response ({idx}/{len(parts)})**\n{part}")
+            else:
+                await interaction.followup.send(part)
+
+        if len(parts) > 5:
+            await interaction.followup.send("⚠️ Response truncated after 5 messages.")
+
+    except AIClientError as e:
+        logger.warning("AI request failed: %s", e)
+        await interaction.followup.send(f"❌ AI request failed: {e}")
+    except Exception as e:
+        logger.error("Error running ask-ai: %s", e)
+        await interaction.followup.send(f"❌ Error running ask-ai: {e}")
 
 
 @bot.tree.command(
