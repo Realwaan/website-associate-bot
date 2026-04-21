@@ -1712,7 +1712,8 @@ async def scan_project(interaction: discord.Interaction, path: str, folder: str,
     path="Absolute folder path OR HTTPS Git repo URL to scan",
     folder="Output folder name in tickets/ for roadmap and generated tickets",
     threshold="Line count threshold for large file detection (default: 300)",
-    generate_tickets="Also generate issue ticket files in the same folder (default: true)"
+    generate_tickets="Also generate issue ticket files in the same folder (default: true)",
+    skip_code_issues="Skip issue detectors (TODO/debug/secrets/etc.) and focus roadmap on features/components"
 )
 async def scan_roadmap(
     interaction: discord.Interaction,
@@ -1720,6 +1721,7 @@ async def scan_roadmap(
     folder: str,
     threshold: int = SCAN_LARGE_FILE_THRESHOLD,
     generate_tickets: bool = True,
+    skip_code_issues: bool = True,
 ):
     """Generate a project roadmap from scanner findings. Only PMs can use this command."""
     await safe_defer(interaction)
@@ -1760,6 +1762,7 @@ async def scan_roadmap(
                     file_extensions=SCAN_FILE_EXTENSIONS,
                     large_file_threshold=threshold,
                     generate_issue_tickets=generate_tickets,
+                    skip_code_issues=skip_code_issues,
                 )
         else:
             project_path = Path(path)
@@ -1777,6 +1780,7 @@ async def scan_roadmap(
                 file_extensions=SCAN_FILE_EXTENSIONS,
                 large_file_threshold=threshold,
                 generate_issue_tickets=generate_tickets,
+                skip_code_issues=skip_code_issues,
             )
 
         embed = discord.Embed(
@@ -1850,7 +1854,8 @@ def _repo_default_folder(repo_url: str) -> str:
     folder="Output folder name in tickets/ (optional)",
     branch="Branch to scan (optional, default: repo default branch)",
     threshold="Line count threshold for large file detection (default: 300)",
-    generate_tickets="Also generate issue ticket files in the same folder (default: true)"
+    generate_tickets="Also generate issue ticket files in the same folder (default: true)",
+    skip_code_issues="Skip issue detectors (TODO/debug/secrets/etc.) and focus roadmap on features/components"
 )
 async def scan_repo(
     interaction: discord.Interaction,
@@ -1859,6 +1864,7 @@ async def scan_repo(
     branch: str | None = None,
     threshold: int = SCAN_LARGE_FILE_THRESHOLD,
     generate_tickets: bool = True,
+    skip_code_issues: bool = True,
 ):
     """Clone a repo to temp storage and run roadmap scanner. Only PMs can use this command."""
     await safe_defer(interaction)
@@ -1908,6 +1914,7 @@ async def scan_repo(
                 file_extensions=SCAN_FILE_EXTENSIONS,
                 large_file_threshold=threshold,
                 generate_issue_tickets=generate_tickets,
+                skip_code_issues=skip_code_issues,
             )
 
         embed = discord.Embed(

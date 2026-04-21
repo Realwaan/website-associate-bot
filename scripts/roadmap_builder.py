@@ -464,30 +464,30 @@ def _build_twelve_week_plan(
         {
             "week": 2,
             "target_progress": 16,
-            "focus": "Security and runtime hardening",
-            "components": [component_names[0], "root"],
-            "deliverable": f"Resolve secret and exception risks (hardcoded: {category_counts.get('hardcoded-secret', 0)}, empty-catch: {category_counts.get('empty-catch', 0)}).",
+            "focus": "Most impactful feature discovery and scope lock",
+            "components": [component_names[0], component_names[1]],
+            "deliverable": f"Define final scope, success metrics, and execution plan for {impactful_title}.",
         },
         {
             "week": 3,
             "target_progress": 24,
-            "focus": "Observability and debug cleanup",
-            "components": [component_names[1], component_names[2]],
-            "deliverable": f"Remove runtime debug artifacts ({category_counts.get('debug', 0)}) and establish logging conventions.",
+            "focus": "Most impactful feature build - core implementation",
+            "components": [component_names[0], component_names[1]],
+            "deliverable": f"Build the core workflow and internal interfaces for {impactful_title}.",
         },
         {
             "week": 4,
             "target_progress": 32,
-            "focus": "Technical debt triage",
-            "components": [component_names[0], component_names[3]],
-            "deliverable": f"Convert TODO/FIXME backlog ({category_counts.get('todo', 0)}) into prioritized execution tickets.",
+            "focus": "Most impactful feature build - integration",
+            "components": [component_names[0], component_names[1], component_names[2]],
+            "deliverable": f"Integrate {impactful_title} with permissions, data flow, and error handling across target components.",
         },
         {
             "week": 5,
             "target_progress": 40,
-            "focus": "Component sprint 1",
-            "components": [component_names[0]],
-            "deliverable": "Ship first high-risk component improvements and complete QA review loop.",
+            "focus": "Most impactful feature hardening and standout polish",
+            "components": [component_names[0], component_names[1], component_names[2]],
+            "deliverable": f"Complete QA-ready polish, rollout notes, and differentiation details so {impactful_title} stands out in release demos.",
         },
         {
             "week": 6,
@@ -661,8 +661,8 @@ Generated from automated scan of `{scan_source}` on **{now}**.
 
 ### Month Targets
 
-- **Month 1 (Weeks 1-4):** baseline hardening and debt triage, target **{month_one_progress}%** completion.
-- **Month 2 (Weeks 5-8):** component-level execution and quality gates, target **{month_two_progress}%** completion.
+- **Month 1 (Weeks 1-4):** baseline mapping then accelerated standout-feature build, target **{month_one_progress}%** completion.
+- **Month 2 (Weeks 5-8):** standout-feature hardening followed by reliability and component stabilization, target **{month_two_progress}%** completion.
 - **Month 3 (Weeks 9-12):** impactful feature delivery and release readiness, target **{month_three_progress}%** completion.
 
 {weekly_block}
@@ -685,18 +685,21 @@ def build_project_roadmap(
     file_extensions: set[str] | None = None,
     large_file_threshold: int = DEFAULT_LARGE_FILE_THRESHOLD,
     generate_issue_tickets: bool = True,
+    skip_code_issues: bool = False,
 ) -> RoadmapResult:
     """Scan project and generate roadmap markdown (and optional tickets)."""
 
     ignore = ignore_dirs or DEFAULT_IGNORE_DIRS
     extensions = file_extensions or DEFAULT_FILE_EXTENSIONS
 
-    issues = scan_directory(
-        project_path=project_path,
-        ignore_dirs=ignore,
-        file_extensions=extensions,
-        large_file_threshold=large_file_threshold,
-    )
+    issues: list = []
+    if not skip_code_issues:
+        issues = scan_directory(
+            project_path=project_path,
+            ignore_dirs=ignore,
+            file_extensions=extensions,
+            large_file_threshold=large_file_threshold,
+        )
 
     issues_by_component: Counter[str] = Counter()
     for issue in issues:
@@ -708,7 +711,7 @@ def build_project_roadmap(
     grouped = group_issues(issues) if issues else {}
 
     generated_files: list[str] = []
-    if generate_issue_tickets and grouped:
+    if generate_issue_tickets and grouped and not skip_code_issues:
         generated_files = generate_tickets(grouped, output_folder, tickets_dir)
 
     total_files, ext_counts, dir_counts = _collect_file_stats(project_path, ignore, extensions)
