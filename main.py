@@ -2357,157 +2357,282 @@ async def set_commit_channel(interaction: discord.Interaction, channel: discord.
     logger.info(f"Commit channel set to {channel.id} by {interaction.user}")
 
 
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _parse_github_repo(repo_url: str) -> tuple[str, str] | tuple[None, None]:
+    """Extract 'owner' and 'repo' from a GitHub URL.
+
+    Accepts:
+        https://github.com/owner/repo
+        https://github.com/owner/repo.git
+        owner/repo
+    Returns (owner, repo) or (None, None) on failure.
+    """
+    repo_url = repo_url.strip().rstrip("/").removesuffix(".git")
+    # Short form  owner/repo
+    if "/" in repo_url and not repo_url.startswith("http"):
+        parts = repo_url.split("/")
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    # Full URL
+    parsed = urlparse(repo_url)
+    if parsed.hostname in ("github.com", "www.github.com"):
+        path_parts = parsed.path.strip("/").split("/")
+        if len(path_parts) >= 2:
+            return path_parts[0], path_parts[1]
+    return None, None
+
+
+async def _github_get(url: str, token: str | None = None) -> dict | list | None:
+    """Async-friendly GitHub API GET (runs in thread pool to avoid blocking)."""
+    import urllib.request
+    import json as _json
+
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    def _fetch():
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return _json.loads(resp.read().decode())
+        except Exception as exc:
+            logger.warning("GitHub API request failed (%s): %s", url, exc)
+            return None
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch)
+
+
+# ── /update-project ──────────────────────────────────────────────────────────
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")          # optional, raises rate limit
+_LAST_SHA_PREFIX = "last_commit_sha:"              # settings key prefix per repo
+
+
 @bot.tree.command(
-    name="post-commits",
-    description="Post recent commits (or merged-only) to the configured announcement channel (PM only)"
+    name="update-project",
+    description="Check a GitHub repo for new commits and merged PRs, then post to the update channel (PM only)"
 )
 @app_commands.describe(
-    repo_url="Base GitHub repository URL (e.g. https://github.com/org/repo)",
-    limit="Number of commits to include (default 10)",
-    merged_only="If True, only include merge commits (default False)",
-    branch="Branch to read commits from (default: current HEAD)"
+    repo_url="GitHub repository URL or owner/repo (e.g. https://github.com/org/repo)",
+    branch="Branch to track (default: main)",
+    limit="Max new commits to post per run (default 10)",
 )
-async def post_commits(
+async def update_project(
     interaction: discord.Interaction,
     repo_url: str,
-    limit: app_commands.Range[int, 1, 50] = 10,
-    merged_only: bool = False,
-    branch: str = "HEAD",
+    branch: str = "main",
+    limit: app_commands.Range[int, 1, 30] = 10,
 ):
-    """Fetch recent git commits and post a formal announcement embed to the configured channel."""
+    """Fetch new commits and merged PRs from GitHub and post them to the configured channel."""
     await safe_defer(interaction, ephemeral=True)
 
     if not has_role(interaction.user.id, "pm"):
-        await interaction.followup.send("❌ Only Project Managers can post commit announcements.")
+        await interaction.followup.send("❌ Only Project Managers can post project updates.")
         return
 
-    # ── Resolve the target channel ────────────────────────────────────────────
+    # ── Resolve announce channel ──────────────────────────────────────────────
     channel_id_str = get_setting(COMMIT_CHANNEL_SETTING)
     if not channel_id_str:
         await interaction.followup.send(
-            "❌ No commit channel configured. Use `/set-commit-channel` first."
+            "❌ No update channel configured yet. Run `/set-commit-channel` first."
         )
         return
 
     target_channel = interaction.guild.get_channel(int(channel_id_str))
     if not target_channel:
         await interaction.followup.send(
-            "❌ Configured commit channel not found. Use `/set-commit-channel` to update it."
+            "❌ Configured channel not found — run `/set-commit-channel` to reset it."
         )
         return
 
-    # ── Build git log command ─────────────────────────────────────────────────
-    # Format: hash | author | date | subject
-    git_format = "%H|%an|%ad|%s"
-    date_format = "%Y-%m-%d %H:%M +0000"
-
-    git_cmd = [
-        "git", "log",
-        f"--format={git_format}",
-        f"--date=format:{date_format}",
-        f"-n {limit}",
-        branch,
-    ]
-    if merged_only:
-        git_cmd.insert(2, "--merges")
-
-    try:
-        result = subprocess.run(
-            ["git", "log"]
-            + (["--merges"] if merged_only else [])
-            + [
-                f"--format={git_format}",
-                f"--date=format:{date_format}",
-                f"-n{limit}",
-                branch,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except FileNotFoundError:
-        await interaction.followup.send("❌ `git` is not available in this environment.")
-        return
-    except subprocess.TimeoutExpired:
-        await interaction.followup.send("❌ `git log` timed out.")
-        return
-
-    raw_output = result.stdout.strip()
-    if not raw_output:
-        commit_type = "merge commits" if merged_only else "commits"
+    # ── Parse repo ────────────────────────────────────────────────────────────
+    owner, repo = _parse_github_repo(repo_url)
+    if not owner:
         await interaction.followup.send(
-            f"⚠️ No {commit_type} found on branch `{branch}`."
+            "❌ Could not parse the repository URL. "
+            "Use a full GitHub URL or `owner/repo` format."
         )
         return
 
-    # ── Parse commits ─────────────────────────────────────────────────────────
-    commits = []
-    for line in raw_output.splitlines():
-        parts = line.split("|", 3)
-        if len(parts) != 4:
-            continue
-        commit_hash, author, date_str, subject = parts
-        commits.append({
-            "hash": commit_hash.strip(),
-            "short_hash": commit_hash.strip()[:7],
-            "author": author.strip(),
-            "date": date_str.strip(),
-            "subject": subject.strip(),
-        })
+    repo_url_clean = f"https://github.com/{owner}/{repo}"
+    api_base = f"https://api.github.com/repos/{owner}/{repo}"
 
-    if not commits:
-        await interaction.followup.send("⚠️ Could not parse any commits from `git log` output.")
+    # ── Fetch commits from GitHub API ────────────────────────────────────────
+    commits_data = await _github_get(
+        f"{api_base}/commits?sha={branch}&per_page={limit}",
+        token=GITHUB_TOKEN,
+    )
+    if commits_data is None:
+        await interaction.followup.send(
+            "❌ Could not reach GitHub API. Check the repo URL and ensure it is public "
+            "(or set `GITHUB_TOKEN` in `.env` for private repos)."
+        )
         return
 
-    # ── Build and post the announcement ───────────────────────────────────────
-    repo_url = repo_url.rstrip("/")
-    commit_type_label = "Merge Commits" if merged_only else "Recent Commits"
+    if isinstance(commits_data, dict) and "message" in commits_data:
+        await interaction.followup.send(
+            f"❌ GitHub API error: {commits_data['message']}"
+        )
+        return
+
+    # ── Filter only NEW commits (since last run) ──────────────────────────────
+    setting_key = f"{_LAST_SHA_PREFIX}{owner}/{repo}/{branch}"
+    last_sha = get_setting(setting_key)
+
+    new_commits = []
+    for c in commits_data:
+        sha = c.get("sha", "")
+        if sha == last_sha:
+            break           # reached the last commit we already posted
+        new_commits.append(c)
+
+    # Record the newest SHA so next run only shows truly new commits
+    if commits_data:
+        newest_sha = commits_data[0].get("sha", "")
+        if newest_sha:
+            set_setting(setting_key, newest_sha)
+
+    # ── Fetch merged PRs (last 30, filter by merged_at) ──────────────────────
+    prs_data = await _github_get(
+        f"{api_base}/pulls?state=closed&sort=updated&direction=desc&per_page=30",
+        token=GITHUB_TOKEN,
+    )
+    merged_prs = []
+    if isinstance(prs_data, list):
+        pr_setting_key = f"last_pr_id:{owner}/{repo}"
+        last_pr_id = get_setting(pr_setting_key)
+        last_pr_id_int = int(last_pr_id) if last_pr_id else 0
+
+        for pr in prs_data:
+            if not pr.get("merged_at"):
+                continue                            # closed but not merged
+            if pr["number"] <= last_pr_id_int:
+                break
+            merged_prs.append(pr)
+
+        if prs_data:
+            latest_closed = next(
+                (p for p in prs_data if p.get("merged_at")), None
+            )
+            if latest_closed:
+                set_setting(pr_setting_key, str(latest_closed["number"]))
+
+    if not new_commits and not merged_prs:
+        await interaction.followup.send(
+            f"✅ **{owner}/{repo}** is already up to date — no new commits or merged PRs on `{branch}`."
+        )
+        return
+
+    # ── Post header ──────────────────────────────────────────────────────────
     posted_by = interaction.user.display_name or interaction.user.name
     now_utc = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M UTC")
 
-    # Header embed
     header_embed = discord.Embed(
-        title=f"📋 Development Update — {commit_type_label}",
+        title="📋 Project Update",
         description=(
-            f"The following {'merge ' if merged_only else ''}commit(s) have been recorded "
-            f"on branch **`{branch}`**.\n\n"
-            f"*Posted by {posted_by} · {now_utc}*"
+            f"**Repository:** [{owner}/{repo}]({repo_url_clean})\n"
+            f"**Branch:** `{branch}`\n\n"
+            f"*Reported by {posted_by} · {now_utc}*"
         ),
-        color=discord.Color.from_rgb(30, 144, 255),  # Dodger blue — formal, clear
+        color=discord.Color.from_rgb(30, 144, 255),
+        url=repo_url_clean,
     )
-    header_embed.set_footer(text="Source Control Update  ·  For internal use only")
+    header_embed.set_footer(text="Source Control Update  ·  Internal use only")
     await target_channel.send(embed=header_embed)
 
-    # One embed per commit (up to Discord's limit)
-    for idx, commit in enumerate(commits, start=1):
-        commit_url = f"{repo_url}/commit/{commit['hash']}"
-        is_merge = commit["subject"].lower().startswith("merge")
+    # ── Post merged PRs first (most impactful) ────────────────────────────────
+    for idx, pr in enumerate(merged_prs, start=1):
+        pr_url = pr.get("html_url", repo_url_clean)
+        pr_num = pr.get("number", "?")
+        pr_title = pr.get("title", "(no title)")
+        pr_author = pr.get("user", {}).get("login", "unknown")
+        pr_body = (pr.get("body") or "").strip()
+        merged_at_raw = pr.get("merged_at", "")
+        merged_dt = None
+        if merged_at_raw:
+            try:
+                merged_dt = datetime.strptime(merged_at_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
 
+        description = f"**{pr_title}**"
+        if pr_body:
+            # Trim long PR descriptions
+            truncated = pr_body[:300] + ("…" if len(pr_body) > 300 else "")
+            description += f"\n\n{truncated}"
+
+        embed = discord.Embed(
+            title=f"🔀 Merged Pull Request  ·  #{pr_num}",
+            description=description,
+            url=pr_url,
+            color=discord.Color.from_rgb(130, 80, 255),
+            timestamp=merged_dt,
+        )
+        embed.add_field(name="Author", value=f"`{pr_author}`", inline=True)
+        embed.add_field(name="PR Number", value=f"[#{pr_num}]({pr_url})", inline=True)
+        embed.add_field(name="View PR", value=f"[Open on GitHub]({pr_url})", inline=True)
+        embed.set_footer(text=f"Merged PR {idx} of {len(merged_prs)}")
+        await target_channel.send(embed=embed)
+
+    # ── Post new commits ──────────────────────────────────────────────────────
+    for idx, c in enumerate(new_commits[:limit], start=1):
+        sha = c.get("sha", "")
+        short_sha = sha[:7]
+        commit_info = c.get("commit", {})
+        subject = commit_info.get("message", "(no message)").split("\n")[0]
+        author = commit_info.get("author", {}).get("name", "unknown")
+        date_raw = commit_info.get("author", {}).get("date", "")
+        commit_url = f"{repo_url_clean}/commit/{sha}"
+
+        commit_dt = None
+        if date_raw:
+            try:
+                commit_dt = datetime.strptime(date_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+
+        is_merge = subject.lower().startswith("merge")
         embed_color = discord.Color.from_rgb(88, 101, 242) if is_merge else discord.Color.from_rgb(87, 242, 135)
         kind_label = "🔀 Merge Commit" if is_merge else "✅ Commit"
 
         embed = discord.Embed(
-            title=f"{kind_label}  ·  `{commit['short_hash']}`",
-            description=f"**{commit['subject']}**",
+            title=f"{kind_label}  ·  `{short_sha}`",
+            description=f"**{subject}**",
             url=commit_url,
             color=embed_color,
-            timestamp=datetime.strptime(commit["date"], "%Y-%m-%d %H:%M +0000").replace(tzinfo=timezone.utc),
+            timestamp=commit_dt,
         )
-        embed.add_field(name="Author", value=commit["author"], inline=True)
-        embed.add_field(name="Date", value=commit["date"], inline=True)
+        embed.add_field(name="Author", value=f"`{author}`", inline=True)
+        embed.add_field(
+            name="Date",
+            value=commit_dt.strftime("%d %b %Y, %H:%M UTC") if commit_dt else "—",
+            inline=True,
+        )
         embed.add_field(name="Reference", value=f"[View on GitHub]({commit_url})", inline=True)
-        embed.set_footer(text=f"Commit {idx} of {len(commits)}")
-
+        embed.set_footer(text=f"Commit {idx} of {len(new_commits)}")
         await target_channel.send(embed=embed)
 
-    # Confirmation back to PM
+    # ── Confirmation ──────────────────────────────────────────────────────────
+    parts = []
+    if new_commits:
+        parts.append(f"**{len(new_commits)}** new commit(s)")
+    if merged_prs:
+        parts.append(f"**{len(merged_prs)}** merged PR(s)")
+
     await interaction.followup.send(
-        f"✅ Posted **{len(commits)}** {commit_type_label.lower()} to {target_channel.mention}."
+        f"✅ Posted {' and '.join(parts)} from `{owner}/{repo}` to {target_channel.mention}."
     )
     logger.info(
-        f"post-commits: {len(commits)} entries posted to channel {target_channel.id} by {interaction.user}"
+        "update-project: %s commits + %s PRs posted for %s/%s by %s",
+        len(new_commits), len(merged_prs), owner, repo, interaction.user,
     )
-
 
 def main():
     """Start the bot."""
