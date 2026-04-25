@@ -48,6 +48,17 @@ class Issue:
     snippet: str = ""      # the offending line/text
 
 
+@dataclass
+class ScanSummary:
+    """Aggregated scan metrics used for command output and reporting."""
+    files_scanned: int
+    issues_found: int
+    tickets_generated: int
+    by_severity: dict[str, int] = field(default_factory=dict)
+    by_category: dict[str, int] = field(default_factory=dict)
+    top_directories: list[tuple[str, int]] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Detectors
 # ---------------------------------------------------------------------------
@@ -277,6 +288,57 @@ def _slugify(text: str, max_len: int = 50) -> str:
     return slug[:max_len].rstrip("-")
 
 
+def _count_scannable_files(
+    project_path: str,
+    ignore_dirs: set[str] | None = None,
+    file_extensions: set[str] | None = None,
+) -> int:
+    """Count source files that match scan filters for progress/reporting."""
+    ignore = ignore_dirs or DEFAULT_IGNORE_DIRS
+    extensions = file_extensions or DEFAULT_FILE_EXTENSIONS
+    project = Path(project_path).resolve()
+
+    total = 0
+    for root_str, dirs, files in os.walk(project):
+        dirs[:] = [d for d in dirs if d not in ignore and not d.startswith(".")]
+        for filename in files:
+            ext = Path(filename).suffix.lower()
+            if ext in extensions:
+                total += 1
+    return total
+
+
+def build_scan_summary(
+    issues: list[Issue],
+    tickets_generated: int,
+    files_scanned: int,
+) -> ScanSummary:
+    """Build aggregate scan stats from raw issues."""
+    severity_counts: dict[str, int] = defaultdict(int)
+    category_counts: dict[str, int] = defaultdict(int)
+    dir_counts: dict[str, int] = defaultdict(int)
+
+    for issue in issues:
+        severity_counts[issue.severity] += 1
+        category_counts[issue.category] += 1
+
+        parent = str(Path(issue.file_path).parent).replace("\\", "/")
+        if parent == ".":
+            parent = "root"
+        dir_counts[parent] += 1
+
+    top_directories = sorted(dir_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    return ScanSummary(
+        files_scanned=files_scanned,
+        issues_found=len(issues),
+        tickets_generated=tickets_generated,
+        by_severity=dict(severity_counts),
+        by_category=dict(category_counts),
+        top_directories=top_directories,
+    )
+
+
 def group_issues(issues: list[Issue]) -> dict[str, list[Issue]]:
     """Group issues into ticket-worthy sets.
 
@@ -486,6 +548,49 @@ def scan_and_generate(
     grouped = group_issues(issues)
     generated = generate_tickets(grouped, output_folder, tickets_dir)
     return len(issues), len(generated), generated
+
+
+def scan_and_generate_with_summary(
+    project_path: str,
+    output_folder: str,
+    tickets_dir: str = "tickets",
+    ignore_dirs: set[str] | None = None,
+    file_extensions: set[str] | None = None,
+    large_file_threshold: int = DEFAULT_LARGE_FILE_THRESHOLD,
+) -> tuple[int, int, list[str], ScanSummary]:
+    """Scan a project, generate tickets, and return aggregate metrics."""
+    files_scanned = _count_scannable_files(
+        project_path=project_path,
+        ignore_dirs=ignore_dirs,
+        file_extensions=file_extensions,
+    )
+
+    issues = scan_directory(
+        project_path,
+        ignore_dirs=ignore_dirs,
+        file_extensions=file_extensions,
+        large_file_threshold=large_file_threshold,
+    )
+
+    if not issues:
+        summary = ScanSummary(
+            files_scanned=files_scanned,
+            issues_found=0,
+            tickets_generated=0,
+            by_severity={},
+            by_category={},
+            top_directories=[],
+        )
+        return 0, 0, [], summary
+
+    grouped = group_issues(issues)
+    generated = generate_tickets(grouped, output_folder, tickets_dir)
+    summary = build_scan_summary(
+        issues=issues,
+        tickets_generated=len(generated),
+        files_scanned=files_scanned,
+    )
+    return len(issues), len(generated), generated, summary
 
 
 # ---------------------------------------------------------------------------

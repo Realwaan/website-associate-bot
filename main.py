@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import subprocess
+import asyncio
 from urllib.parse import urlparse
 from datetime import datetime, time, timezone, timedelta
 from config import DISCORD_TOKEN, TICKETS_DIR, SCAN_IGNORE_DIRS, SCAN_FILE_EXTENSIONS, SCAN_LARGE_FILE_THRESHOLD
@@ -23,7 +24,7 @@ from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
-from scan_project import scan_and_generate
+from scan_project import scan_and_generate_with_summary
 from roadmap_builder import build_project_roadmap
 from ai_client import NvidiaAIClient, AIClientError
 
@@ -66,7 +67,8 @@ async def safe_defer(interaction: discord.Interaction, ephemeral: bool = False):
     try:
         await interaction.response.defer(ephemeral=ephemeral)
     except discord.HTTPException as e:
-        if getattr(e, "code", None) != 40060:
+        # 40060: already acknowledged, 10062: interaction expired/unknown.
+        if getattr(e, "code", None) not in (40060, 10062):
             raise
 
 
@@ -74,6 +76,19 @@ def normalize_ticket_name(name: str) -> str:
     """Normalize a ticket name for matching to filenames."""
     cleaned = re.sub(r"[^\w\s-]", "", name.lower())
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def build_branch_name(ticket_name: str) -> str:
+    """Build a git-safe branch name from a ticket title."""
+    base = re.sub(r"[^a-z0-9\s-]", "", ticket_name.lower())
+    base = re.sub(r"[\s_]+", "-", base).strip("-")
+    base = re.sub(r"-+", "-", base)
+
+    if not base:
+        base = "ticket-work"
+
+    # Keep branch names short and readable for git tooling.
+    return f"issue/{base[:60].rstrip('-')}"
 
 
 def parse_thread_name(thread_name: str) -> tuple[str | None, str | None]:
@@ -127,6 +142,12 @@ async def on_ready():
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     """Ensure users always receive a response when a slash command fails unexpectedly."""
     logger.exception("Unhandled app command error: %s", error)
+
+    # Interaction is already expired; attempting to reply will fail again.
+    if isinstance(error, app_commands.CommandInvokeError):
+        original = getattr(error, "original", None)
+        if isinstance(original, discord.HTTPException) and getattr(original, "code", None) == 10062:
+            return
 
     message = "❌ Something went wrong while processing this command. Please try again."
     try:
@@ -909,6 +930,7 @@ async def claim_ticket(interaction: discord.Interaction):
         # Update thread name
         ticket_name = thread_info['ticket_name']
         new_name = f"[CLAIMED][{username}]{ticket_name}"
+        branch_name = build_branch_name(ticket_name)
         
         await thread.edit(name=new_name)
         update_thread_status(thread.id, "CLAIMED", claimed_by_id=interaction.user.id, claimed_by_username=username)
@@ -921,6 +943,20 @@ async def claim_ticket(interaction: discord.Interaction):
         )
         embed.add_field(name="Old Status", value="[OPEN]", inline=True)
         embed.add_field(name="New Status", value=f"[CLAIMED][{username}]", inline=True)
+        embed.add_field(name="Suggested Branch", value=f"`{branch_name}`", inline=False)
+        embed.add_field(
+            name="Next Step",
+            value=(
+                f"Run `git checkout -b {branch_name}` in your local repo, then push with "
+                f"`git push -u origin {branch_name}`."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="When Done",
+            value="Use `/resolved <pr_url>` in this thread to send the ticket to QA review.",
+            inline=False,
+        )
         
         await interaction.followup.send(embed=embed)
         logger.info(f"Ticket claimed: {thread.id} by {interaction.user}")
@@ -1657,7 +1693,9 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             )
             return
 
-        answer = ai_client.chat(
+        # Run blocking HTTP call off the event loop to avoid interaction expiry.
+        answer = await asyncio.to_thread(
+            ai_client.chat,
             prompt,
             temperature=temperature,
             max_tokens=2048,
@@ -1717,7 +1755,7 @@ async def scan_project(interaction: discord.Interaction, path: str, folder: str,
         await interaction.followup.send(f"🔍 Scanning `{path}`... this may take a moment.")
 
         # Run the scanner
-        total_issues, total_tickets, generated_files = scan_and_generate(
+        total_issues, total_tickets, generated_files, summary = scan_and_generate_with_summary(
             project_path=str(project_path),
             output_folder=folder,
             tickets_dir=TICKETS_DIR,
@@ -1741,9 +1779,27 @@ async def scan_project(interaction: discord.Interaction, path: str, folder: str,
             description=f"Scanned `{path}`",
             color=discord.Color.blurple()
         )
+        embed.add_field(name="Files Scanned", value=str(summary.files_scanned), inline=True)
         embed.add_field(name="Issues Found", value=str(total_issues), inline=True)
         embed.add_field(name="Tickets Generated", value=str(total_tickets), inline=True)
         embed.add_field(name="Output Folder", value=f"`tickets/{folder}/`", inline=True)
+
+        sev = summary.by_severity
+        severity_line = (
+            f"High: **{sev.get('high', 0)}** | "
+            f"Medium: **{sev.get('medium', 0)}** | "
+            f"Low: **{sev.get('low', 0)}**"
+        )
+        embed.add_field(name="Severity Breakdown", value=severity_line, inline=False)
+
+        if summary.by_category:
+            top_categories = sorted(summary.by_category.items(), key=lambda x: x[1], reverse=True)[:5]
+            category_lines = "\n".join([f"• `{name}`: {count}" for name, count in top_categories])
+            embed.add_field(name="Top Issue Categories", value=category_lines, inline=False)
+
+        if summary.top_directories:
+            hotspot_lines = "\n".join([f"• `{directory}`: {count}" for directory, count in summary.top_directories])
+            embed.add_field(name="Code Hotspots", value=hotspot_lines, inline=False)
 
         # List generated tickets
         if generated_files:
@@ -1759,7 +1815,10 @@ async def scan_project(interaction: discord.Interaction, path: str, folder: str,
         )
 
         await interaction.followup.send(embed=embed)
-        logger.info(f"Project scan complete: {total_issues} issues, {total_tickets} tickets in {folder}/")
+        logger.info(
+            f"Project scan complete: {summary.files_scanned} files, "
+            f"{total_issues} issues, {total_tickets} tickets in {folder}/"
+        )
 
     except FileNotFoundError as e:
         await interaction.followup.send(f"❌ {e}")

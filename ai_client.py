@@ -14,9 +14,20 @@ class NvidiaAIClient:
 
     def __init__(self):
         self.invoke_url = os.getenv("NVIDIA_INVOKE_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
-        self.api_key = os.getenv("NVIDIA_API_KEY")
+        self.api_key = self._normalize_api_key(os.getenv("NVIDIA_API_KEY"))
         self.model = os.getenv("NVIDIA_MODEL", "google/gemma-4-31b-it")
         self.timeout_seconds = int(os.getenv("NVIDIA_TIMEOUT_SECONDS", "45"))
+
+    @staticmethod
+    def _normalize_api_key(value: str | None) -> str | None:
+        """Accept raw key or 'Bearer <key>' format and return only the token."""
+        if not value:
+            return value
+
+        token = value.strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        return token
 
     def is_configured(self) -> bool:
         """Return whether required NVIDIA credentials are available."""
