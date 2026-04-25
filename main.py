@@ -2331,6 +2331,184 @@ async def ticket_info(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Error fetching ticket info: {e}")
 
 
+
+# ─── Commit / Merge Announcements ─────────────────────────────────────────────
+
+COMMIT_CHANNEL_SETTING = "commit_announce_channel_id"
+
+
+@bot.tree.command(
+    name="set-commit-channel",
+    description="Set the channel where commit/merge announcements will be posted (PM only)"
+)
+@app_commands.describe(channel="The text channel that will receive commit announcements")
+async def set_commit_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Configure the commit announcement channel. PM-only."""
+    await safe_defer(interaction, ephemeral=True)
+
+    if not has_role(interaction.user.id, "pm"):
+        await interaction.followup.send("❌ Only Project Managers can configure the commit channel.")
+        return
+
+    set_setting(COMMIT_CHANNEL_SETTING, str(channel.id))
+    await interaction.followup.send(
+        f"✅ Commit announcements will now be posted to {channel.mention}."
+    )
+    logger.info(f"Commit channel set to {channel.id} by {interaction.user}")
+
+
+@bot.tree.command(
+    name="post-commits",
+    description="Post recent commits (or merged-only) to the configured announcement channel (PM only)"
+)
+@app_commands.describe(
+    repo_url="Base GitHub repository URL (e.g. https://github.com/org/repo)",
+    limit="Number of commits to include (default 10)",
+    merged_only="If True, only include merge commits (default False)",
+    branch="Branch to read commits from (default: current HEAD)"
+)
+async def post_commits(
+    interaction: discord.Interaction,
+    repo_url: str,
+    limit: app_commands.Range[int, 1, 50] = 10,
+    merged_only: bool = False,
+    branch: str = "HEAD",
+):
+    """Fetch recent git commits and post a formal announcement embed to the configured channel."""
+    await safe_defer(interaction, ephemeral=True)
+
+    if not has_role(interaction.user.id, "pm"):
+        await interaction.followup.send("❌ Only Project Managers can post commit announcements.")
+        return
+
+    # ── Resolve the target channel ────────────────────────────────────────────
+    channel_id_str = get_setting(COMMIT_CHANNEL_SETTING)
+    if not channel_id_str:
+        await interaction.followup.send(
+            "❌ No commit channel configured. Use `/set-commit-channel` first."
+        )
+        return
+
+    target_channel = interaction.guild.get_channel(int(channel_id_str))
+    if not target_channel:
+        await interaction.followup.send(
+            "❌ Configured commit channel not found. Use `/set-commit-channel` to update it."
+        )
+        return
+
+    # ── Build git log command ─────────────────────────────────────────────────
+    # Format: hash | author | date | subject
+    git_format = "%H|%an|%ad|%s"
+    date_format = "%Y-%m-%d %H:%M +0000"
+
+    git_cmd = [
+        "git", "log",
+        f"--format={git_format}",
+        f"--date=format:{date_format}",
+        f"-n {limit}",
+        branch,
+    ]
+    if merged_only:
+        git_cmd.insert(2, "--merges")
+
+    try:
+        result = subprocess.run(
+            ["git", "log"]
+            + (["--merges"] if merged_only else [])
+            + [
+                f"--format={git_format}",
+                f"--date=format:{date_format}",
+                f"-n{limit}",
+                branch,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except FileNotFoundError:
+        await interaction.followup.send("❌ `git` is not available in this environment.")
+        return
+    except subprocess.TimeoutExpired:
+        await interaction.followup.send("❌ `git log` timed out.")
+        return
+
+    raw_output = result.stdout.strip()
+    if not raw_output:
+        commit_type = "merge commits" if merged_only else "commits"
+        await interaction.followup.send(
+            f"⚠️ No {commit_type} found on branch `{branch}`."
+        )
+        return
+
+    # ── Parse commits ─────────────────────────────────────────────────────────
+    commits = []
+    for line in raw_output.splitlines():
+        parts = line.split("|", 3)
+        if len(parts) != 4:
+            continue
+        commit_hash, author, date_str, subject = parts
+        commits.append({
+            "hash": commit_hash.strip(),
+            "short_hash": commit_hash.strip()[:7],
+            "author": author.strip(),
+            "date": date_str.strip(),
+            "subject": subject.strip(),
+        })
+
+    if not commits:
+        await interaction.followup.send("⚠️ Could not parse any commits from `git log` output.")
+        return
+
+    # ── Build and post the announcement ───────────────────────────────────────
+    repo_url = repo_url.rstrip("/")
+    commit_type_label = "Merge Commits" if merged_only else "Recent Commits"
+    posted_by = interaction.user.display_name or interaction.user.name
+    now_utc = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M UTC")
+
+    # Header embed
+    header_embed = discord.Embed(
+        title=f"📋 Development Update — {commit_type_label}",
+        description=(
+            f"The following {'merge ' if merged_only else ''}commit(s) have been recorded "
+            f"on branch **`{branch}`**.\n\n"
+            f"*Posted by {posted_by} · {now_utc}*"
+        ),
+        color=discord.Color.from_rgb(30, 144, 255),  # Dodger blue — formal, clear
+    )
+    header_embed.set_footer(text="Source Control Update  ·  For internal use only")
+    await target_channel.send(embed=header_embed)
+
+    # One embed per commit (up to Discord's limit)
+    for idx, commit in enumerate(commits, start=1):
+        commit_url = f"{repo_url}/commit/{commit['hash']}"
+        is_merge = commit["subject"].lower().startswith("merge")
+
+        embed_color = discord.Color.from_rgb(88, 101, 242) if is_merge else discord.Color.from_rgb(87, 242, 135)
+        kind_label = "🔀 Merge Commit" if is_merge else "✅ Commit"
+
+        embed = discord.Embed(
+            title=f"{kind_label}  ·  `{commit['short_hash']}`",
+            description=f"**{commit['subject']}**",
+            url=commit_url,
+            color=embed_color,
+            timestamp=datetime.strptime(commit["date"], "%Y-%m-%d %H:%M +0000").replace(tzinfo=timezone.utc),
+        )
+        embed.add_field(name="Author", value=commit["author"], inline=True)
+        embed.add_field(name="Date", value=commit["date"], inline=True)
+        embed.add_field(name="Reference", value=f"[View on GitHub]({commit_url})", inline=True)
+        embed.set_footer(text=f"Commit {idx} of {len(commits)}")
+
+        await target_channel.send(embed=embed)
+
+    # Confirmation back to PM
+    await interaction.followup.send(
+        f"✅ Posted **{len(commits)}** {commit_type_label.lower()} to {target_channel.mention}."
+    )
+    logger.info(
+        f"post-commits: {len(commits)} entries posted to channel {target_channel.id} by {interaction.user}"
+    )
+
+
 def main():
     """Start the bot."""
     try:
