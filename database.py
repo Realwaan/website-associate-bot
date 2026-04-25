@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "10"))
 DB_STATEMENT_TIMEOUT_MS = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "15000"))
+_UNSET = object()
 
 
 def get_database_url_summary() -> dict:
@@ -178,7 +179,14 @@ def add_thread(thread_id: int, ticket_name: str, folder: str, channel_id: int, c
             folder = EXCLUDED.folder,
             channel_id = EXCLUDED.channel_id,
             status = 'OPEN',
-            created_by = EXCLUDED.created_by
+            created_by = EXCLUDED.created_by,
+            claimed_by_id = NULL,
+            claimed_by_username = NULL,
+            resolved_by_id = NULL,
+            resolved_by_username = NULL,
+            reviewed_by_id = NULL,
+            reviewed_by_username = NULL,
+            pr_url = NULL
     """, (thread_id, ticket_name, folder, channel_id, created_by))
 
     conn.commit()
@@ -198,9 +206,17 @@ def get_thread(thread_id: int):
         return dict(row)
     return None
 
-def update_thread_status(thread_id: int, status: str, claimed_by_id: int | None = None, claimed_by_username: str | None = None,
-                        resolved_by_id: int | None = None, resolved_by_username: str | None = None,
-                        reviewed_by_id: int | None = None, reviewed_by_username: str | None = None, pr_url: str | None = None):
+def update_thread_status(
+    thread_id: int,
+    status: str,
+    claimed_by_id: int | None | object = _UNSET,
+    claimed_by_username: str | None | object = _UNSET,
+    resolved_by_id: int | None | object = _UNSET,
+    resolved_by_username: str | None | object = _UNSET,
+    reviewed_by_id: int | None | object = _UNSET,
+    reviewed_by_username: str | None | object = _UNSET,
+    pr_url: str | None | object = _UNSET,
+):
     """Update the status of a thread and optionally track who made the change."""
     conn = get_connection()
     if not conn: return
@@ -209,21 +225,47 @@ def update_thread_status(thread_id: int, status: str, claimed_by_id: int | None 
     updates = []
     params = [status.upper()]
 
-    if claimed_by_id is not None:
+    # Automatically clear stale data when stepping backwards in the workflow,
+    # unless the caller explicitly provided those fields.
+    if status.upper() == 'OPEN':
+        if claimed_by_id is _UNSET: claimed_by_id = None
+        if claimed_by_username is _UNSET: claimed_by_username = None
+        if resolved_by_id is _UNSET: resolved_by_id = None
+        if resolved_by_username is _UNSET: resolved_by_username = None
+        if reviewed_by_id is _UNSET: reviewed_by_id = None
+        if reviewed_by_username is _UNSET: reviewed_by_username = None
+        if pr_url is _UNSET: pr_url = None
+    elif status.upper() == 'CLAIMED':
+        if resolved_by_id is _UNSET: resolved_by_id = None
+        if resolved_by_username is _UNSET: resolved_by_username = None
+        if reviewed_by_id is _UNSET: reviewed_by_id = None
+        if reviewed_by_username is _UNSET: reviewed_by_username = None
+        if pr_url is _UNSET: pr_url = None
+    elif status.upper() == 'PENDING-REVIEW':
+        if reviewed_by_id is _UNSET: reviewed_by_id = None
+        if reviewed_by_username is _UNSET: reviewed_by_username = None
+
+    if claimed_by_id is not _UNSET or claimed_by_username is not _UNSET:
+        claim_id_value = None if claimed_by_id is _UNSET else claimed_by_id
+        claim_username_value = None if claimed_by_username is _UNSET else claimed_by_username
         updates.append("claimed_by_id = %s, claimed_by_username = %s")
-        params.extend([claimed_by_id, claimed_by_username])
+        params.extend([claim_id_value, claim_username_value])
 
-    if resolved_by_id is not None:
+    if resolved_by_id is not _UNSET or resolved_by_username is not _UNSET:
+        resolve_id_value = None if resolved_by_id is _UNSET else resolved_by_id
+        resolve_username_value = None if resolved_by_username is _UNSET else resolved_by_username
         updates.append("resolved_by_id = %s, resolved_by_username = %s")
-        params.extend([resolved_by_id, resolved_by_username])
+        params.extend([resolve_id_value, resolve_username_value])
 
-    if pr_url is not None:
+    if pr_url is not _UNSET:
         updates.append("pr_url = %s")
         params.append(pr_url)
 
-    if reviewed_by_id is not None:
+    if reviewed_by_id is not _UNSET or reviewed_by_username is not _UNSET:
+        review_id_value = None if reviewed_by_id is _UNSET else reviewed_by_id
+        review_username_value = None if reviewed_by_username is _UNSET else reviewed_by_username
         updates.append("reviewed_by_id = %s, reviewed_by_username = %s")
-        params.extend([reviewed_by_id, reviewed_by_username])
+        params.extend([review_id_value, review_username_value])
 
     params.append(thread_id)
 

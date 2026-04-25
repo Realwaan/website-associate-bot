@@ -130,6 +130,8 @@ PM loads tickets          Developer works           QA verifies            PM cl
 
 1. **PM loads tickets:** `/load-tickets <folder> <channel>` creates `[OPEN]` threads from markdown files.
 2. **Developer claims:** `/claim` inside a thread → `[CLAIMED][username]ticket-name`.
+    - Immediately create a git branch using the bot's suggested branch name.
+    - Full guide: [CLAIM_BRANCH_WORKFLOW.md](CLAIM_BRANCH_WORKFLOW.md)
 3. **Developer submits:** `/resolved <pr_url>` inside a thread → `[Pending-Review][username]ticket-name`. Adds to dev leaderboard.
 4. **QA reviews:** `/reviewed` inside a thread → `[Reviewed][username]ticket-name`. Adds to QA leaderboard.
 5. **PM or involved user closes:** `/closed` inside a thread → `[CLOSED][username]ticket-name`.

@@ -920,7 +920,12 @@ async def claim_ticket(interaction: discord.Interaction):
             return
         
         if thread_info['status'] == 'CLAIMED':
-            await interaction.followup.send("⚠️ This ticket is already claimed")
+            existing_branch = build_branch_name(thread_info['ticket_name'])
+            await interaction.followup.send(
+                "⚠️ This ticket is already claimed\n"
+                f"Suggested branch: `{existing_branch}`\n"
+                f"Use: `git checkout {existing_branch}` (or create it if missing)."
+            )
             return
         
         # Get user's display name
@@ -959,11 +964,56 @@ async def claim_ticket(interaction: discord.Interaction):
         )
         
         await interaction.followup.send(embed=embed)
+        await interaction.followup.send(
+            "🔧 Branch quick copy:\n"
+            f"`{branch_name}`\n"
+            f"`git checkout -b {branch_name}`\n"
+            f"`git push -u origin {branch_name}`"
+        )
         logger.info(f"Ticket claimed: {thread.id} by {interaction.user}")
         
     except Exception as e:
         logger.error(f"Error claiming ticket: {e}")
         await interaction.followup.send(f"❌ Error claiming ticket: {e}")
+
+
+@bot.tree.command(
+    name="branch-suggest",
+    description="Print the suggested git branch name for this ticket (use inside a thread)"
+)
+async def branch_suggest(interaction: discord.Interaction):
+    """Print the suggested branch name for the current ticket thread."""
+    await safe_defer(interaction)
+    
+    try:
+        # Check if user is in a thread
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.followup.send("❌ This command must be used inside a thread. Go to the ticket thread and try again.")
+            return
+        
+        thread = interaction.channel
+        
+        # Get thread info from database
+        thread_info = get_thread(thread.id)
+        
+        if not thread_info:
+            await interaction.followup.send("❌ This thread is not tracked in the database")
+            return
+            
+        ticket_name = thread_info['ticket_name']
+        branch_name = build_branch_name(ticket_name)
+        
+        await interaction.followup.send(
+            f"🌿 Suggested branch for **{ticket_name}**:\n"
+            f"`{branch_name}`\n\n"
+            f"**Commands:**\n"
+            f"`git checkout -b {branch_name}`\n"
+            f"`git push -u origin {branch_name}`"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error suggesting branch: {e}")
+        await interaction.followup.send(f"❌ Error suggesting branch: {e}")
 
 
 @bot.tree.command(
@@ -998,13 +1048,34 @@ async def unclaim_ticket(interaction: discord.Interaction):
         if thread_info['status'] != 'CLAIMED':
             await interaction.followup.send("⚠️ This ticket is not claimed. You can only unclaim CLAIMED tickets.")
             return
+
+        # Only PMs or the current claimer can unclaim this ticket.
+        # If claimed_by_id is somehow missing but status is CLAIMED, allow any developer to unclaim.
+        is_pm = user_roles['is_pm']
+        claimed_by_id = thread_info.get('claimed_by_id')
+        if not is_pm and claimed_by_id is not None and claimed_by_id != interaction.user.id:
+            claimed_by = thread_info.get('claimed_by_username') or "another developer"
+            await interaction.followup.send(
+                f"❌ Only the current claimer ({claimed_by}) or a PM can unclaim this ticket."
+            )
+            return
         
         # Update thread name - remove claim prefix
         ticket_name = thread_info['ticket_name']
         new_name = f"[OPEN] {ticket_name}"
         
         await thread.edit(name=new_name)
-        update_thread_status(thread.id, "OPEN")
+        update_thread_status(
+            thread.id,
+            "OPEN",
+            claimed_by_id=None,
+            claimed_by_username=None,
+            resolved_by_id=None,
+            resolved_by_username=None,
+            reviewed_by_id=None,
+            reviewed_by_username=None,
+            pr_url=None,
+        )
         
         # Send notification
         embed = discord.Embed(
@@ -1127,7 +1198,7 @@ async def unresolve_ticket(interaction: discord.Interaction):
         
         # Update thread name back to CLAIMED
         ticket_name = thread_info['ticket_name']
-        username = thread_info['resolved_by_username'] or "dev"
+        username = thread_info['claimed_by_username'] or thread_info['resolved_by_username'] or "dev"
         new_name = f"[CLAIMED][{username}]{ticket_name}"
         
         await thread.edit(name=new_name)
@@ -1521,6 +1592,8 @@ async def show_help(interaction: discord.Interaction):
         embed.add_field(
             name="👨‍💻 Developer Commands",
             value="**`/claim`** (in thread) - Claim a ticket to work on it\n" +
+                  "After claiming, checkout the suggested branch from the bot response.\n" +
+                  "Branch workflow guide: `CLAIM_BRANCH_WORKFLOW.md`\n" +
                   "**`/unclaim`** (in thread) - Unclaim a ticket and reset to OPEN\n" +
                   "**`/resolved <pr_url>`** (in thread) - Submit ticket for QA review with PR link (adds to dev leaderboard)\n" +
                   "**`/unresolve`** (in thread) - Revert status back to CLAIMED (decrements leaderboard)\n" +
@@ -1573,7 +1646,7 @@ async def show_help(interaction: discord.Interaction):
         
         workflow_embed.add_field(
             name="2️⃣ Developer Claims",
-            value="`/claim` (in thread)\nStatus: `[CLAIMED][dev]`",
+            value="`/claim` (in thread)\nStatus: `[CLAIMED][dev]`\nThen run git checkout with suggested branch",
             inline=True
         )
         
