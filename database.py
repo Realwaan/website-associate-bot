@@ -1,5 +1,6 @@
 """Database module for managing tickets and leaderboard (PostgreSQL)."""
 import os
+import asyncio
 import logging
 import threading
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ import psycopg2
 from psycopg2.extras import DictCursor
 from psycopg2 import pool as psycopg2_pool
 from config import DATABASE_URL
+from cache import cache_get, cache_set, cache_delete, ROLE_TTL, THREAD_TTL
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -249,6 +251,7 @@ def run_migrations():
 
 def add_thread(thread_id: int, ticket_name: str, folder: str, channel_id: int, created_by: str | None = None):
     """Add a new thread to the database."""
+    cache_delete(f"thread:{thread_id}")
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -271,12 +274,18 @@ def add_thread(thread_id: int, ticket_name: str, folder: str, channel_id: int, c
         conn.commit()
 
 def get_thread(thread_id: int):
-    """Get a thread from the database."""
+    """Get a thread from the database (cached)."""
+    key = f"thread:{thread_id}"
+    hit, value = cache_get(key)
+    if hit:
+        return value
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM threads WHERE thread_id = %s", (thread_id,))
         row = cursor.fetchone()
-    return dict(row) if row else None
+    result = dict(row) if row else None
+    cache_set(key, result, THREAD_TTL)
+    return result
 
 def update_thread_status(
     thread_id: int,
@@ -344,12 +353,15 @@ def update_thread_status(
             UPDATE threads SET status = %s{update_clause} WHERE thread_id = %s
         """, params)
         conn.commit()
+    # Bust the thread cache so next read reflects the new status
+    cache_delete(f"thread:{thread_id}")
 
 
 # ===== User Role Management =====
 
 def set_user_role(user_id: int, username: str, is_developer: bool = False, is_qa: bool = False, is_pm: bool = False):
     """Set or update a user's roles (can have multiple)."""
+    cache_delete(f"roles:{user_id}")
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -369,22 +381,29 @@ def set_user_role(user_id: int, username: str, is_developer: bool = False, is_qa
         conn.commit()
 
 def get_user_roles(user_id: int) -> dict:
-    """Get a user's roles."""
+    """Get a user's roles (cached)."""
+    key = f"roles:{user_id}"
+    hit, value = cache_get(key)
+    if hit:
+        return value
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT is_developer, is_qa, is_pm FROM user_roles WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
     if row:
         is_pm = bool(row['is_pm'])
-        return {
+        result = {
             "is_developer": bool(row['is_developer']) or is_pm,
             "is_qa": bool(row['is_qa']) or is_pm,
             "is_pm": is_pm
         }
-    return {"is_developer": False, "is_qa": False, "is_pm": False}
+    else:
+        result = {"is_developer": False, "is_qa": False, "is_pm": False}
+    cache_set(key, result, ROLE_TTL)
+    return result
 
 def has_role(user_id: int, role: str) -> bool:
-    """Check if user has a specific role permission."""
+    """Check if user has a specific role permission (uses cached get_user_roles)."""
     roles = get_user_roles(user_id)
     return roles.get(f"is_{role.lower()}", False)
 
@@ -582,3 +601,46 @@ def get_stale_threads(threshold_hours: int = 48) -> list:
             (max(1, int(threshold_hours)),),
         )
         return [dict(row) for row in cursor.fetchall()]
+
+
+# ── Async wrappers ─────────────────────────────────────────────────────────────
+# psycopg2 is synchronous.  Running DB calls directly in an async function
+# blocks the event loop, which delays every Discord interaction.
+# These wrappers offload work to a thread-pool executor so the bot stays
+# responsive while waiting for Supabase round-trips.
+
+async def async_get_thread(thread_id: int):
+    """Non-blocking version of get_thread."""
+    return await asyncio.to_thread(get_thread, thread_id)
+
+async def async_get_user_roles(user_id: int) -> dict:
+    """Non-blocking version of get_user_roles."""
+    return await asyncio.to_thread(get_user_roles, user_id)
+
+async def async_has_role(user_id: int, role: str) -> bool:
+    """Non-blocking version of has_role."""
+    return await asyncio.to_thread(has_role, user_id, role)
+
+async def async_update_thread_status(thread_id: int, status: str, **kwargs):
+    """Non-blocking version of update_thread_status."""
+    return await asyncio.to_thread(update_thread_status, thread_id, status, **kwargs)
+
+async def async_get_threads_by_status() -> dict:
+    """Non-blocking version of get_threads_by_status."""
+    return await asyncio.to_thread(get_threads_by_status)
+
+async def async_get_leaderboard_dev(limit: int = 10) -> list:
+    """Non-blocking version of get_leaderboard_dev."""
+    return await asyncio.to_thread(get_leaderboard_dev, limit)
+
+async def async_get_leaderboard_qa(limit: int = 10) -> list:
+    """Non-blocking version of get_leaderboard_qa."""
+    return await asyncio.to_thread(get_leaderboard_qa, limit)
+
+async def async_get_setting(key: str) -> str | None:
+    """Non-blocking version of get_setting."""
+    return await asyncio.to_thread(get_setting, key)
+
+async def async_set_setting(key: str, value: str) -> None:
+    """Non-blocking version of set_setting."""
+    return await asyncio.to_thread(set_setting, key, value)

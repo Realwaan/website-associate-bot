@@ -7,3 +7,4 @@ tickets.db
 .git/
 .gitignore
 .vscode/
+dev.py

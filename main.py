@@ -13,12 +13,17 @@ from datetime import datetime, time, timezone, timedelta
 from config import DISCORD_TOKEN, TICKETS_DIR, SCAN_IGNORE_DIRS, SCAN_FILE_EXTENSIONS, SCAN_LARGE_FILE_THRESHOLD
 from database import (
     init_db, verify_database_connection, add_thread, get_thread, update_thread_status,
-    increment_developer_resolved, increment_qa_reviewed, 
+    increment_developer_resolved, increment_qa_reviewed,
     decrement_developer_resolved, decrement_qa_reviewed,
     get_leaderboard_dev, get_leaderboard_qa,
     set_user_role, get_user_roles, has_role,
     is_ticket_loaded, mark_ticket_loaded, get_loaded_tickets, remove_thread_record,
-    set_setting, get_setting, get_threads_by_status, get_stale_threads
+    set_setting, get_setting, get_threads_by_status, get_stale_threads,
+    # ── async (non-blocking) wrappers ──
+    async_get_thread, async_get_user_roles, async_has_role,
+    async_update_thread_status, async_get_threads_by_status,
+    async_get_leaderboard_dev, async_get_leaderboard_qa,
+    async_get_setting, async_set_setting,
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
