@@ -142,6 +142,10 @@ async def on_ready():
         scheduled_ticket_summary.start()
         logger.info("Scheduled ticket summary task started")
 
+    if not scheduled_repo_updates.is_running():
+        scheduled_repo_updates.start()
+        logger.info("Scheduled repository updates task started")
+
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -517,6 +521,60 @@ async def scheduled_ticket_summary():
         
     except Exception as e:
         logger.error(f"Error in scheduled task: {e}")
+
+
+@tasks.loop(minutes=AUTO_UPDATES_POLL_MINUTES)
+async def scheduled_repo_updates():
+    """Background monitor for commit/merge bulletins."""
+    try:
+        enabled = (get_setting(AUTO_UPDATES_ENABLED_SETTING) or "false").lower() == "true"
+        if not enabled:
+            return
+
+        channel_id_str = get_setting(COMMIT_CHANNEL_SETTING)
+        repo_url = get_setting(AUTO_UPDATES_REPO_SETTING)
+        branch = get_setting(AUTO_UPDATES_BRANCH_SETTING) or "main"
+        feed_type = get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
+        limit_str = get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10"
+
+        if not channel_id_str or not repo_url:
+            return
+
+        try:
+            limit = max(1, min(int(limit_str), 30))
+        except ValueError:
+            limit = 10
+
+        channel_id = int(channel_id_str)
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                logger.warning("Auto updates: could not find channel %s", channel_id)
+                return
+
+        ok, message, commit_count, pr_count = await _post_project_updates(
+            target_channel=channel,
+            repo_url=repo_url,
+            branch=branch,
+            limit=limit,
+            feed_type=feed_type,
+            reported_by="Automation",
+        )
+
+        if ok and (commit_count or pr_count):
+            logger.info(
+                "Auto repo updates posted: %s commits + %s merged PRs for %s",
+                commit_count,
+                pr_count,
+                repo_url,
+            )
+        elif not ok:
+            logger.warning("Auto repo updates failed: %s", message)
+
+    except Exception as e:
+        logger.error("Error in scheduled repo updates: %s", e)
 
 
 @bot.tree.command(
@@ -1588,6 +1646,12 @@ async def show_help(interaction: discord.Interaction):
                   "Generate full repo structure/component analysis and a 12-week (3-month) roadmap.\n" +
                   "**`/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]`**\n" +
                   "Cloud-safe scan by cloning a repository URL before analysis.\n" +
+                  "**`/set-commit-channel <channel>`**\n" +
+                  "Set default channel for repository bulletins.\n" +
+                  "**`/update-project <repo_url> [branch] [limit] [feed_type] [channel]`**\n" +
+                  "Post formal commit/merge updates with links and enable auto-monitoring.\n" +
+                  "**`/auto-updates <enable|disable|status> [repo_url] [branch] [feed_type] [limit]`**\n" +
+                  "Pause/resume automatic repo notifications or view current config.\n" +
                   "*Only Project Managers can use this*\n" +
                   "`/load-tickets support #support-channel`",
             inline=False
@@ -2340,6 +2404,12 @@ async def ticket_info(interaction: discord.Interaction):
 # ─── Commit / Merge Announcements ─────────────────────────────────────────────
 
 COMMIT_CHANNEL_SETTING = "commit_announce_channel_id"
+AUTO_UPDATES_ENABLED_SETTING = "auto_repo_updates_enabled"
+AUTO_UPDATES_REPO_SETTING = "auto_repo_updates_repo_url"
+AUTO_UPDATES_BRANCH_SETTING = "auto_repo_updates_branch"
+AUTO_UPDATES_FEED_TYPE_SETTING = "auto_repo_updates_feed_type"
+AUTO_UPDATES_LIMIT_SETTING = "auto_repo_updates_limit"
+AUTO_UPDATES_POLL_MINUTES = int(os.getenv("AUTO_UPDATES_POLL_MINUTES", "30"))
 
 
 @bot.tree.command(
@@ -2360,6 +2430,124 @@ async def set_commit_channel(interaction: discord.Interaction, channel: discord.
         f"✅ Commit announcements will now be posted to {channel.mention}."
     )
     logger.info(f"Commit channel set to {channel.id} by {interaction.user}")
+
+
+@bot.tree.command(
+    name="auto-updates",
+    description="Enable, disable, or view status of automatic repo bulletins (PM only)"
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="Enable", value="enable"),
+    app_commands.Choice(name="Disable", value="disable"),
+    app_commands.Choice(name="Status", value="status"),
+])
+@app_commands.choices(feed_type=[
+    app_commands.Choice(name="Both: Commits + Merged PRs", value="both"),
+    app_commands.Choice(name="Merged PRs only", value="merged"),
+    app_commands.Choice(name="Commits only", value="commits"),
+])
+@app_commands.describe(
+    action="Choose whether to enable, disable, or view auto updates",
+    repo_url="Optional repo URL when enabling (uses saved value if omitted)",
+    branch="Optional branch when enabling (default: saved value or main)",
+    feed_type="Optional scope when enabling",
+    limit="Optional max commit posts per cycle (1-30)",
+)
+async def auto_updates(
+    interaction: discord.Interaction,
+    action: str,
+    repo_url: str | None = None,
+    branch: str | None = None,
+    feed_type: str | None = None,
+    limit: app_commands.Range[int, 1, 30] | None = None,
+):
+    """Control automatic commit/merge bulletins."""
+    await safe_defer(interaction, ephemeral=True)
+
+    if not has_role(interaction.user.id, "pm"):
+        await interaction.followup.send("❌ Only Project Managers can manage automatic updates.")
+        return
+
+    if action == "status":
+        enabled = (get_setting(AUTO_UPDATES_ENABLED_SETTING) or "false").lower() == "true"
+        configured_repo = get_setting(AUTO_UPDATES_REPO_SETTING) or "(not set)"
+        configured_branch = get_setting(AUTO_UPDATES_BRANCH_SETTING) or "main"
+        configured_feed = get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
+        configured_limit = get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10"
+        channel_id = get_setting(COMMIT_CHANNEL_SETTING)
+
+        channel_text = "(not set)"
+        if channel_id:
+            channel_obj = interaction.guild.get_channel(int(channel_id))
+            channel_text = channel_obj.mention if channel_obj else f"Unknown channel ({channel_id})"
+
+        embed = discord.Embed(
+            title="Automatic Repo Updates Status",
+            color=discord.Color.green() if enabled else discord.Color.orange(),
+        )
+        embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
+        embed.add_field(name="Poll Interval", value=f"{AUTO_UPDATES_POLL_MINUTES} min", inline=True)
+        embed.add_field(name="Channel", value=channel_text, inline=False)
+        embed.add_field(name="Repository", value=configured_repo, inline=False)
+        embed.add_field(name="Branch", value=f"`{configured_branch}`", inline=True)
+        embed.add_field(name="Feed", value=f"`{configured_feed}`", inline=True)
+        embed.add_field(name="Limit", value=f"`{configured_limit}`", inline=True)
+
+        await interaction.followup.send(embed=embed)
+        return
+
+    if action == "disable":
+        set_setting(AUTO_UPDATES_ENABLED_SETTING, "false")
+        await interaction.followup.send("⏸️ Automatic repo updates are now disabled.")
+        logger.info("Auto repo updates disabled by %s", interaction.user)
+        return
+
+    # action == enable
+    final_repo = repo_url or get_setting(AUTO_UPDATES_REPO_SETTING)
+    final_branch = branch or get_setting(AUTO_UPDATES_BRANCH_SETTING) or "main"
+    final_feed = feed_type or get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
+    final_limit = limit or int(get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10")
+
+    if final_feed not in {"both", "merged", "commits"}:
+        await interaction.followup.send("❌ Invalid feed type. Use both, merged, or commits.")
+        return
+
+    if not final_repo:
+        await interaction.followup.send(
+            "❌ No repository configured yet. Provide `repo_url` now or run `/update-project` first."
+        )
+        return
+
+    channel_id = get_setting(COMMIT_CHANNEL_SETTING)
+    if not channel_id:
+        await interaction.followup.send(
+            "❌ No commit channel configured. Run `/set-commit-channel` first."
+        )
+        return
+
+    # Persist configuration and enable.
+    set_setting(AUTO_UPDATES_REPO_SETTING, final_repo)
+    set_setting(AUTO_UPDATES_BRANCH_SETTING, final_branch)
+    set_setting(AUTO_UPDATES_FEED_TYPE_SETTING, final_feed)
+    set_setting(AUTO_UPDATES_LIMIT_SETTING, str(final_limit))
+    set_setting(AUTO_UPDATES_ENABLED_SETTING, "true")
+
+    await interaction.followup.send(
+        "✅ Automatic repo updates enabled.\n"
+        f"Repo: `{final_repo}`\n"
+        f"Branch: `{final_branch}`\n"
+        f"Feed: `{final_feed}`\n"
+        f"Limit: `{final_limit}`\n"
+        f"Poll Interval: `{AUTO_UPDATES_POLL_MINUTES}` min"
+    )
+    logger.info(
+        "Auto repo updates enabled by %s (repo=%s branch=%s feed=%s limit=%s)",
+        interaction.user,
+        final_repo,
+        final_branch,
+        final_feed,
+        final_limit,
+    )
 
 
 
@@ -2414,145 +2602,113 @@ async def _github_get(url: str, token: str | None = None) -> dict | list | None:
     return await loop.run_in_executor(None, _fetch)
 
 
-# ── /update-project ──────────────────────────────────────────────────────────
-
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")          # optional, raises rate limit
-_LAST_SHA_PREFIX = "last_commit_sha:"              # settings key prefix per repo
-
-
-@bot.tree.command(
-    name="update-project",
-    description="Check a GitHub repo for new commits and merged PRs, then post to the update channel (PM only)"
-)
-@app_commands.describe(
-    repo_url="GitHub repository URL or owner/repo (e.g. https://github.com/org/repo)",
-    branch="Branch to track (default: main)",
-    limit="Max new commits to post per run (default 10)",
-)
-async def update_project(
-    interaction: discord.Interaction,
+async def _post_project_updates(
+    *,
+    target_channel: discord.abc.Messageable,
     repo_url: str,
-    branch: str = "main",
-    limit: app_commands.Range[int, 1, 30] = 10,
-):
-    """Fetch new commits and merged PRs from GitHub and post them to the configured channel."""
-    await safe_defer(interaction, ephemeral=True)
+    branch: str,
+    limit: int,
+    feed_type: str,
+    reported_by: str,
+) -> tuple[bool, str, int, int]:
+    """Fetch and post repository updates to a channel.
 
-    if not has_role(interaction.user.id, "pm"):
-        await interaction.followup.send("❌ Only Project Managers can post project updates.")
-        return
+    Returns: (success, message, new_commit_count, merged_pr_count)
+    """
+    if feed_type not in {"both", "merged", "commits"}:
+        return False, "Invalid feed type. Use one of: both, merged, commits.", 0, 0
 
-    # ── Resolve announce channel ──────────────────────────────────────────────
-    channel_id_str = get_setting(COMMIT_CHANNEL_SETTING)
-    if not channel_id_str:
-        await interaction.followup.send(
-            "❌ No update channel configured yet. Run `/set-commit-channel` first."
-        )
-        return
+    include_commits = feed_type in {"both", "commits"}
+    include_merged = feed_type in {"both", "merged"}
 
-    target_channel = interaction.guild.get_channel(int(channel_id_str))
-    if not target_channel:
-        await interaction.followup.send(
-            "❌ Configured channel not found — run `/set-commit-channel` to reset it."
-        )
-        return
-
-    # ── Parse repo ────────────────────────────────────────────────────────────
     owner, repo = _parse_github_repo(repo_url)
     if not owner:
-        await interaction.followup.send(
-            "❌ Could not parse the repository URL. "
-            "Use a full GitHub URL or `owner/repo` format."
-        )
-        return
+        return False, "Could not parse repository URL. Use a GitHub URL or owner/repo.", 0, 0
 
     repo_url_clean = f"https://github.com/{owner}/{repo}"
     api_base = f"https://api.github.com/repos/{owner}/{repo}"
 
-    # ── Fetch commits from GitHub API ────────────────────────────────────────
-    commits_data = await _github_get(
-        f"{api_base}/commits?sha={branch}&per_page={limit}",
-        token=GITHUB_TOKEN,
-    )
-    if commits_data is None:
-        await interaction.followup.send(
-            "❌ Could not reach GitHub API. Check the repo URL and ensure it is public "
-            "(or set `GITHUB_TOKEN` in `.env` for private repos)."
-        )
-        return
-
-    if isinstance(commits_data, dict) and "message" in commits_data:
-        await interaction.followup.send(
-            f"❌ GitHub API error: {commits_data['message']}"
-        )
-        return
-
-    # ── Filter only NEW commits (since last run) ──────────────────────────────
-    setting_key = f"{_LAST_SHA_PREFIX}{owner}/{repo}/{branch}"
-    last_sha = get_setting(setting_key)
-
     new_commits = []
-    for c in commits_data:
-        sha = c.get("sha", "")
-        if sha == last_sha:
-            break           # reached the last commit we already posted
-        new_commits.append(c)
+    if include_commits:
+        commits_data = await _github_get(
+            f"{api_base}/commits?sha={branch}&per_page={limit}",
+            token=GITHUB_TOKEN,
+        )
+        if commits_data is None:
+            return False, "Could not reach GitHub API for commits.", 0, 0
 
-    # Record the newest SHA so next run only shows truly new commits
-    if commits_data:
-        newest_sha = commits_data[0].get("sha", "")
-        if newest_sha:
-            set_setting(setting_key, newest_sha)
+        if isinstance(commits_data, dict) and "message" in commits_data:
+            return False, f"GitHub API error: {commits_data['message']}", 0, 0
 
-    # ── Fetch merged PRs (last 30, filter by merged_at) ──────────────────────
-    prs_data = await _github_get(
-        f"{api_base}/pulls?state=closed&sort=updated&direction=desc&per_page=30",
-        token=GITHUB_TOKEN,
-    )
+        setting_key = f"{_LAST_SHA_PREFIX}{owner}/{repo}/{branch}"
+        last_sha = get_setting(setting_key)
+
+        for c in commits_data:
+            sha = c.get("sha", "")
+            if sha == last_sha:
+                break
+            new_commits.append(c)
+
+        if commits_data:
+            newest_sha = commits_data[0].get("sha", "")
+            if newest_sha:
+                set_setting(setting_key, newest_sha)
+
+    prs_data = None
+    if include_merged:
+        prs_data = await _github_get(
+            f"{api_base}/pulls?state=closed&sort=updated&direction=desc&per_page=30",
+            token=GITHUB_TOKEN,
+        )
+        if prs_data is None:
+            return False, "Could not reach GitHub API for pull requests.", len(new_commits), 0
+
+        if isinstance(prs_data, dict) and "message" in prs_data:
+            return False, f"GitHub API error: {prs_data['message']}", len(new_commits), 0
+
     merged_prs = []
-    if isinstance(prs_data, list):
+    if include_merged and isinstance(prs_data, list):
         pr_setting_key = f"last_pr_id:{owner}/{repo}"
         last_pr_id = get_setting(pr_setting_key)
         last_pr_id_int = int(last_pr_id) if last_pr_id else 0
 
         for pr in prs_data:
             if not pr.get("merged_at"):
-                continue                            # closed but not merged
+                continue
             if pr["number"] <= last_pr_id_int:
                 break
             merged_prs.append(pr)
 
         if prs_data:
-            latest_closed = next(
-                (p for p in prs_data if p.get("merged_at")), None
-            )
+            latest_closed = next((p for p in prs_data if p.get("merged_at")), None)
             if latest_closed:
                 set_setting(pr_setting_key, str(latest_closed["number"]))
 
     if not new_commits and not merged_prs:
-        await interaction.followup.send(
-            f"✅ **{owner}/{repo}** is already up to date — no new commits or merged PRs on `{branch}`."
-        )
-        return
+        scope_text = {
+            "both": "new commits or merged PRs",
+            "commits": "new commits",
+            "merged": "merged PRs",
+        }[feed_type]
+        return True, f"No {scope_text} found on `{branch}`.", 0, 0
 
-    # ── Post header ──────────────────────────────────────────────────────────
-    posted_by = interaction.user.display_name or interaction.user.name
     now_utc = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M UTC")
-
     header_embed = discord.Embed(
-        title="📋 Project Update",
+        title="Project Repository Bulletin",
         description=(
             f"**Repository:** [{owner}/{repo}]({repo_url_clean})\n"
-            f"**Branch:** `{branch}`\n\n"
-            f"*Reported by {posted_by} · {now_utc}*"
+            f"**Branch:** `{branch}`\n"
+            f"**Update Scope:** `{feed_type}`\n\n"
+            f"This bulletin summarizes newly detected source-control activity.\n"
+            f"Reported by {reported_by} on {now_utc}."
         ),
         color=discord.Color.from_rgb(30, 144, 255),
         url=repo_url_clean,
     )
-    header_embed.set_footer(text="Source Control Update  ·  Internal use only")
+    header_embed.add_field(name="Repository Link", value=f"[Open Repository]({repo_url_clean})", inline=True)
+    header_embed.set_footer(text="Formal Source Control Bulletin")
     await target_channel.send(embed=header_embed)
 
-    # ── Post merged PRs first (most impactful) ────────────────────────────────
     for idx, pr in enumerate(merged_prs, start=1):
         pr_url = pr.get("html_url", repo_url_clean)
         pr_num = pr.get("number", "?")
@@ -2569,15 +2725,14 @@ async def update_project(
 
         description = f"**{pr_title}**"
         if pr_body:
-            # Trim long PR descriptions
             truncated = pr_body[:300] + ("…" if len(pr_body) > 300 else "")
             description += f"\n\n{truncated}"
 
         embed = discord.Embed(
-            title=f"🔀 Merged Pull Request  ·  #{pr_num}",
+            title=f"Merged Pull Request  #{pr_num}",
             description=description,
             url=pr_url,
-            color=discord.Color.from_rgb(130, 80, 255),
+            color=discord.Color.from_rgb(64, 130, 109),
             timestamp=merged_dt,
         )
         embed.add_field(name="Author", value=f"`{pr_author}`", inline=True)
@@ -2586,7 +2741,6 @@ async def update_project(
         embed.set_footer(text=f"Merged PR {idx} of {len(merged_prs)}")
         await target_channel.send(embed=embed)
 
-    # ── Post new commits ──────────────────────────────────────────────────────
     for idx, c in enumerate(new_commits[:limit], start=1):
         sha = c.get("sha", "")
         short_sha = sha[:7]
@@ -2605,10 +2759,10 @@ async def update_project(
 
         is_merge = subject.lower().startswith("merge")
         embed_color = discord.Color.from_rgb(88, 101, 242) if is_merge else discord.Color.from_rgb(87, 242, 135)
-        kind_label = "🔀 Merge Commit" if is_merge else "✅ Commit"
+        kind_label = "Merge Commit" if is_merge else "Commit"
 
         embed = discord.Embed(
-            title=f"{kind_label}  ·  `{short_sha}`",
+            title=f"{kind_label}  {short_sha}",
             description=f"**{subject}**",
             url=commit_url,
             color=embed_color,
@@ -2624,19 +2778,111 @@ async def update_project(
         embed.set_footer(text=f"Commit {idx} of {len(new_commits)}")
         await target_channel.send(embed=embed)
 
-    # ── Confirmation ──────────────────────────────────────────────────────────
+    return True, "Posted update bulletin.", len(new_commits), len(merged_prs)
+
+
+# ── /update-project ──────────────────────────────────────────────────────────
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")          # optional, raises rate limit
+_LAST_SHA_PREFIX = "last_commit_sha:"              # settings key prefix per repo
+
+
+@bot.tree.command(
+    name="update-project",
+    description="Post a formal repo update (commits, merged PRs, or both) to a channel (PM only)"
+)
+@app_commands.choices(feed_type=[
+    app_commands.Choice(name="Both: Commits + Merged PRs", value="both"),
+    app_commands.Choice(name="Merged PRs only", value="merged"),
+    app_commands.Choice(name="Commits only", value="commits"),
+])
+@app_commands.describe(
+    repo_url="GitHub repository URL or owner/repo (e.g. https://github.com/org/repo)",
+    branch="Branch to track (default: main)",
+    limit="Max new commits to post per run (default 10)",
+    feed_type="Choose what to publish: commits, merged PRs, or both",
+    channel="Optional destination channel (overrides /set-commit-channel for this run only)",
+)
+async def update_project(
+    interaction: discord.Interaction,
+    repo_url: str,
+    branch: str = "main",
+    limit: app_commands.Range[int, 1, 30] = 10,
+    feed_type: str = "both",
+    channel: discord.TextChannel | None = None,
+):
+    """Fetch new commits and merged PRs from GitHub and post them to the configured channel."""
+    await safe_defer(interaction, ephemeral=True)
+
+    if not has_role(interaction.user.id, "pm"):
+        await interaction.followup.send("❌ Only Project Managers can post project updates.")
+        return
+
+    if feed_type not in {"both", "merged", "commits"}:
+        await interaction.followup.send("❌ Invalid feed type. Use one of: both, merged, commits.")
+        return
+
+    # ── Resolve announce channel ──────────────────────────────────────────────
+    target_channel = channel
+    if target_channel is None:
+        channel_id_str = get_setting(COMMIT_CHANNEL_SETTING)
+        if not channel_id_str:
+            await interaction.followup.send(
+                "❌ No update channel configured yet. Run `/set-commit-channel` first, "
+                "or pass a `channel` in this command."
+            )
+            return
+
+        target_channel = interaction.guild.get_channel(int(channel_id_str))
+        if not target_channel:
+            await interaction.followup.send(
+                "❌ Configured channel not found. Run `/set-commit-channel` again or pass a channel explicitly."
+            )
+            return
+
+    ok, message, commit_count, pr_count = await _post_project_updates(
+        target_channel=target_channel,
+        repo_url=repo_url,
+        branch=branch,
+        limit=limit,
+        feed_type=feed_type,
+        reported_by=(interaction.user.display_name or interaction.user.name),
+    )
+
+    if not ok:
+        await interaction.followup.send(f"❌ {message}")
+        return
+
+    # Persist automatic monitor configuration from latest successful run.
+    set_setting(AUTO_UPDATES_REPO_SETTING, repo_url)
+    set_setting(AUTO_UPDATES_BRANCH_SETTING, branch)
+    set_setting(AUTO_UPDATES_FEED_TYPE_SETTING, feed_type)
+    set_setting(AUTO_UPDATES_LIMIT_SETTING, str(limit))
+    set_setting(AUTO_UPDATES_ENABLED_SETTING, "true")
+
+    if commit_count == 0 and pr_count == 0:
+        await interaction.followup.send(
+            f"✅ `{repo_url}` is already up to date on `{branch}`.\n"
+            "ℹ️ Auto-monitor remains enabled and will continue checking on schedule."
+        )
+        return
+
     parts = []
-    if new_commits:
-        parts.append(f"**{len(new_commits)}** new commit(s)")
-    if merged_prs:
-        parts.append(f"**{len(merged_prs)}** merged PR(s)")
+    if commit_count:
+        parts.append(f"**{commit_count}** new commit(s)")
+    if pr_count:
+        parts.append(f"**{pr_count}** merged PR(s)")
 
     await interaction.followup.send(
-        f"✅ Posted {' and '.join(parts)} from `{owner}/{repo}` to {target_channel.mention}."
+        f"✅ Posted {' and '.join(parts)} from `{repo_url}` to {target_channel.mention}.\n"
+        f"🤖 Auto-monitor enabled ({AUTO_UPDATES_POLL_MINUTES} min interval)."
     )
     logger.info(
-        "update-project: %s commits + %s PRs posted for %s/%s by %s",
-        len(new_commits), len(merged_prs), owner, repo, interaction.user,
+        "update-project: %s commits + %s PRs posted for %s by %s",
+        commit_count,
+        pr_count,
+        repo_url,
+        interaction.user,
     )
 
 def main():
