@@ -53,6 +53,74 @@ bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
 ai_client = NvidiaAIClient()
 
 
+def _safe_poll_minutes() -> int:
+    """Parse auto-update poll interval safely, falling back to 30 minutes."""
+    raw = os.getenv("AUTO_UPDATES_POLL_MINUTES", "30")
+    try:
+        value = int(raw)
+        if value < 1:
+            raise ValueError("must be >= 1")
+        return value
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid AUTO_UPDATES_POLL_MINUTES=%r. Falling back to 30 minutes.",
+            raw,
+        )
+        return 30
+
+
+# Commit / merge announcement settings (must be defined before task decorators)
+COMMIT_CHANNEL_SETTING = "commit_announce_channel_id"
+AUTO_UPDATES_ENABLED_SETTING = "auto_repo_updates_enabled"
+AUTO_UPDATES_REPO_SETTING = "auto_repo_updates_repo_url"
+AUTO_UPDATES_BRANCH_SETTING = "auto_repo_updates_branch"
+AUTO_UPDATES_FEED_TYPE_SETTING = "auto_repo_updates_feed_type"
+AUTO_UPDATES_LIMIT_SETTING = "auto_repo_updates_limit"
+AUTO_UPDATES_POLL_MINUTES = _safe_poll_minutes()
+
+
+def _validate_auto_update_boot_config() -> None:
+    """Disable auto updates at startup when required settings are invalid."""
+    enabled = (get_setting(AUTO_UPDATES_ENABLED_SETTING) or "false").lower() == "true"
+    if not enabled:
+        return
+
+    errors: list[str] = []
+
+    channel_id = get_setting(COMMIT_CHANNEL_SETTING)
+    if not channel_id:
+        errors.append("missing commit channel")
+    else:
+        try:
+            int(channel_id)
+        except ValueError:
+            errors.append(f"invalid channel id '{channel_id}'")
+
+    repo_url = get_setting(AUTO_UPDATES_REPO_SETTING)
+    owner, repo = _parse_github_repo(repo_url or "")
+    if not repo_url or not owner or not repo:
+        errors.append("invalid or missing repository URL")
+
+    feed_type = get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
+    if feed_type not in {"both", "merged", "commits"}:
+        errors.append(f"invalid feed type '{feed_type}'")
+
+    limit_str = get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10"
+    try:
+        limit = int(limit_str)
+        if limit < 1 or limit > 30:
+            raise ValueError("out of range")
+    except ValueError:
+        errors.append(f"invalid limit '{limit_str}'")
+
+    if errors:
+        set_setting(AUTO_UPDATES_ENABLED_SETTING, "false")
+        logger.warning(
+            "Auto repo updates disabled at startup due to invalid config: %s",
+            "; ".join(errors),
+        )
+
+
 async def clear_global_app_commands() -> int:
     """Remove all globally registered slash commands for this application."""
     app_id = bot.application_id
@@ -136,6 +204,9 @@ async def on_ready():
     # Initialize database
     init_db()
     logger.info("Database initialized")
+
+    # Prevent bad persisted settings from causing noisy auto-update failures.
+    _validate_auto_update_boot_config()
     
     # Start scheduled task
     if not scheduled_ticket_summary.is_running():
@@ -2403,14 +2474,6 @@ async def ticket_info(interaction: discord.Interaction):
 
 # ─── Commit / Merge Announcements ─────────────────────────────────────────────
 
-COMMIT_CHANNEL_SETTING = "commit_announce_channel_id"
-AUTO_UPDATES_ENABLED_SETTING = "auto_repo_updates_enabled"
-AUTO_UPDATES_REPO_SETTING = "auto_repo_updates_repo_url"
-AUTO_UPDATES_BRANCH_SETTING = "auto_repo_updates_branch"
-AUTO_UPDATES_FEED_TYPE_SETTING = "auto_repo_updates_feed_type"
-AUTO_UPDATES_LIMIT_SETTING = "auto_repo_updates_limit"
-AUTO_UPDATES_POLL_MINUTES = int(os.getenv("AUTO_UPDATES_POLL_MINUTES", "30"))
-
 
 @bot.tree.command(
     name="set-commit-channel",
@@ -2478,8 +2541,11 @@ async def auto_updates(
 
         channel_text = "(not set)"
         if channel_id:
-            channel_obj = interaction.guild.get_channel(int(channel_id))
-            channel_text = channel_obj.mention if channel_obj else f"Unknown channel ({channel_id})"
+            try:
+                channel_obj = interaction.guild.get_channel(int(channel_id))
+                channel_text = channel_obj.mention if channel_obj else f"Unknown channel ({channel_id})"
+            except ValueError:
+                channel_text = f"Invalid channel id ({channel_id})"
 
         embed = discord.Embed(
             title="Automatic Repo Updates Status",
@@ -2506,7 +2572,12 @@ async def auto_updates(
     final_repo = repo_url or get_setting(AUTO_UPDATES_REPO_SETTING)
     final_branch = branch or get_setting(AUTO_UPDATES_BRANCH_SETTING) or "main"
     final_feed = feed_type or get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
-    final_limit = limit or int(get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10")
+    limit_setting = get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10"
+    try:
+        saved_limit = int(limit_setting)
+    except ValueError:
+        saved_limit = 10
+    final_limit = limit if limit is not None else max(1, min(saved_limit, 30))
 
     if final_feed not in {"both", "merged", "commits"}:
         await interaction.followup.send("❌ Invalid feed type. Use both, merged, or commits.")
