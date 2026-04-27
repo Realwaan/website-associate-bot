@@ -2118,6 +2118,25 @@ async def scan_pdf(interaction: discord.Interaction, pdf: discord.Attachment, fo
         )
 
         await interaction.followup.send(embed=embed)
+
+        # Push generated files to GitHub so they survive Render redeploys.
+        all_files = result.generated_ticket_files + [result.roadmap_file, result.brief_file]
+        all_files = [f for f in all_files if f]
+        if all_files and os.getenv("GITHUB_REPO"):
+            ok, push_msg = await _github_push_tickets(
+                all_files,
+                commit_message=f"chore: scan-pdf output for {output_folder} [{pdf.filename}]",
+            )
+            if ok:
+                logger.info("GitHub push after scan-pdf: %s", push_msg)
+            else:
+                logger.warning("GitHub push skipped/partial: %s", push_msg)
+                await interaction.followup.send(
+                    f"⚠️ Tickets saved locally but GitHub sync failed: {push_msg}\n"
+                    "Add `GITHUB_REPO=owner/repo` to Render env vars to enable auto-push.",
+                    ephemeral=True,
+                )
+
         logger.info(
             "PDF brief scanned: file=%s pages=%s chars=%s folder=%s tickets=%s by=%s",
             pdf.filename,
@@ -3092,7 +3111,78 @@ async def _post_project_updates(
 # ── /update-project ──────────────────────────────────────────────────────────
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")          # optional, raises rate limit
+GITHUB_REPO  = os.getenv("GITHUB_REPO", "")        # e.g. "owner/repo" — needed to push scan results
 _LAST_SHA_PREFIX = "last_commit_sha:"              # settings key prefix per repo
+
+
+async def _github_push_tickets(
+    files: list[str],
+    commit_message: str,
+    branch: str = "main",
+) -> tuple[bool, str]:
+    """
+    Push a list of local file paths to GitHub via the Contents API.
+    Files must already exist on disk. Returns (success, message).
+    Requires GITHUB_TOKEN and GITHUB_REPO env vars.
+    """
+    import base64, aiohttp
+
+    token = os.getenv("GITHUB_TOKEN", "")
+    repo  = os.getenv("GITHUB_REPO", "")
+    if not token or not repo:
+        return False, "GITHUB_TOKEN or GITHUB_REPO not set — skipping auto-push."
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    api = f"https://api.github.com/repos/{repo}/contents"
+    pushed, failed = 0, 0
+
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for local_path in files:
+            p = Path(local_path)
+            if not p.exists():
+                failed += 1
+                continue
+
+            # GitHub path is relative to repo root (tickets/folder/file.md)
+            try:
+                tickets_root = Path(TICKETS_DIR).resolve()
+                rel = p.resolve().relative_to(tickets_root)
+                gh_path = f"{TICKETS_DIR}/{rel.as_posix()}"
+            except ValueError:
+                gh_path = f"{TICKETS_DIR}/{p.name}"
+
+            content_b64 = base64.b64encode(p.read_bytes()).decode()
+
+            # Check if the file already exists (need its SHA to update it)
+            existing_sha = None
+            async with session.get(f"{api}/{gh_path}") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    existing_sha = data.get("sha")
+
+            payload: dict = {
+                "message": commit_message,
+                "content": content_b64,
+                "branch": branch,
+            }
+            if existing_sha:
+                payload["sha"] = existing_sha
+
+            async with session.put(f"{api}/{gh_path}", json=payload) as resp:
+                if resp.status in (200, 201):
+                    pushed += 1
+                else:
+                    failed += 1
+                    body = await resp.text()
+                    logger.warning("GitHub push failed for %s: %s %s", gh_path, resp.status, body[:200])
+
+    if failed == 0:
+        return True, f"Pushed {pushed} file(s) to `{repo}` ({branch})."
+    return False, f"Pushed {pushed} file(s), {failed} failed. Check Render logs."
 
 
 @bot.tree.command(
