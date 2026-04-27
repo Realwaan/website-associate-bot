@@ -17,7 +17,7 @@ from database import (
     decrement_developer_resolved, decrement_qa_reviewed,
     get_leaderboard_dev, get_leaderboard_qa,
     set_user_role, get_user_roles, has_role,
-    is_ticket_loaded, mark_ticket_loaded, get_loaded_tickets, remove_thread_record,
+    is_ticket_loaded, mark_ticket_loaded, get_loaded_tickets, remove_thread_record, clear_loaded_tickets,
     set_setting, get_setting, get_threads_by_status, get_stale_threads,
     # ── async (non-blocking) wrappers ──
     async_get_thread, async_get_user_roles, async_has_role,
@@ -699,6 +699,28 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
         except Exception as e:
             logger.warning(f"Could not fetch archived threads for dedupe in channel {channel.id}: {e}")
 
+        # If threads were manually deleted from this channel, loaded_tickets can
+        # retain stale mappings and cause false "already loaded" skips.
+        # Clean those stale rows before dedupe/creation checks.
+        existing_thread_ids = {t.id for t in (active_threads + archived_threads)}
+        stale_loaded_rows = [
+            row for row in loaded_rows
+            if row.get("channel_id") == channel.id and row.get("thread_id") not in existing_thread_ids
+        ]
+        for stale in stale_loaded_rows:
+            stale_thread_id = stale.get("thread_id")
+            stale_filename = stale.get("ticket_filename")
+            if stale_thread_id is None:
+                continue
+            remove_thread_record(stale_thread_id)
+            if stale_filename in loaded_by_filename:
+                del loaded_by_filename[stale_filename]
+            logger.info(
+                "Removed stale loaded_tickets mapping for missing thread %s (%s)",
+                stale_thread_id,
+                stale_filename,
+            )
+
         existing_threads_by_ticket = {}
         for existing_thread in (active_threads + archived_threads):
             _, parsed_ticket_name = parse_thread_name(existing_thread.name)
@@ -1022,6 +1044,54 @@ async def rebuild_db(interaction: discord.Interaction, folder: str, channel: dis
     except Exception as e:
         logger.error(f"Error rebuilding database: {e}")
         await interaction.followup.send(f"❌ Error rebuilding database: {e}")
+
+
+@bot.tree.command(
+    name="reset-loaded",
+    description="Reset loaded-ticket mappings for a folder/channel so tickets can be loaded again (PM only)"
+)
+@app_commands.describe(
+    folder="The folder name within tickets/ directory",
+    channel="The Discord channel to reset mappings for"
+)
+async def reset_loaded(interaction: discord.Interaction, folder: str, channel: discord.TextChannel):
+    """Clear loaded ticket mappings so /load-tickets can recreate threads after bulk deletes."""
+    await safe_defer(interaction)
+
+    try:
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can reset loaded ticket mappings.")
+            return
+
+        folder_path = Path(TICKETS_DIR) / folder
+        if not folder_path.exists() or not folder_path.is_dir():
+            await interaction.followup.send(f"❌ Folder `{folder}` not found in `{TICKETS_DIR}/` directory")
+            return
+
+        removed_count = clear_loaded_tickets(folder=folder, channel_id=channel.id)
+
+        embed = discord.Embed(
+            title="Loaded Ticket Mappings Reset",
+            description=(
+                f"Removed **{removed_count}** loaded mapping(s) for `{folder}` in {channel.mention}.\n"
+                f"Next: run `/load-tickets {folder} {channel.mention}` to recreate missing threads."
+            ),
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Folder", value=f"`{folder}`", inline=False)
+        embed.add_field(name="Channel", value=channel.mention, inline=False)
+
+        await interaction.followup.send(embed=embed)
+        logger.info(
+            "Reset loaded mappings: folder=%s channel=%s removed=%s by=%s",
+            folder,
+            channel.id,
+            removed_count,
+            interaction.user,
+        )
+    except Exception as e:
+        logger.error(f"Error resetting loaded mappings: {e}")
+        await interaction.followup.send(f"❌ Error resetting loaded mappings: {e}")
 
 
 @bot.tree.command(
@@ -1711,6 +1781,8 @@ async def show_help(interaction: discord.Interaction):
                   "Creates threads for each markdown file.\n" +
                   "**`/rebuild-db <folder> <channel>`**\n" +
                   "Rebuild database entries from existing threads in a channel.\n" +
+                "**`/reset-loaded <folder> <channel>`**\n" +
+                "Reset loaded mappings so deleted tickets can be loaded again.\n" +
                   "**`/scan-project <path> <folder> [threshold]`**\n" +
                   "Scan a codebase and generate issue-based ticket files.\n" +
                   "**`/scan-roadmap <path> <folder> [threshold] [generate_tickets]`**\n" +
@@ -1827,6 +1899,7 @@ async def show_help(interaction: discord.Interaction):
             name="🔧 Project Manager (Admin)",
             value="✓ `/load-tickets` - Load tickets into channels\n" +
                   "✓ `/rebuild-db` - Rebuild database from existing threads\n" +
+                "✓ `/reset-loaded` - Clear loaded mappings for a folder/channel\n" +
                   "✓ `/scan-project` - Scan local/runtime-accessible folder\n" +
                   "✓ `/scan-roadmap` - Build roadmap from local/runtime-accessible folder\n" +
                   "✓ `/scan-repo` - Clone and scan repository URL (cloud-safe)\n" +

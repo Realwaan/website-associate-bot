@@ -535,6 +535,25 @@ def get_loaded_tickets(folder: str) -> list:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+def clear_loaded_tickets(folder: str, channel_id: int | None = None) -> int:
+    """Clear loaded-ticket mappings for a folder (optionally scoped to one channel).
+
+    Returns:
+        Number of rows deleted.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if channel_id is None:
+            cursor.execute("DELETE FROM loaded_tickets WHERE folder = %s", (folder,))
+        else:
+            cursor.execute(
+                "DELETE FROM loaded_tickets WHERE folder = %s AND channel_id = %s",
+                (folder, channel_id),
+            )
+        deleted = cursor.rowcount or 0
+        conn.commit()
+        return deleted
+
 # ===== Settings Management =====
 
 def set_setting(key: str, value: str):
