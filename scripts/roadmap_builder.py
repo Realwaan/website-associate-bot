@@ -137,13 +137,13 @@ def _generate_feature_tickets(
         impactful_tasks = [
             "Define final scope and success metrics for this feature.",
             "Implement the core workflow end-to-end with role-safe behavior.",
-            "Document rollout and QA verification steps.",
+            "Document rollout and verification steps.",
         ]
     impactful_scope = [str(item).strip() for item in impactful_feature.get("scope_boundaries", []) if str(item).strip()]
     impactful_criteria = [
         "Core workflow for this feature is implemented and testable.",
         "Permission and error handling behavior is verified.",
-        "Release and rollback notes are documented for PM/QA.",
+        "Release and rollback notes are documented for stakeholders.",
     ]
     if impactful_scope:
         impactful_criteria.append("Scope boundaries are respected with no out-of-scope additions.")
@@ -177,7 +177,7 @@ def _generate_feature_tickets(
                     f"Map all current `{feature_name}` flows and identify overlap/gaps.",
                     f"Define one consistent implementation standard for `{feature_name}`.",
                     "Implement prioritized improvements and align naming/behavior.",
-                    "Add PM/QA verification notes for the updated flow.",
+                    "Add verification notes for the updated flow.",
                 ],
                 acceptance_criteria=[
                     f"`{feature_name}` behavior is consistent across affected components.",
@@ -379,10 +379,10 @@ def _suggest_features(
     suggestions: list[str] = []
 
     if category_counts.get("hardcoded-secret", 0) > 0:
-        suggestions.append("Add a secrets-health command to validate required environment variables before deploy.")
+        suggestions.append("Add a secrets configuration health check to validate required environment variables before deployment.")
 
     if category_counts.get("todo", 0) >= 5:
-        suggestions.append("Introduce a technical debt dashboard command summarizing TODO/FIXME trend per folder.")
+        suggestions.append("Introduce a technical debt dashboard summarizing TODO/FIXME trend per folder.")
 
     if category_counts.get("large-file", 0) >= 3:
         suggestions.append("Create a refactor roadmap for oversized modules and track progress per sprint.")
@@ -397,13 +397,13 @@ def _suggest_features(
         suggestions.append("Add end-to-end smoke checks for core user flows and post a daily pass/fail summary.")
 
     if has_python:
-        suggestions.append("Add automated lint/type checks for Python commands and scheduled jobs.")
+        suggestions.append("Add automated lint/type checks for Python services and scheduled jobs.")
 
     if feature_component_counts.get("Community & Social", 0) > 0:
         suggestions.append("Improve in-app moderation tooling and automate report triage for community features.")
 
     if feature_component_counts.get("Reports & Exports", 0) > 0:
-        suggestions.append("Add scheduled exports and role-based report views to reduce manual PM operations.")
+        suggestions.append("Add scheduled exports and role-based report views to reduce manual operations.")
 
     if total_files >= 200:
         suggestions.append("Add a weekly architecture review note generated from scan hotspots to keep roadmap realistic.")
@@ -429,14 +429,14 @@ def _pick_most_impactful_feature(
     candidates = [
         {
             "key": "hardcoded-secret",
-            "title": "Secrets Health Check Command",
-            "description": "Add a command that validates required environment variables before deploy/runtime actions.",
+            "title": "Secrets Configuration Health Check",
+            "description": "Add a health check that validates required environment variables before deploy/runtime actions.",
             "weight": 12,
             "tasks": [
                 "Define a required-variables manifest in config and environment docs.",
-                "Implement a bot command that checks variable presence and basic format.",
+                "Implement a check endpoint/task that validates variable presence and basic format.",
                 "Return safe, non-secret output (missing names only, never values).",
-                "Wire command access to PM/admin roles and add usage guidance.",
+                "Document who can run it and when it should be executed.",
                 "Add tests for complete, partial, and missing-env scenarios.",
             ],
             "scope_boundaries": [
@@ -459,7 +459,7 @@ def _pick_most_impactful_feature(
             ],
             "scope_boundaries": [
                 "No automatic code refactor generation.",
-                "No changes to ticket workflow states or role model.",
+                "No changes to product workflow states or permission model.",
                 "No UI dashboard outside markdown/report files.",
             ],
         },
@@ -471,8 +471,8 @@ def _pick_most_impactful_feature(
             "tasks": [
                 "Define release-readiness rules for skipped tests and acceptable exceptions.",
                 "Implement scanner aggregation for skipped tests by area and severity.",
-                "Expose a command/report that surfaces gate status clearly.",
-                "Add override documentation with explicit PM approval trail.",
+                "Expose a report or CI check that surfaces gate status clearly.",
+                "Add override documentation with explicit approval trail.",
                 "Add tests for pass/fail/override gate behavior.",
             ],
             "scope_boundaries": [
@@ -490,7 +490,7 @@ def _pick_most_impactful_feature(
                 "Normalize TODO/FIXME finding categories and metadata.",
                 "Build a trend summary grouped by component and age.",
                 "Publish the report as markdown alongside roadmap outputs.",
-                "Add thresholds for warning escalation and PM follow-up.",
+                "Add thresholds for warning escalation and owner follow-up.",
                 "Add tests for trend calculations and markdown rendering.",
             ],
             "scope_boundaries": [
@@ -507,7 +507,7 @@ def _pick_most_impactful_feature(
             "tasks": [
                 "Add moderation queue summaries grouped by risk level.",
                 "Track report turnaround metrics and stale moderation items.",
-                "Expose a weekly moderation health note for PM review.",
+                "Expose a weekly moderation health note for product-owner review.",
                 "Add permission checks for admin-only moderation actions.",
                 "Add tests for role restrictions and queue state transitions.",
             ],

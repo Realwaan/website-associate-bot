@@ -150,6 +150,26 @@ PM loads tickets          Developer works           QA verifies            PM cl
 
 ## Setup Instructions
 
+## Security Checklist
+
+Before committing or sharing logs/screenshots:
+
+1. Keep real credentials only in `.env` (never in tracked files).
+2. Install the repository hook once:
+
+```bash
+python scripts/install_git_hook.py
+```
+
+3. Run the secret scan check manually any time:
+
+```bash
+python scripts/check_secrets.py
+```
+
+4. If the scan reports findings, rotate/remove secrets before pushing.
+5. Share `.env.example` for configuration templates, not `.env`.
+
 ### 1. Install Dependencies
 
 ```bash

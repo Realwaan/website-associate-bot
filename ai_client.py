@@ -4,6 +4,11 @@ from typing import Any
 
 import requests
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional fallback
+    load_dotenv = None
+
 
 class AIClientError(Exception):
     """Raised when the AI provider request fails or returns invalid data."""
@@ -13,6 +18,13 @@ class NvidiaAIClient:
     """Simple wrapper for NVIDIA integrate chat/completions endpoint."""
 
     def __init__(self):
+        self._load_from_env()
+
+    def _load_from_env(self) -> None:
+        """Load latest provider config from process/.env environment."""
+        if load_dotenv is not None:
+            # Pick up changes when users update .env while bot is running.
+            load_dotenv(override=True)
         self.invoke_url = os.getenv("NVIDIA_INVOKE_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
         self.api_key = self._normalize_api_key(os.getenv("NVIDIA_API_KEY"))
         self.model = os.getenv("NVIDIA_MODEL", "google/gemma-4-31b-it")
@@ -31,6 +43,7 @@ class NvidiaAIClient:
 
     def is_configured(self) -> bool:
         """Return whether required NVIDIA credentials are available."""
+        self._load_from_env()
         return bool(self.api_key and self.invoke_url and self.model)
 
     def _extract_text(self, data: dict[str, Any]) -> str:
@@ -67,6 +80,7 @@ class NvidiaAIClient:
         enable_thinking: bool = True,
     ) -> str:
         """Send a user prompt and return generated text."""
+        self._load_from_env()
         if not self.is_configured():
             raise AIClientError("NVIDIA AI is not configured. Set NVIDIA_API_KEY, NVIDIA_MODEL, and NVIDIA_INVOKE_URL.")
 
