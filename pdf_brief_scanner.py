@@ -368,6 +368,7 @@ def scan_pdf_brief(
     output_folder: str,
     tickets_dir: str,
     ai_client: NvidiaAIClient,
+    ai_profile: str = "scan_docs",
 ) -> PDFScanResult:
     """Analyze a design brief PDF and generate roadmap/ticket markdown files."""
 
@@ -375,9 +376,9 @@ def scan_pdf_brief(
     if not pdf_file.exists() or not pdf_file.is_file():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    if not ai_client.is_configured():
+    if not ai_client.is_configured(ai_profile):
         raise AIClientError(
-            "NVIDIA AI is not configured. Set NVIDIA_API_KEY, NVIDIA_MODEL, and NVIDIA_INVOKE_URL."
+            "NVIDIA AI is not configured for the scan-docs profile. Set the AI_SCAN_DOCS_* variables (or legacy NVIDIA_* fallback)."
         )
 
     page_count, extracted_text, used_ocr = extract_pdf_text(str(pdf_file))
@@ -394,6 +395,7 @@ def scan_pdf_brief(
         top_p=0.9,
         enable_thinking=False,
         timeout_seconds=180,
+        profile=ai_profile,
     )
     data = _parse_json_response(analysis_text)
 

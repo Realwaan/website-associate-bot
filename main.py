@@ -1996,7 +1996,7 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             await interaction.followup.send("❌ Prompt is too long. Keep it under 4000 characters.")
             return
 
-        if not ai_client.is_configured():
+        if not ai_client.is_configured("answer"):
             await interaction.followup.send(
                 "❌ AI is not configured. Set `NVIDIA_API_KEY`, `NVIDIA_MODEL`, and `NVIDIA_INVOKE_URL` in environment variables."
             )
@@ -2010,6 +2010,7 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             max_tokens=2048,
             top_p=0.95,
             enable_thinking=True,
+            profile="answer",
         )
 
         header = f"🤖 **Model:** `{ai_client.model}`\n\n"
@@ -2055,9 +2056,9 @@ async def scan_pdf(interaction: discord.Interaction, pdf: discord.Attachment, fo
             await interaction.followup.send("❌ Please upload a `.pdf` file.")
             return
 
-        if not ai_client.is_configured():
+        if not ai_client.is_configured("scan_docs"):
             await interaction.followup.send(
-                "❌ AI is not configured. Set `NVIDIA_API_KEY`, `NVIDIA_MODEL`, and `NVIDIA_INVOKE_URL` before using `/scan-pdf`."
+                "❌ AI is not configured. Set the scan-docs AI profile in `.env` before using `/scan-pdf`."
             )
             return
 
