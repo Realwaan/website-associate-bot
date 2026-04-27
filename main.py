@@ -2070,6 +2070,7 @@ async def scan_pdf(interaction: discord.Interaction, pdf: discord.Attachment, fo
         embed.add_field(name="Project", value=result.project_name, inline=False)
         embed.add_field(name="Pages Scanned", value=str(result.pages_scanned), inline=True)
         embed.add_field(name="Extracted Text", value=str(result.chars_extracted), inline=True)
+        embed.add_field(name="Extraction Mode", value="OCR fallback" if result.used_ocr else "Embedded PDF text", inline=True)
         embed.add_field(name="Output Folder", value=f"`tickets/{output_folder}/`", inline=False)
         embed.add_field(name="Roadmap File", value=f"`tickets/{output_folder}/ROADMAP.md`", inline=False)
 

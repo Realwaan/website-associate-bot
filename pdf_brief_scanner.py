@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import os
 import re
 from typing import Any
 
@@ -21,6 +22,22 @@ except ImportError as exc:  # pragma: no cover - dependency guard
     _PYPDF_IMPORT_ERROR = exc
 else:  # pragma: no cover - import success path
     _PYPDF_IMPORT_ERROR = None
+
+try:
+    import pypdfium2 as pdfium
+except ImportError as exc:  # pragma: no cover - dependency guard
+    pdfium = None  # type: ignore[assignment]
+    _PDFIUM_IMPORT_ERROR = exc
+else:  # pragma: no cover - import success path
+    _PDFIUM_IMPORT_ERROR = None
+
+try:
+    import pytesseract
+except ImportError as exc:  # pragma: no cover - dependency guard
+    pytesseract = None  # type: ignore[assignment]
+    _PYTESSERACT_IMPORT_ERROR = exc
+else:  # pragma: no cover - import success path
+    _PYTESSERACT_IMPORT_ERROR = None
 
 
 @dataclass
@@ -40,6 +57,7 @@ class PDFScanResult:
     features: list[str]
     wireframes: list[str]
     open_questions: list[str]
+    used_ocr: bool
 
 
 def _slugify(text: str, max_len: int = 60) -> str:
@@ -81,10 +99,53 @@ def _parse_json_response(text: str) -> dict[str, Any]:
     return data
 
 
-def extract_pdf_text(pdf_path: str) -> tuple[int, str]:
+def _ocr_enabled() -> bool:
+    """Return whether OCR fallback is enabled for scan-pdf."""
+
+    raw = os.getenv("ENABLE_PDF_OCR_FALLBACK", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _extract_text_with_ocr(pdf_path: str, page_count: int) -> str:
+    """Extract text via OCR for scanned/image-only PDFs."""
+
+    if pdfium is None:
+        raise AIClientError(
+            "OCR fallback requires `pypdfium2`. Install dependencies and redeploy."
+        ) from _PDFIUM_IMPORT_ERROR
+    if pytesseract is None:
+        raise AIClientError(
+            "OCR fallback requires `pytesseract`. Install dependencies and redeploy."
+        ) from _PYTESSERACT_IMPORT_ERROR
+
+    tesseract_cmd = os.getenv("TESSERACT_CMD", "").strip()
+    if tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+
+    doc = pdfium.PdfDocument(pdf_path)
+    max_pages = min(page_count, 40)
+    rendered_scale = 220 / 72.0
+    parts: list[str] = []
+
+    for index in range(max_pages):
+        try:
+            page = doc[index]
+            bitmap = page.render(scale=rendered_scale)
+            image = bitmap.to_pil()
+            text = pytesseract.image_to_string(image) or ""
+        except Exception:
+            text = ""
+
+        if text.strip():
+            parts.append(text.strip())
+
+    return "\n\n".join(parts).strip()
+
+
+def extract_pdf_text(pdf_path: str) -> tuple[int, str, bool]:
     """Extract selectable text from each PDF page.
 
-    Returns a tuple of (page_count, extracted_text).
+    Returns a tuple of (page_count, extracted_text, used_ocr).
     """
     if PdfReader is None:
         raise AIClientError(
@@ -104,7 +165,24 @@ def extract_pdf_text(pdf_path: str) -> tuple[int, str]:
         if text.strip():
             parts.append(text.strip())
 
-    return len(reader.pages), "\n\n".join(parts).strip()
+    page_count = len(reader.pages)
+    extracted_text = "\n\n".join(parts).strip()
+    used_ocr = False
+
+    # OCR fallback for scanned/image-heavy briefs with little or no text layer.
+    if _ocr_enabled() and len(extracted_text) < 250:
+        try:
+            ocr_text = _extract_text_with_ocr(pdf_path, page_count)
+        except AIClientError:
+            if not extracted_text:
+                raise
+            ocr_text = ""
+
+        if ocr_text:
+            used_ocr = True
+            extracted_text = f"{extracted_text}\n\n{ocr_text}".strip() if extracted_text else ocr_text
+
+    return page_count, extracted_text, used_ocr
 
 
 def _trim_text_for_prompt(text: str, max_chars: int = 28000) -> str:
@@ -169,7 +247,13 @@ def _normalize_list(values: Any) -> list[str]:
     return [str(value).strip() for value in values if str(value).strip()]
 
 
-def _render_brief_markdown(data: dict[str, Any], pdf_name: str, page_count: int, chars_extracted: int) -> str:
+def _render_brief_markdown(
+    data: dict[str, Any],
+    pdf_name: str,
+    page_count: int,
+    chars_extracted: int,
+    used_ocr: bool,
+) -> str:
     project_name = str(data.get("project_name") or Path(pdf_name).stem).strip()
     summary = str(data.get("summary") or "").strip() or "No summary was generated."
     design_system = data.get("design_system") if isinstance(data.get("design_system"), dict) else {}
@@ -190,6 +274,7 @@ def _render_brief_markdown(data: dict[str, Any], pdf_name: str, page_count: int,
         f"- File: `{pdf_name}`",
         f"- Pages scanned: {page_count}",
         f"- Extracted text characters: {chars_extracted}",
+        f"- Extraction mode: {'OCR fallback' if used_ocr else 'Embedded PDF text'}",
         "",
         "## Design System",
         "",
@@ -295,10 +380,10 @@ def scan_pdf_brief(
             "NVIDIA AI is not configured. Set NVIDIA_API_KEY, NVIDIA_MODEL, and NVIDIA_INVOKE_URL."
         )
 
-    page_count, extracted_text = extract_pdf_text(str(pdf_file))
+    page_count, extracted_text, used_ocr = extract_pdf_text(str(pdf_file))
     if not extracted_text.strip():
         raise AIClientError(
-            "No extractable text was found in the PDF. This feature works best on text-based briefs or PDFs with selectable text."
+            "No extractable text was found in the PDF. If this is image-only, install OCR runtime (Tesseract) and set `TESSERACT_CMD` if needed."
         )
 
     prompt = _build_prompt(pdf_file.name, extracted_text, page_count)
@@ -338,7 +423,7 @@ def scan_pdf_brief(
     if not roadmap_markdown.lstrip().startswith("#"):
         roadmap_markdown = f"# {project_name} Roadmap\n\n{roadmap_markdown}"
 
-    brief_markdown = _render_brief_markdown(data, pdf_file.name, page_count, len(extracted_text))
+    brief_markdown = _render_brief_markdown(data, pdf_file.name, page_count, len(extracted_text), used_ocr)
     brief_file = out_path / "PDF_BRIEF.md"
     roadmap_file = out_path / "ROADMAP.md"
     brief_file.write_text(brief_markdown, encoding="utf-8")
@@ -376,6 +461,7 @@ def scan_pdf_brief(
         features=features,
         wireframes=wireframes,
         open_questions=open_questions,
+        used_ocr=used_ocr,
     )
 
 

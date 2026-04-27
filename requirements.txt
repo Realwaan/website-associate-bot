@@ -5,3 +5,6 @@ psycopg2-binary>=2.9.9
 Flask>=3.0.0
 requests>=2.31.0
 pypdf>=5.0.0
+pypdfium2>=4.30.0
+pytesseract>=0.3.10
+Pillow>=10.4.0

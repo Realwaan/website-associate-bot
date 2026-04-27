@@ -55,11 +55,12 @@ Issues are grouped by area and category, then written as ticket `.md` files read
 ### PDF Brief Scanner
 The `/scan-pdf` command accepts an uploaded website/design brief PDF and turns it into a planning bundle:
 - Extracts selectable text from the PDF
+- Falls back to OCR for scanned/image-only pages when needed
 - Uses the configured AI model to infer design system details like logo, fonts, and color palette
 - Summarizes pages, features, wireframes, and open questions
 - Generates `ROADMAP.md`, `PDF_BRIEF.md`, and loadable ticket `.md` files under `tickets/<folder>/`
 
-This works best on PDFs with real text layers. Image-only briefs or mockups with no selectable text may need OCR support later.
+OCR fallback requires a Tesseract runtime in your deployment environment. Optionally set `TESSERACT_CMD` to the executable path and use `ENABLE_PDF_OCR_FALLBACK=false` to disable OCR fallback.
 
 ### Roadmap Generator
 The `/scan-roadmap` command scans the full project and creates:
@@ -168,6 +169,9 @@ Or create/edit the `.env` file directly:
 ```
 DISCORD_TOKEN=your_bot_token_here
 DATABASE_URL=postgresql://postgres.<project_ref>:<password>@aws-<region>.pooler.supabase.com:5432/postgres
+ENABLE_PDF_OCR_FALLBACK=true
+# Optional path override for Tesseract binary:
+# TESSERACT_CMD=/usr/bin/tesseract
 ```
 
 To get a bot token:
