@@ -1985,24 +1985,24 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
 
     try:
         if not has_role(interaction.user.id, "pm"):
-            await interaction.followup.send("❌ Only Project Managers can use `/ask-ai`.")
+            await interaction.followup.send("❌ Only Project Managers can use `/ask-ai`.", ephemeral=True)
             return
 
         if len(prompt.strip()) < 2:
-            await interaction.followup.send("❌ Prompt is too short.")
+            await interaction.followup.send("❌ Prompt is too short.", ephemeral=True)
             return
 
         if len(prompt) > 4000:
-            await interaction.followup.send("❌ Prompt is too long. Keep it under 4000 characters.")
+            await interaction.followup.send("❌ Prompt is too long. Keep it under 4000 characters.", ephemeral=True)
             return
 
         if not ai_client.is_configured("answer"):
             await interaction.followup.send(
-                "❌ AI is not configured. Set `NVIDIA_API_KEY`, `NVIDIA_MODEL`, and `NVIDIA_INVOKE_URL` in environment variables."
+                "❌ AI is not configured. Set `NVIDIA_API_KEY`, `NVIDIA_MODEL`, and `NVIDIA_INVOKE_URL` in environment variables.",
+                ephemeral=True,
             )
             return
 
-        # Run blocking HTTP call off the event loop to avoid interaction expiry.
         answer = await asyncio.to_thread(
             ai_client.chat,
             prompt,
@@ -2013,19 +2013,26 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             profile="answer",
         )
 
-        header = f"🤖 **Model:** `{ai_client.model}`\n\n"
-        full_text = header + answer
+        # Discord embed description cap is 4096 chars.
+        # Truncate cleanly at the last sentence boundary before the limit.
+        EMBED_LIMIT = 4000
+        truncated = False
+        if len(answer) > EMBED_LIMIT:
+            cut = answer[:EMBED_LIMIT].rfind(". ")
+            answer = answer[: cut + 1 if cut > 0 else EMBED_LIMIT]
+            truncated = True
 
-        max_len = 1900
-        parts = [full_text[i:i + max_len] for i in range(0, len(full_text), max_len)]
-        for idx, part in enumerate(parts[:5], start=1):
-            if len(parts) > 1:
-                await interaction.followup.send(f"**AI Response ({idx}/{len(parts)})**\n{part}")
-            else:
-                await interaction.followup.send(part)
+        embed = discord.Embed(
+            description=answer,
+            color=discord.Color.from_rgb(100, 65, 165),  # NVIDIA purple-ish
+        )
+        embed.set_author(name="🤖 AI Response")
+        footer = f"Model: {ai_client.model}"
+        if truncated:
+            footer += "  •  Response truncated (too long)"
+        embed.set_footer(text=footer)
 
-        if len(parts) > 5:
-            await interaction.followup.send("⚠️ Response truncated after 5 messages.")
+        await interaction.followup.send(embed=embed)
 
     except AIClientError as e:
         logger.warning("AI request failed: %s", e)

@@ -81,22 +81,27 @@ def _strip_code_fences(text: str) -> str:
 def _parse_json_response(text: str) -> dict[str, Any]:
     cleaned = _strip_code_fences(text)
 
+    # 1. Happy path: the whole string is valid JSON.
     try:
         data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return data
     except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                data = json.loads(cleaned[start:end + 1])
-            except json.JSONDecodeError as exc:
-                raise AIClientError(f"AI response was not valid JSON: {exc}") from exc
-        else:
-            raise AIClientError("AI response was not valid JSON.")
+        pass
 
-    if not isinstance(data, dict):
-        raise AIClientError("AI response JSON must be an object.")
-    return data
+    # 2. Model appended text after the JSON object (common with thinking models).
+    #    raw_decode stops at the end of the first complete JSON value and ignores
+    #    anything that follows — exactly what we need.
+    start = cleaned.find("{")
+    if start >= 0:
+        try:
+            data, _ = json.JSONDecoder().raw_decode(cleaned, start)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    raise AIClientError("AI response was not valid JSON.")
 
 
 def _ocr_enabled() -> bool:
@@ -199,7 +204,7 @@ def _build_prompt(pdf_name: str, extracted_text: str, page_count: int) -> str:
     return (
         "You are analyzing a website/product design brief PDF for a Discord project manager. "
         "Convert the PDF into a structured implementation plan for building the website.\n\n"
-        "Return valid JSON only. Do not use markdown fences or extra commentary.\n"
+        "Return valid JSON only — no markdown fences, no commentary, no text before or after the JSON object.\n"
         "Schema:\n"
         "{\n"
         '  "project_name": "string",\n'
@@ -237,7 +242,8 @@ def _build_prompt(pdf_name: str, extracted_text: str, page_count: int) -> str:
         f"PDF file: {pdf_name}\n"
         f"Pages scanned: {page_count}\n\n"
         "PDF content:\n"
-        f"<<<PDF_TEXT_START\n{brief_excerpt}\nPDF_TEXT_END>>>"
+        f"<<<PDF_TEXT_START\n{brief_excerpt}\nPDF_TEXT_END>>>\n\n"
+        "Respond with the JSON object only. Do not write anything before or after the opening {{ and closing }} braces."
     )
 
 
@@ -390,11 +396,10 @@ def scan_pdf_brief(
     prompt = _build_prompt(pdf_file.name, extracted_text, page_count)
     analysis_text = ai_client.chat(
         prompt,
-        max_tokens=3000,
+        max_tokens=4096,
         temperature=0.2,
         top_p=0.9,
         enable_thinking=False,
-        timeout_seconds=180,
         profile=ai_profile,
     )
     data = _parse_json_response(analysis_text)
