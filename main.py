@@ -2251,6 +2251,7 @@ async def scan_repo(
                 large_file_threshold=threshold,
                 generate_issue_tickets=generate_tickets,
                 skip_code_issues=skip_code_issues,
+                write_roadmap_file=False,
             )
 
         embed = discord.Embed(
@@ -2264,7 +2265,6 @@ async def scan_repo(
         embed.add_field(name="Issues Found", value=str(result.total_issues), inline=True)
         embed.add_field(name="Tickets Generated", value=str(result.total_tickets), inline=True)
         embed.add_field(name="Output Folder", value=f"`tickets/{output_folder}/`", inline=False)
-        embed.add_field(name="Roadmap File", value=f"`tickets/{output_folder}/ROADMAP.md`", inline=False)
 
         if result.top_categories:
             top = "\n".join([f"• {name}: {count}" for name, count in result.top_categories[:5]])
@@ -2280,7 +2280,7 @@ async def scan_repo(
 
         embed.add_field(
             name="Next Step",
-            value=f"Review `tickets/{output_folder}/ROADMAP.md`, then run `/load-tickets {output_folder} #channel`.",
+            value=f"Review the generated tickets in `tickets/{output_folder}/`, then run `/load-tickets {output_folder} #channel`.",
             inline=False,
         )
 

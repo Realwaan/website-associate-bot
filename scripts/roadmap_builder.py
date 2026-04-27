@@ -686,6 +686,7 @@ def build_project_roadmap(
     large_file_threshold: int = DEFAULT_LARGE_FILE_THRESHOLD,
     generate_issue_tickets: bool = True,
     skip_code_issues: bool = False,
+    write_roadmap_file: bool = True,
 ) -> RoadmapResult:
     """Scan project and generate roadmap markdown (and optional tickets)."""
 
@@ -751,7 +752,8 @@ def build_project_roadmap(
         weekly_plan=weekly_plan,
     )
 
-    roadmap_file.write_text(roadmap_md.strip() + "\n", encoding="utf-8")
+    if write_roadmap_file:
+        roadmap_file.write_text(roadmap_md.strip() + "\n", encoding="utf-8")
 
     top_components = [(str(c["name"]), int(c["issue_count"])) for c in components[:8]]
     detected_features = sorted(feature_component_counts.items(), key=lambda x: x[1], reverse=True)[:8]

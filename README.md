@@ -67,7 +67,7 @@ If your bot is deployed in cloud (Render), it cannot access local paths like `F:
 Use `/scan-repo` instead:
 - Clones an HTTPS Git repository URL into temporary runtime storage
 - Scans the cloned codebase
-- Generates roadmap and optional issue tickets under `tickets/<folder>/`
+- Generates issue tickets under `tickets/<folder>/` without writing a `ROADMAP.md` file
 
 ### Scheduled Summaries
 A daily task posts a ticket summary grouped by status to a channel set with `/setreminderschannel`. Runs at 8:00 AM PH Time (00:00 UTC).
@@ -283,7 +283,7 @@ In Render logs, confirm:
 | `/rebuild-db <folder> <channel>` | Rebuild database entries from existing threads (recovery tool) |
 | `/scan-project <path> <folder> [threshold]` | Scan a project directory for issues and auto-generate ticket files |
 | `/scan-roadmap <path_or_repo_url> <folder> [threshold] [generate_tickets]` | Scan local folder or HTTPS repo URL and generate roadmap markdown with suggested improvements |
-| `/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]` | Cloud-safe scan by cloning a repo URL and generating roadmap/tickets |
+| `/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]` | Cloud-safe scan by cloning a repo URL and generating issue tickets only |
 | `/set-commit-channel <channel>` | Set default channel for formal commit/merge bulletins |
 | `/update-project <repo_url> [branch] [limit] [feed_type] [channel]` | Post formal repository updates (commits, merged PRs, or both) with GitHub links and enable automatic polling notifications |
 | `/auto-updates <enable\|disable\|status> [repo_url] [branch] [feed_type] [limit]` | Control automatic repository notifications (pause, resume, inspect config) |
