@@ -722,7 +722,10 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
             )
 
         existing_threads_by_ticket = {}
-        for existing_thread in (active_threads + archived_threads):
+        # Only active threads should block recreation. Archived threads can be
+        # left behind from a prior load and should not prevent rebuilding a
+        # fresh OPEN thread after `/reset-loaded`.
+        for existing_thread in active_threads:
             _, parsed_ticket_name = parse_thread_name(existing_thread.name)
             display_ticket_name = parsed_ticket_name or re.sub(r"^\[[^\]]+\]\s*", "", existing_thread.name).strip()
             normalized_existing = normalize_ticket_name(display_ticket_name)
