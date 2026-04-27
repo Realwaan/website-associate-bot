@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 from scan_project import scan_and_generate_with_summary
 from roadmap_builder import build_project_roadmap
 from ai_client import NvidiaAIClient, AIClientError
+from pdf_brief_scanner import PDFScanResult, default_pdf_folder, scan_pdf_brief
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -688,7 +689,7 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
             if normalized_name and normalized_name not in ticket_filename_by_norm:
                 ticket_filename_by_norm[normalized_name] = ticket_filename
 
-        loaded_rows = get_loaded_tickets(folder)
+        loaded_rows = [row for row in get_loaded_tickets(folder) if row.get("channel_id") == channel.id]
         loaded_by_filename = {row['ticket_filename']: row for row in loaded_rows}
 
         active_threads = list(channel.threads)
@@ -1779,27 +1780,31 @@ async def show_help(interaction: discord.Interaction):
         # Ticket Loading
         embed.add_field(
             name="📂 Loading Tickets (PM only)",
-            value="**`/load-tickets <folder> <channel>`**\n" +
-                  "Load tickets from a folder into a Discord channel.\n" +
-                  "Creates threads for each markdown file.\n" +
-                  "**`/rebuild-db <folder> <channel>`**\n" +
-                  "Rebuild database entries from existing threads in a channel.\n" +
-                "**`/reset-loaded <folder> <channel>`**\n" +
-                "Reset loaded mappings so deleted tickets can be loaded again.\n" +
-                  "**`/scan-project <path> <folder> [threshold]`**\n" +
-                  "Scan a codebase and generate issue-based ticket files.\n" +
-                  "**`/scan-roadmap <path> <folder> [threshold] [generate_tickets]`**\n" +
-                  "Generate full repo structure/component analysis and a 12-week (3-month) roadmap.\n" +
-                  "**`/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]`**\n" +
-                  "Cloud-safe scan by cloning a repository URL before analysis.\n" +
-                  "**`/set-commit-channel <channel>`**\n" +
-                  "Set default channel for repository bulletins.\n" +
-                  "**`/update-project <repo_url> [branch] [limit] [feed_type] [channel]`**\n" +
-                  "Post formal commit/merge updates with links and enable auto-monitoring.\n" +
-                  "**`/auto-updates <enable|disable|status> [repo_url] [branch] [feed_type] [limit]`**\n" +
-                  "Pause/resume automatic repo notifications or view current config.\n" +
-                  "*Only Project Managers can use this*\n" +
-                  "`/load-tickets support #support-channel`",
+                        value=(
+                                "**`/load-tickets <folder> <channel>`**\n"
+                                "Load tickets from a folder into a Discord channel.\n"
+                                "Creates threads for each markdown file.\n"
+                                "**`/scan-pdf <pdf> [folder]`**\n"
+                                "Upload a website/design brief PDF and generate roadmap + tickets.\n"
+                                "**`/rebuild-db <folder> <channel>`**\n"
+                                "Rebuild database entries from existing threads in a channel.\n"
+                                "**`/reset-loaded <folder> <channel>`**\n"
+                                "Reset loaded mappings so deleted tickets can be loaded again.\n"
+                                "**`/scan-project <path> <folder> [threshold]`**\n"
+                                "Scan a codebase and generate issue-based ticket files.\n"
+                                "**`/scan-roadmap <path> <folder> [threshold] [generate_tickets]`**\n"
+                                "Generate full repo structure/component analysis and a 12-week (3-month) roadmap.\n"
+                                "**`/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]`**\n"
+                                "Cloud-safe scan by cloning a repository URL before analysis.\n"
+                                "**`/set-commit-channel <channel>`**\n"
+                                "Set default channel for repository bulletins.\n"
+                                "**`/update-project <repo_url> [branch] [limit] [feed_type] [channel]`**\n"
+                                "Post formal commit/merge updates with links and enable auto-monitoring.\n"
+                                "**`/auto-updates <enable|disable|status> [repo_url] [branch] [feed_type] [limit]`**\n"
+                                "Pause/resume automatic repo notifications or view current config.\n"
+                                "*Only Project Managers can use this*\n"
+                                "`/load-tickets support #support-channel`"
+                        ),
             inline=False
         )
         
@@ -2012,6 +2017,99 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
     except Exception as e:
         logger.error("Error running ask-ai: %s", e)
         await interaction.followup.send(f"❌ Error running ask-ai: {e}")
+
+
+@bot.tree.command(
+    name="scan-pdf",
+    description="Upload a website/design brief PDF and generate roadmap + tickets (PM only)"
+)
+@app_commands.describe(
+    pdf="Upload the PDF design brief or website planning document",
+    folder="Output folder name in tickets/ for generated roadmap and tickets (optional)"
+)
+async def scan_pdf(interaction: discord.Interaction, pdf: discord.Attachment, folder: str | None = None):
+    """Scan an uploaded PDF brief and generate loadable website planning tickets."""
+    await safe_defer(interaction)
+
+    try:
+        if not has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can use `/scan-pdf`. Use `/set-role pm` first.")
+            return
+
+        if not pdf.filename.lower().endswith(".pdf"):
+            await interaction.followup.send("❌ Please upload a `.pdf` file.")
+            return
+
+        if not ai_client.is_configured():
+            await interaction.followup.send(
+                "❌ AI is not configured. Set `NVIDIA_API_KEY`, `NVIDIA_MODEL`, and `NVIDIA_INVOKE_URL` before using `/scan-pdf`."
+            )
+            return
+
+        output_folder = folder or default_pdf_folder(pdf.filename)
+        await interaction.followup.send(f"📄 Downloading and scanning `{pdf.filename}`... this may take a moment.")
+
+        with tempfile.TemporaryDirectory(prefix="pdf-brief-") as tmp:
+            pdf_path = Path(tmp) / pdf.filename
+            pdf_bytes = await pdf.read()
+            pdf_path.write_bytes(pdf_bytes)
+
+            result: PDFScanResult = await asyncio.to_thread(
+                scan_pdf_brief,
+                str(pdf_path),
+                output_folder,
+                TICKETS_DIR,
+                ai_client,
+            )
+
+        embed = discord.Embed(
+            title="📄 PDF Brief Scanned",
+            description=f"Generated website planning output from `{pdf.filename}`",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Project", value=result.project_name, inline=False)
+        embed.add_field(name="Pages Scanned", value=str(result.pages_scanned), inline=True)
+        embed.add_field(name="Extracted Text", value=str(result.chars_extracted), inline=True)
+        embed.add_field(name="Output Folder", value=f"`tickets/{output_folder}/`", inline=False)
+        embed.add_field(name="Roadmap File", value=f"`tickets/{output_folder}/ROADMAP.md`", inline=False)
+
+        if result.features:
+            feature_lines = "\n".join([f"• {item}" for item in result.features[:5]])
+            embed.add_field(name="Detected Features", value=feature_lines, inline=False)
+
+        if result.open_questions:
+            question_lines = "\n".join([f"• {item}" for item in result.open_questions[:4]])
+            embed.add_field(name="Open Questions", value=question_lines, inline=False)
+
+        if result.generated_ticket_files:
+            file_list = "\n".join([f"• `{Path(path).name}`" for path in result.generated_ticket_files[:10]])
+            if len(result.generated_ticket_files) > 10:
+                file_list += f"\n• ... and {len(result.generated_ticket_files) - 10} more"
+            embed.add_field(name="Generated Tickets", value=file_list, inline=False)
+
+        embed.add_field(
+            name="Next Step",
+            value=f"Review `tickets/{output_folder}/ROADMAP.md`, then run `/load-tickets {output_folder} #channel`.",
+            inline=False,
+        )
+
+        await interaction.followup.send(embed=embed)
+        logger.info(
+            "PDF brief scanned: file=%s pages=%s chars=%s folder=%s tickets=%s by=%s",
+            pdf.filename,
+            result.pages_scanned,
+            result.chars_extracted,
+            output_folder,
+            len(result.generated_ticket_files),
+            interaction.user,
+        )
+
+    except AIClientError as e:
+        logger.warning("PDF scan failed: %s", e)
+        await interaction.followup.send(f"❌ PDF scan failed: {e}")
+    except Exception as e:
+        logger.error("Error scanning PDF brief: %s", e)
+        await interaction.followup.send(f"❌ Error scanning PDF brief: {e}")
 
 
 @bot.tree.command(

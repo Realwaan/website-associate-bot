@@ -52,6 +52,15 @@ The `/scan-project` command walks an external codebase and detects:
 
 Issues are grouped by area and category, then written as ticket `.md` files ready to load with `/load-tickets`.
 
+### PDF Brief Scanner
+The `/scan-pdf` command accepts an uploaded website/design brief PDF and turns it into a planning bundle:
+- Extracts selectable text from the PDF
+- Uses the configured AI model to infer design system details like logo, fonts, and color palette
+- Summarizes pages, features, wireframes, and open questions
+- Generates `ROADMAP.md`, `PDF_BRIEF.md`, and loadable ticket `.md` files under `tickets/<folder>/`
+
+This works best on PDFs with real text layers. Image-only briefs or mockups with no selectable text may need OCR support later.
+
 ### Roadmap Generator
 The `/scan-roadmap` command scans the full project and creates:
 - `tickets/<folder>/ROADMAP.md` with prioritized milestones
@@ -280,6 +289,7 @@ In Render logs, confirm:
 | Command | Description |
 |---------|-------------|
 | `/load-tickets <folder> <channel>` | Load markdown files from a folder into a channel as threads |
+| `/scan-pdf <pdf> [folder]` | Upload a website/design brief PDF and generate roadmap + tickets |
 | `/rebuild-db <folder> <channel>` | Rebuild database entries from existing threads (recovery tool) |
 | `/reset-loaded <folder> <channel>` | Clear loaded-ticket mappings so deleted tickets can be loaded again |
 | `/scan-project <path> <folder> [threshold]` | Scan a project directory for issues and auto-generate ticket files |
