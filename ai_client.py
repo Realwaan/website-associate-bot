@@ -243,8 +243,13 @@ class NvidiaAIClient:
             response = client.chat.completions.create(**create_kwargs)
 
         except APIStatusError as e:
-            logger.error("NVIDIA API status error: %s %s", e.status_code, e.message)
-            raise AIClientError(f"AI API error {e.status_code}: {e.message}") from e
+            logger.error(
+                "NVIDIA API status error: %s %s | model=%s base_url=%s",
+                e.status_code, e.message, prof.model, prof.base_url,
+            )
+            raise AIClientError(
+                f"AI API error {e.status_code} (model={prof.model} url={prof.base_url}): {e.message}"
+            ) from e
         except (APIConnectionError, APITimeoutError) as e:
             logger.error("NVIDIA API connection/timeout: %s", e)
             raise AIClientError(f"AI connection error: {e}") from e

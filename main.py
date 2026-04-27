@@ -2031,8 +2031,8 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
         logger.warning("AI request failed: %s", e)
         await interaction.followup.send(f"❌ AI request failed: {e}")
     except Exception as e:
-        logger.error("Error running ask-ai: %s", e)
-        await interaction.followup.send(f"❌ Error running ask-ai: {e}")
+        logger.error("Error running ask-ai: %s", e, exc_info=True)
+        await interaction.followup.send(f"❌ Unexpected error: {e}")
 
 
 @bot.tree.command(
