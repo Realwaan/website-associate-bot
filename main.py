@@ -1779,32 +1779,38 @@ async def show_help(interaction: discord.Interaction):
         
         # Ticket Loading
         embed.add_field(
-            name="📂 Loading Tickets (PM only)",
-                        value=(
-                                "**`/load-tickets <folder> <channel>`**\n"
-                                "Load tickets from a folder into a Discord channel.\n"
-                                "Creates threads for each markdown file.\n"
-                                "**`/scan-pdf <pdf> [folder]`**\n"
-                                "Upload a website/design brief PDF and generate roadmap + tickets.\n"
-                                "**`/rebuild-db <folder> <channel>`**\n"
-                                "Rebuild database entries from existing threads in a channel.\n"
-                                "**`/reset-loaded <folder> <channel>`**\n"
-                                "Reset loaded mappings so deleted tickets can be loaded again.\n"
-                                "**`/scan-project <path> <folder> [threshold]`**\n"
-                                "Scan a codebase and generate issue-based ticket files.\n"
-                                "**`/scan-roadmap <path> <folder> [threshold] [generate_tickets]`**\n"
-                                "Generate full repo structure/component analysis and a 12-week (3-month) roadmap.\n"
-                                "**`/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]`**\n"
-                                "Cloud-safe scan by cloning a repository URL before analysis.\n"
-                                "**`/set-commit-channel <channel>`**\n"
-                                "Set default channel for repository bulletins.\n"
-                                "**`/update-project <repo_url> [branch] [limit] [feed_type] [channel]`**\n"
-                                "Post formal commit/merge updates with links and enable auto-monitoring.\n"
-                                "**`/auto-updates <enable|disable|status> [repo_url] [branch] [feed_type] [limit]`**\n"
-                                "Pause/resume automatic repo notifications or view current config.\n"
-                                "*Only Project Managers can use this*\n"
-                                "`/load-tickets support #support-channel`"
-                        ),
+            name="📂 PM Ticket Loading",
+            value=(
+                "**`/load-tickets <folder> <channel>`**\n"
+                "Load tickets into channel threads.\n"
+                "**`/scan-pdf <pdf> [folder]`**\n"
+                "Generate roadmap + tickets from uploaded design brief PDF.\n"
+                "**`/rebuild-db <folder> <channel>`**\n"
+                "Rebuild tracking records from existing threads.\n"
+                "**`/reset-loaded <folder> <channel>`**\n"
+                "Clear loaded mappings so deleted threads can be recreated.\n"
+                "`/load-tickets support #support-channel`"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🧭 PM Scanning & Updates",
+            value=(
+                "**`/scan-project <path> <folder> [threshold]`**\n"
+                "Scan code and generate issue tickets.\n"
+                "**`/scan-roadmap <path> <folder> [threshold] [generate_tickets]`**\n"
+                "Build roadmap and optionally generate tickets.\n"
+                "**`/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]`**\n"
+                "Cloud-safe repo clone and scan.\n"
+                "**`/set-commit-channel <channel>`**\n"
+                "Set default channel for commit/merge bulletins.\n"
+                "**`/update-project <repo_url> [branch] [limit] [feed_type] [channel]`**\n"
+                "Post commit/merge updates with links.\n"
+                "**`/auto-updates <enable|disable|status> [repo_url] [branch] [feed_type] [limit]`**\n"
+                "Control automatic repo notifications.\n"
+                "*PM only*"
+            ),
             inline=False
         )
         
