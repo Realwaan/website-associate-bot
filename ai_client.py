@@ -129,12 +129,9 @@ class NvidiaAIClient:
         if clean_url.endswith("/chat/completions"):
             clean_url = clean_url[: -len("/chat/completions")]
 
-        # scan_docs uses nemotron-nano which requires reasoning_budget.
-        # answer/code/rag use nemotron-super which also supports thinking
-        # but we leave extra_body empty so callers can opt in via enable_thinking.
+        # All profiles default to no thinking — fast responses with content always populated.
+        # Pass enable_thinking=True to the chat() call to opt into the reasoning chain.
         extra_body: dict[str, Any] = {}
-        if profile_name == "scan_docs":
-            extra_body = dict(self._THINKING_EXTRA_BODY)
 
         return AIProfile(
             api_key=token or None,
@@ -198,9 +195,10 @@ class NvidiaAIClient:
         Parameters
         ----------
         enable_thinking:
-            None  — use the profile default (on for scan_docs, off for others)
-            True  — force reasoning_budget extra_body on
-            False — strip reasoning_budget extra_body (useful for JSON-output prompts)
+            None/False — prepend /no_think so the model populates `content`
+                         directly, skipping the reasoning chain (fast, default).
+            True       — prepend /think for a full reasoning chain before the
+                         answer (slower, better for complex queries).
         """
         self._load_from_env()
         pname = profile or self.active_profile
@@ -212,18 +210,17 @@ class NvidiaAIClient:
                 "Check NVIDIA_API_KEY and NVIDIA_MODEL in .env."
             )
 
-        messages: list[dict] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        # nemotron-super defaults to thinking; /no_think forces content to be populated.
+        think_directive = "/think" if enable_thinking is True else "/no_think"
+        system_content = f"{think_directive}\n\n{system}" if system else think_directive
+        messages: list[dict] = [
+            {"role": "system", "content": system_content},
+            {"role": "user",   "content": prompt},
+        ]
 
-        # Resolve extra_body — caller can override the profile default
-        extra_body = dict(prof.extra_body)
-        if enable_thinking is False:
-            # Caller explicitly wants no thinking (e.g. JSON-only prompts)
-            extra_body.pop("reasoning_budget", None)
-            extra_body.pop("chat_template_kwargs", None)
-        elif enable_thinking is True and not extra_body:
+        # reasoning_budget is only sent when explicitly enabling thinking
+        extra_body: dict[str, Any] = {}
+        if enable_thinking is True:
             extra_body = dict(self._THINKING_EXTRA_BODY)
 
         client = self._make_client(prof)
@@ -312,9 +309,11 @@ class NvidiaAIClient:
         Pull the final answer from a completion response.
 
         Thinking models surface the chain-of-thought in `reasoning_content`
-        and the polished answer in `content`. We prefer `content`; if it is
-        empty (can happen on very short prompts with thinking models) we fall
-        back to the reasoning trace so the caller always receives something.
+        (logged at DEBUG, never shown to users) and the polished reply in
+        `content`. We only ever return `content`.
+
+        With enable_thinking=False (our default) the model skips the reasoning
+        chain entirely and populates `content` directly — fast and clean.
         """
         choices = getattr(response, "choices", None) or []
         if not choices:
@@ -326,12 +325,14 @@ class NvidiaAIClient:
 
         if reasoning:
             logger.debug(
-                "[%s] reasoning_content (%d chars): %.300s…",
+                "[%s] reasoning_content (%d chars): %.400s",
                 profile, len(reasoning), reasoning,
             )
 
-        result = content or reasoning
-        if not result:
-            raise AIClientError("AI returned an empty response.")
+        if not content:
+            raise AIClientError(
+                "AI returned an empty response. "
+                "Try rephrasing your prompt or reducing max_tokens."
+            )
 
-        return result
+        return content

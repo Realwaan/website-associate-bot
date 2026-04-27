@@ -78,7 +78,15 @@ def _strip_code_fences(text: str) -> str:
     return stripped.strip()
 
 
+import logging as _logging
+_pdf_logger = _logging.getLogger(__name__)
+
+
 def _parse_json_response(text: str) -> dict[str, Any]:
+    # Log what the model actually returned so we can diagnose failures.
+    preview = text[:500].replace("\n", " ") if text else "<empty>"
+    _pdf_logger.debug("scan_docs raw response (first 500 chars): %s", preview)
+
     cleaned = _strip_code_fences(text)
 
     # 1. Happy path: the whole string is valid JSON.
@@ -90,8 +98,7 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         pass
 
     # 2. Model appended text after the JSON object (common with thinking models).
-    #    raw_decode stops at the end of the first complete JSON value and ignores
-    #    anything that follows — exactly what we need.
+    #    raw_decode stops at the end of the first complete JSON value.
     start = cleaned.find("{")
     if start >= 0:
         try:
@@ -101,6 +108,8 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
+    # Log the full response at WARNING level so it appears in Render logs.
+    _pdf_logger.warning("scan_docs could not parse JSON. Full response:\n%s", text[:2000])
     raise AIClientError("AI response was not valid JSON.")
 
 
@@ -396,8 +405,9 @@ def scan_pdf_brief(
     prompt = _build_prompt(pdf_file.name, extracted_text, page_count)
     analysis_text = ai_client.chat(
         prompt,
+        system="You are a JSON API. Output ONLY a single valid JSON object. No markdown, no explanation, no text outside the braces.",
         max_tokens=4096,
-        temperature=0.2,
+        temperature=0.1,
         top_p=0.9,
         enable_thinking=False,
         profile=ai_profile,

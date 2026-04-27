@@ -2003,13 +2003,20 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             )
             return
 
+        _SYSTEM = (
+            "You are an expert assistant. "
+            "Give accurate, well-structured, and concise answers. "
+            "Use markdown formatting (bold, bullet lists, headings) when it helps clarity. "
+            "Be direct — do not repeat the question or add unnecessary preamble."
+        )
         answer = await asyncio.to_thread(
             ai_client.chat,
             prompt,
-            temperature=temperature,
+            system=_SYSTEM,
+            temperature=min(temperature, 1.0),  # cap at 1.0 for accuracy
             max_tokens=2048,
-            top_p=0.95,
-            enable_thinking=True,
+            top_p=0.9,
+            enable_thinking=False,
             profile="answer",
         )
 
