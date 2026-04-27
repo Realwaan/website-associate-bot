@@ -1,0 +1,13 @@
+## Roadmap
+- **Phase 1: Discovery & Design**
+  - Finalize branding assets
+  - Create high‑fidelity mockups
+- **Phase 2: Front‑end Development**
+  - Implement responsive layouts
+  - Integrate design system
+- **Phase 3: Back‑end & Payments**
+  - Build artist dashboard API
+  - Connect local payment gateway
+- **Phase 4: Testing & Launch**
+  - Conduct usability testing
+  - Deploy to production
