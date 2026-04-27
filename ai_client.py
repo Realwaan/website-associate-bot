@@ -122,6 +122,13 @@ class NvidiaAIClient:
         if token.lower().startswith("bearer "):
             token = token[7:].strip()
 
+        # The OpenAI SDK automatically appends /chat/completions to base_url.
+        # Strip it here if someone stored the full URL in their env so we don't
+        # end up with .../v1/chat/completions/chat/completions → 404.
+        clean_url = base_url.rstrip("/")
+        if clean_url.endswith("/chat/completions"):
+            clean_url = clean_url[: -len("/chat/completions")]
+
         # scan_docs uses nemotron-nano which requires reasoning_budget.
         # answer/code/rag use nemotron-super which also supports thinking
         # but we leave extra_body empty so callers can opt in via enable_thinking.
@@ -132,7 +139,7 @@ class NvidiaAIClient:
         return AIProfile(
             api_key=token or None,
             model=model,
-            base_url=base_url,
+            base_url=clean_url,
             timeout_seconds=timeout,
             extra_body=extra_body,
         )
@@ -143,6 +150,21 @@ class NvidiaAIClient:
             api_key=profile.api_key,
             timeout=profile.timeout_seconds,
         )
+
+    @property
+    def model(self) -> str | None:
+        """Backwards-compatible property used by the startup log in main.py."""
+        return self._get_profile(self.active_profile).model
+
+    @property
+    def invoke_url(self) -> str:
+        """Backwards-compatible property used by the startup log in main.py."""
+        return self._get_profile(self.active_profile).base_url
+
+    @property
+    def timeout_seconds(self) -> int:
+        """Backwards-compatible property used by the startup log in main.py."""
+        return self._get_profile(self.active_profile).timeout_seconds
 
     # ------------------------------------------------------------------
     # Public API
