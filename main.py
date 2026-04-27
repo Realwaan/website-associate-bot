@@ -206,6 +206,14 @@ async def on_ready():
     init_db()
     logger.info("Database initialized")
 
+    logger.info(
+        "AI client ready: configured=%s model=%s timeout=%ss endpoint=%s",
+        ai_client.is_configured(),
+        getattr(ai_client, "model", None),
+        getattr(ai_client, "timeout_seconds", None),
+        getattr(ai_client, "invoke_url", None),
+    )
+
     # Prevent bad persisted settings from causing noisy auto-update failures.
     _validate_auto_update_boot_config()
     
@@ -1843,6 +1851,7 @@ async def show_help(interaction: discord.Interaction):
             value="**`/closed`** (in thread) - Close a ticket\n" +
                   "**`/ticket-info`** (in thread) - View ticket tracking details\n" +
                   "**`/ask-ai <prompt>`** - Ask configured NVIDIA model (PM only)\n" +
+                  "**`/ai-status`** - Show the current AI configuration (PM only)\n" +
                   "**`/leaderboard <dev|qa> [limit]`** - View leaderboard\n" +
                   "**`/stats`** - Show project ticket overview\n" +
                   "**`/setreminderschannel <channel>`** - Set channel for daily 8 AM summary (PM only)\n" +
@@ -2849,6 +2858,45 @@ async def _github_get(url: str, token: str | None = None) -> dict | list | None:
         except Exception as exc:
             logger.warning("GitHub API request failed (%s): %s", url, exc)
             return None
+
+
+    @bot.tree.command(
+        name="ai-status",
+        description="Show the current NVIDIA AI configuration (PM only)"
+    )
+    async def ai_status(interaction: discord.Interaction):
+        """Show a safe summary of the current AI client configuration."""
+        await safe_defer(interaction)
+
+        try:
+            if not has_role(interaction.user.id, "pm"):
+                await interaction.followup.send("❌ Only Project Managers can use `/ai-status`.")
+                return
+
+            status = ai_client.get_status()
+
+            embed = discord.Embed(
+                title="🤖 AI Status",
+                description="Current NVIDIA AI client configuration",
+                color=discord.Color.green() if status["configured"] else discord.Color.orange(),
+            )
+            embed.add_field(name="Configured", value="Yes" if status["configured"] else "No", inline=True)
+            embed.add_field(name="Has API Key", value="Yes" if status["has_api_key"] else "No", inline=True)
+            embed.add_field(name="Model", value=f"`{status['model']}`", inline=False)
+            embed.add_field(name="Endpoint", value=f"`{status['invoke_url']}`", inline=False)
+            embed.add_field(name="Timeout", value=f"`{status['timeout_seconds']}s`", inline=True)
+
+            if not status["configured"]:
+                embed.add_field(
+                    name="Missing",
+                    value="Set `NVIDIA_API_KEY`, `NVIDIA_MODEL`, and `NVIDIA_INVOKE_URL` in `.env`.",
+                    inline=False,
+                )
+
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error("Error showing AI status: %s", e)
+            await interaction.followup.send(f"❌ Error showing AI status: {e}")
 
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _fetch)

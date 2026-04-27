@@ -46,6 +46,18 @@ class NvidiaAIClient:
         self._load_from_env()
         return bool(self.api_key and self.invoke_url and self.model)
 
+    def get_status(self) -> dict[str, Any]:
+        """Return a safe snapshot of the current AI configuration."""
+
+        self._load_from_env()
+        return {
+            "configured": bool(self.api_key and self.invoke_url and self.model),
+            "has_api_key": bool(self.api_key),
+            "model": self.model,
+            "invoke_url": self.invoke_url,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
     def _extract_text(self, data: dict[str, Any]) -> str:
         """Extract model text from OpenAI-compatible response shape."""
         choices = data.get("choices") or []
@@ -78,11 +90,14 @@ class NvidiaAIClient:
         temperature: float = 0.7,
         top_p: float = 0.95,
         enable_thinking: bool = True,
+        timeout_seconds: int | None = None,
     ) -> str:
         """Send a user prompt and return generated text."""
         self._load_from_env()
         if not self.is_configured():
             raise AIClientError("NVIDIA AI is not configured. Set NVIDIA_API_KEY, NVIDIA_MODEL, and NVIDIA_INVOKE_URL.")
+
+        request_timeout = timeout_seconds if timeout_seconds is not None else self.timeout_seconds
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -105,7 +120,7 @@ class NvidiaAIClient:
                 self.invoke_url,
                 headers=headers,
                 json=payload,
-                timeout=self.timeout_seconds,
+                timeout=request_timeout,
             )
         except requests.RequestException as e:
             raise AIClientError(f"Request failed: {e}") from e

@@ -389,10 +389,11 @@ def scan_pdf_brief(
     prompt = _build_prompt(pdf_file.name, extracted_text, page_count)
     analysis_text = ai_client.chat(
         prompt,
-        max_tokens=4096,
+        max_tokens=3000,
         temperature=0.2,
         top_p=0.9,
         enable_thinking=False,
+        timeout_seconds=180,
     )
     data = _parse_json_response(analysis_text)
 
