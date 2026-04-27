@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections import Counter
 from datetime import datetime
+import re
 
 from scan_project import (
     scan_directory,
@@ -51,6 +52,143 @@ class RoadmapResult:
     top_components: list[tuple[str, int]]
     detected_features: list[tuple[str, int]]
     suggested_features: list[str]
+
+
+def _slugify(text: str, max_len: int = 60) -> str:
+    """Convert text to a filename-safe slug."""
+
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:max_len].rstrip("-") or "item"
+
+
+def _feature_area(feature_name: str) -> str:
+    """Best-effort ticket area prefix for generated feature tickets."""
+
+    name = feature_name.lower()
+    if any(k in name for k in ("admin", "moderation", "rbac", "permission", "report")):
+        return "admin"
+    if any(k in name for k in ("automation", "schedule", "cron", "job")):
+        return "utils"
+    if any(k in name for k in ("api", "integration", "provider", "service")):
+        return "server"
+    return "client"
+
+
+def _write_feature_ticket(
+    out_dir: Path,
+    filename: str,
+    title: str,
+    problem: str,
+    what_to_fix: list[str],
+    acceptance_criteria: list[str],
+    related_files: list[str],
+    *,
+    priority: bool = False,
+) -> str:
+    """Write one feature ticket markdown file and return its path."""
+
+    priority_line = "\n**[PRIORITY]**\n" if priority else ""
+    related_section = "\n".join([f"- `{item}`" for item in related_files]) if related_files else "- `tickets/`"
+    fix_section = "\n".join([f"{idx}. {item}" for idx, item in enumerate(what_to_fix, start=1)])
+    criteria_section = "\n".join([f"- {item}" for item in acceptance_criteria])
+
+    ticket_md = f"""# {title}{priority_line}
+## Problem
+
+{problem}
+
+## Potentially Related Files
+
+{related_section}
+
+## What to Fix
+
+{fix_section}
+
+## Acceptance Criteria
+
+{criteria_section}
+"""
+
+    ticket_path = out_dir / filename
+    ticket_path.write_text(ticket_md.strip() + "\n", encoding="utf-8")
+    return str(ticket_path)
+
+
+def _generate_feature_tickets(
+    output_folder: str,
+    tickets_dir: str,
+    impactful_feature: dict[str, object],
+    detected_features: list[tuple[str, int]],
+) -> list[str]:
+    """Generate feature tickets from roadmap analysis outputs."""
+
+    out_dir = Path(tickets_dir) / output_folder
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    generated: list[str] = []
+
+    impactful_title = str(impactful_feature.get("title", "Most Impactful Feature")).strip()
+    impactful_slug = _slugify(impactful_title)
+    impactful_area = _feature_area(impactful_title)
+    impactful_problem = str(impactful_feature.get("description", "Implement the most impactful feature identified by roadmap analysis.")).strip()
+    impactful_tasks = [str(item).strip() for item in impactful_feature.get("tasks", []) if str(item).strip()]
+    if not impactful_tasks:
+        impactful_tasks = [
+            "Define final scope and success metrics for this feature.",
+            "Implement the core workflow end-to-end with role-safe behavior.",
+            "Document rollout and QA verification steps.",
+        ]
+    impactful_scope = [str(item).strip() for item in impactful_feature.get("scope_boundaries", []) if str(item).strip()]
+    impactful_criteria = [
+        "Core workflow for this feature is implemented and testable.",
+        "Permission and error handling behavior is verified.",
+        "Release and rollback notes are documented for PM/QA.",
+    ]
+    if impactful_scope:
+        impactful_criteria.append("Scope boundaries are respected with no out-of-scope additions.")
+
+    generated.append(
+        _write_feature_ticket(
+            out_dir=out_dir,
+            filename=f"{impactful_area}-feature-most-impactful-{impactful_slug}.md",
+            title=f"Build Most Impactful Feature: {impactful_title}",
+            problem=impactful_problem,
+            what_to_fix=impactful_tasks,
+            acceptance_criteria=impactful_criteria,
+            related_files=["tickets/{}/ROADMAP.md".format(output_folder)],
+            priority=True,
+        )
+    )
+
+    for feature_name, component_count in detected_features[:3]:
+        feature_slug = _slugify(feature_name)
+        area = _feature_area(feature_name)
+        generated.append(
+            _write_feature_ticket(
+                out_dir=out_dir,
+                filename=f"{area}-feature-expand-{feature_slug}.md",
+                title=f"Expand Feature: {feature_name}",
+                problem=(
+                    f"Roadmap analysis shows `{feature_name}` appears across {component_count} component(s). "
+                    "Consolidate and improve this feature to reduce inconsistency and strengthen UX."
+                ),
+                what_to_fix=[
+                    f"Map all current `{feature_name}` flows and identify overlap/gaps.",
+                    f"Define one consistent implementation standard for `{feature_name}`.",
+                    "Implement prioritized improvements and align naming/behavior.",
+                    "Add PM/QA verification notes for the updated flow.",
+                ],
+                acceptance_criteria=[
+                    f"`{feature_name}` behavior is consistent across affected components.",
+                    "User-facing and role-based behavior is documented and testable.",
+                    "No regression is introduced in existing related flows.",
+                ],
+                related_files=["tickets/{}/ROADMAP.md".format(output_folder)],
+            )
+        )
+
+    return generated
 
 
 def _collect_file_stats(
@@ -612,7 +750,7 @@ Generated from automated scan of `{scan_source}` on **{now}**.
 
 - Scanned files: **{total_files}**
 - Detected components: **{len(components)}**
-- Generated issue tickets: **{ticket_count}**
+- Generated tickets: **{ticket_count}**
 - Roadmap horizon: **12 weeks (3 months)**
 - Primary project profile:
 {profile_lines}
@@ -729,6 +867,16 @@ def build_project_roadmap(
     top_dirs = sorted(dir_counts.items(), key=lambda x: x[1], reverse=True)[:8]
     suggestions = _suggest_features(dict(category_counts), ext_counts, total_files, feature_component_counts)
     impactful_feature = _pick_most_impactful_feature(dict(category_counts), ext_counts, feature_component_counts)
+    detected_features = sorted(feature_component_counts.items(), key=lambda x: x[1], reverse=True)[:8]
+    if generate_issue_tickets:
+        generated_files.extend(
+            _generate_feature_tickets(
+                output_folder=output_folder,
+                tickets_dir=tickets_dir,
+                impactful_feature=impactful_feature,
+                detected_features=detected_features,
+            )
+        )
     weekly_plan = _build_twelve_week_plan(components, dict(category_counts), impactful_feature)
 
     out_dir = Path(tickets_dir) / output_folder
@@ -756,8 +904,6 @@ def build_project_roadmap(
         roadmap_file.write_text(roadmap_md.strip() + "\n", encoding="utf-8")
 
     top_components = [(str(c["name"]), int(c["issue_count"])) for c in components[:8]]
-    detected_features = sorted(feature_component_counts.items(), key=lambda x: x[1], reverse=True)[:8]
-
     return RoadmapResult(
         total_files_scanned=total_files,
         total_issues=len(issues),

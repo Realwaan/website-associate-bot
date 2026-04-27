@@ -2232,7 +2232,7 @@ async def scan_roadmap(
     folder: str,
     threshold: int = SCAN_LARGE_FILE_THRESHOLD,
     generate_tickets: bool = True,
-    skip_code_issues: bool = True,
+    skip_code_issues: bool = False,
 ):
     """Generate a project roadmap from scanner findings. Only PMs can use this command."""
     await safe_defer(interaction)
@@ -2375,7 +2375,7 @@ async def scan_repo(
     branch: str | None = None,
     threshold: int = SCAN_LARGE_FILE_THRESHOLD,
     generate_tickets: bool = True,
-    skip_code_issues: bool = True,
+    skip_code_issues: bool = False,
 ):
     """Clone a repo to temp storage and run roadmap scanner. Only PMs can use this command."""
     await safe_defer(interaction)
