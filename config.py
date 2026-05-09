@@ -32,3 +32,11 @@ SCAN_FILE_EXTENSIONS = {
 }
 
 SCAN_LARGE_FILE_THRESHOLD = 300  # lines
+
+# Scanner detector toggles (set to false to disable specific categories)
+SCAN_ENABLE_TODO = os.getenv("SCAN_ENABLE_TODO", "true").lower() == "true"
+SCAN_ENABLE_DEBUG = os.getenv("SCAN_ENABLE_DEBUG", "true").lower() == "true"
+SCAN_ENABLE_EMPTY_CATCH = os.getenv("SCAN_ENABLE_EMPTY_CATCH", "true").lower() == "true"
+SCAN_ENABLE_SKIPPED_TEST = os.getenv("SCAN_ENABLE_SKIPPED_TEST", "true").lower() == "true"
+SCAN_ENABLE_HARDCODED_SECRET = os.getenv("SCAN_ENABLE_HARDCODED_SECRET", "true").lower() == "true"
+SCAN_ENABLE_LARGE_FILE = os.getenv("SCAN_ENABLE_LARGE_FILE", "true").lower() == "true"

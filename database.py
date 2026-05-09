@@ -3,6 +3,7 @@ import os
 import asyncio
 import logging
 import threading
+import json
 from contextlib import contextmanager
 from datetime import datetime
 import glob
@@ -583,6 +584,47 @@ def delete_setting(key: str):
         cursor.execute("DELETE FROM settings WHERE key = %s", (key,))
         conn.commit()
 
+# ===== Telemetry and Audit =====
+
+def log_command_metric(
+    command_name: str,
+    actor_id: int | None,
+    success: bool,
+    duration_ms: int,
+    error_text: str | None = None,
+):
+    """Persist command execution telemetry."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO command_metrics (command_name, actor_id, success, duration_ms, error_text)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (command_name, actor_id, bool(success), max(0, int(duration_ms)), error_text),
+        )
+        conn.commit()
+
+
+def log_audit_event(
+    event_type: str,
+    actor_id: int | None,
+    actor_name: str | None,
+    details: dict | None = None,
+):
+    """Persist an audit event."""
+    payload = json.dumps(details or {})
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO audit_logs (event_type, actor_id, actor_name, details)
+            VALUES (%s, %s, %s, %s::jsonb)
+            """,
+            (event_type, actor_id, actor_name, payload),
+        )
+        conn.commit()
+
 
 # ===== Thread Statistics =====
 
@@ -663,3 +705,33 @@ async def async_get_setting(key: str) -> str | None:
 async def async_set_setting(key: str, value: str) -> None:
     """Non-blocking version of set_setting."""
     return await asyncio.to_thread(set_setting, key, value)
+
+async def async_get_stale_threads(threshold_hours: int = 48) -> list:
+    """Non-blocking version of get_stale_threads."""
+    return await asyncio.to_thread(get_stale_threads, threshold_hours)
+
+async def async_log_command_metric(
+    command_name: str,
+    actor_id: int | None,
+    success: bool,
+    duration_ms: int,
+    error_text: str | None = None,
+) -> None:
+    """Non-blocking version of log_command_metric."""
+    return await asyncio.to_thread(
+        log_command_metric,
+        command_name,
+        actor_id,
+        success,
+        duration_ms,
+        error_text,
+    )
+
+async def async_log_audit_event(
+    event_type: str,
+    actor_id: int | None,
+    actor_name: str | None,
+    details: dict | None = None,
+) -> None:
+    """Non-blocking version of log_audit_event."""
+    return await asyncio.to_thread(log_audit_event, event_type, actor_id, actor_name, details)

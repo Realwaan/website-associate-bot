@@ -264,6 +264,7 @@ DATABASE_URL=postgresql://postgres.<project_ref>:<password>@aws-<region>.pooler.
 KEEP_ALIVE_ENABLED=true
 DB_CONNECT_TIMEOUT_SECONDS=10
 DB_STATEMENT_TIMEOUT_MS=15000
+REPO_UPDATES_MAX_POSTS=50
 ```
 
 Tip:
@@ -322,6 +323,9 @@ In Render logs, confirm:
 | `/set-commit-channel <channel>` | Set default channel for formal commit/merge bulletins |
 | `/update-project <repo_url> [branch] [limit] [feed_type] [channel]` | Post formal repository updates (commits, merged PRs, or both) with GitHub links and enable automatic polling notifications |
 | `/auto-updates <enable\|disable\|status> [repo_url] [branch] [feed_type] [limit]` | Control automatic repository notifications (pause, resume, inspect config) |
+| `/ai-status` | Show current AI provider/model configuration (PM only) |
+
+Automatic updates track a per-branch commit cursor and post each new commit title detected since the previous run. `/update-project` now also persists the destination channel for background polling.
 
 ### Developer Commands (Use Inside a Thread)
 
@@ -403,6 +407,12 @@ The project scanner's behavior is controlled in `config.py`:
 | `SCAN_IGNORE_DIRS` | `node_modules`, `.git`, `.next`, `dist`, etc. | Directories the scanner skips |
 | `SCAN_FILE_EXTENSIONS` | `.ts`, `.tsx`, `.js`, `.py`, `.css`, etc. | File types the scanner reads |
 | `SCAN_LARGE_FILE_THRESHOLD` | `300` lines | Files above this get flagged |
+| `SCAN_ENABLE_TODO` | `true` | Enable TODO/FIXME detector |
+| `SCAN_ENABLE_DEBUG` | `true` | Enable debug statement detector |
+| `SCAN_ENABLE_EMPTY_CATCH` | `true` | Enable swallowed exception detector |
+| `SCAN_ENABLE_SKIPPED_TEST` | `true` | Enable skipped test detector |
+| `SCAN_ENABLE_HARDCODED_SECRET` | `true` | Enable hardcoded secret detector |
+| `SCAN_ENABLE_LARGE_FILE` | `true` | Enable large-file detector |
 
 ---
 
@@ -417,6 +427,8 @@ The bot uses SQLite (`tickets.db`) with migration-based schema management:
 | `leaderboard` | Separate dev resolved and QA reviewed counters |
 | `loaded_tickets` | Tracks which tickets have been loaded to prevent duplicates |
 | `settings` | Key-value store for bot configuration (e.g., reminders channel) |
+| `command_metrics` | Slash-command telemetry (success/failure + duration) |
+| `audit_logs` | Audit trail for administrative configuration changes |
 | `migrations` | Tracks which SQL migrations have been applied |
 
 The database and all tables are created automatically on first run via `migrations/001_initial_schema.sql`.

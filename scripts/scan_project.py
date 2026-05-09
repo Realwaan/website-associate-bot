@@ -32,6 +32,21 @@ DEFAULT_FILE_EXTENSIONS = {
 
 DEFAULT_LARGE_FILE_THRESHOLD = 300  # lines
 
+DETECTOR_TODO = "todo"
+DETECTOR_DEBUG = "debug"
+DETECTOR_EMPTY_CATCH = "empty-catch"
+DETECTOR_SKIPPED_TEST = "skipped-test"
+DETECTOR_HARDCODED_SECRET = "hardcoded-secret"
+DETECTOR_LARGE_FILE = "large-file"
+DEFAULT_ENABLED_DETECTORS = {
+    DETECTOR_TODO,
+    DETECTOR_DEBUG,
+    DETECTOR_EMPTY_CATCH,
+    DETECTOR_SKIPPED_TEST,
+    DETECTOR_HARDCODED_SECRET,
+    DETECTOR_LARGE_FILE,
+}
+
 
 # ---------------------------------------------------------------------------
 # Issue data class
@@ -106,8 +121,13 @@ _SECRET_PATTERNS = [
 _LOGGER_WHITELIST_FILENAMES = {"logger.ts", "logger.js", "logging.py", "log.py", "logger.py"}
 
 
-def _detect_in_file(rel_path: str, lines: list[str]) -> list[Issue]:
+def _detect_in_file(
+    rel_path: str,
+    lines: list[str],
+    enabled_detectors: set[str] | None = None,
+) -> list[Issue]:
     """Run all detectors on a single file's lines."""
+    enabled = enabled_detectors or DEFAULT_ENABLED_DETECTORS
     issues: list[Issue] = []
     basename = Path(rel_path).name.lower()
     is_test_file = any(p in basename for p in ("test", "spec", ".test.", ".spec."))
@@ -121,7 +141,7 @@ def _detect_in_file(rel_path: str, lines: list[str]) -> list[Issue]:
 
         # 1) TODO / FIXME / HACK
         m = _TODO_PATTERN.search(stripped)
-        if m:
+        if m and DETECTOR_TODO in enabled:
             tag = m.group(1).upper()
             msg = m.group(2).strip() or "(no description)"
             severity = "high" if tag in ("FIXME", "BUG", "HACK") else "medium"
@@ -135,7 +155,7 @@ def _detect_in_file(rel_path: str, lines: list[str]) -> list[Issue]:
             ))
 
         # 2) Debug / console statements (skip logger utility files and test files)
-        if basename not in _LOGGER_WHITELIST_FILENAMES and not is_test_file:
+        if DETECTOR_DEBUG in enabled and basename not in _LOGGER_WHITELIST_FILENAMES and not is_test_file:
             for pat in _DEBUG_PATTERNS:
                 if pat.search(stripped):
                     # Skip if it looks like actual production logging, not debug
@@ -153,7 +173,7 @@ def _detect_in_file(rel_path: str, lines: list[str]) -> list[Issue]:
 
         # 3) Empty catch/except
         for pat in _EMPTY_CATCH_PATTERNS:
-            if pat.search(stripped):
+            if DETECTOR_EMPTY_CATCH in enabled and pat.search(stripped):
                 issues.append(Issue(
                     file_path=rel_path,
                     line_number=i,
@@ -165,7 +185,7 @@ def _detect_in_file(rel_path: str, lines: list[str]) -> list[Issue]:
                 break
 
         # 4) Skipped tests
-        if is_test_file:
+        if DETECTOR_SKIPPED_TEST in enabled and is_test_file:
             for pat in _SKIP_TEST_PATTERNS:
                 if pat.search(stripped):
                     issues.append(Issue(
@@ -180,7 +200,7 @@ def _detect_in_file(rel_path: str, lines: list[str]) -> list[Issue]:
 
         # 5) Hardcoded secrets
         for pat in _SECRET_PATTERNS:
-            if pat.search(stripped):
+            if DETECTOR_HARDCODED_SECRET in enabled and pat.search(stripped):
                 issues.append(Issue(
                     file_path=rel_path,
                     line_number=i,
@@ -203,6 +223,7 @@ def scan_directory(
     ignore_dirs: set[str] | None = None,
     file_extensions: set[str] | None = None,
     large_file_threshold: int = DEFAULT_LARGE_FILE_THRESHOLD,
+    enabled_detectors: set[str] | None = None,
 ) -> list[Issue]:
     """Walk a project directory and detect issues in all matching files.
 
@@ -217,6 +238,7 @@ def scan_directory(
     """
     ignore = ignore_dirs or DEFAULT_IGNORE_DIRS
     extensions = file_extensions or DEFAULT_FILE_EXTENSIONS
+    enabled = enabled_detectors or DEFAULT_ENABLED_DETECTORS
     project = Path(project_path).resolve()
     all_issues: list[Issue] = []
 
@@ -246,7 +268,7 @@ def scan_directory(
             lines = content.splitlines()
 
             # Large file check
-            if len(lines) > large_file_threshold:
+            if DETECTOR_LARGE_FILE in enabled and len(lines) > large_file_threshold:
                 all_issues.append(Issue(
                     file_path=rel,
                     line_number=0,
@@ -257,7 +279,7 @@ def scan_directory(
                 ))
 
             # Run line-by-line detectors
-            all_issues.extend(_detect_in_file(rel, lines))
+            all_issues.extend(_detect_in_file(rel, lines, enabled_detectors=enabled))
 
     logger.info(f"Scanned {project_path}: found {len(all_issues)} issue(s)")
     return all_issues
@@ -529,6 +551,7 @@ def scan_and_generate(
     ignore_dirs: set[str] | None = None,
     file_extensions: set[str] | None = None,
     large_file_threshold: int = DEFAULT_LARGE_FILE_THRESHOLD,
+    enabled_detectors: set[str] | None = None,
 ) -> tuple[int, int, list[str]]:
     """Scan a project and generate tickets in one call.
 
@@ -540,6 +563,7 @@ def scan_and_generate(
         ignore_dirs=ignore_dirs,
         file_extensions=file_extensions,
         large_file_threshold=large_file_threshold,
+        enabled_detectors=enabled_detectors,
     )
 
     if not issues:
@@ -557,6 +581,7 @@ def scan_and_generate_with_summary(
     ignore_dirs: set[str] | None = None,
     file_extensions: set[str] | None = None,
     large_file_threshold: int = DEFAULT_LARGE_FILE_THRESHOLD,
+    enabled_detectors: set[str] | None = None,
 ) -> tuple[int, int, list[str], ScanSummary]:
     """Scan a project, generate tickets, and return aggregate metrics."""
     files_scanned = _count_scannable_files(
@@ -570,6 +595,7 @@ def scan_and_generate_with_summary(
         ignore_dirs=ignore_dirs,
         file_extensions=file_extensions,
         large_file_threshold=large_file_threshold,
+        enabled_detectors=enabled_detectors,
     )
 
     if not issues:
