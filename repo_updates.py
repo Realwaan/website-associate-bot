@@ -170,6 +170,7 @@ async def post_project_updates(
     github_token: str | None,
     get_setting: Callable[[str], Awaitable[str | None]],
     set_setting: Callable[[str, str], Awaitable[None]],
+    mark_event_posted: Callable[[str, int], Awaitable[bool]] | None = None,
 ) -> tuple[bool, str, int, int]:
     """Fetch and post repository updates to a channel."""
     if feed_type not in {"both", "merged", "commits"}:
@@ -230,24 +231,8 @@ async def post_project_updates(
         }[feed_type]
         return True, f"No {scope_text} found on `{branch}`.", 0, 0
 
-    now_utc = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M UTC")
-    header_embed = discord.Embed(
-        title="Project Repository Bulletin",
-        description=(
-            f"**Repository:** [{owner}/{repo}]({repo_url_clean})\n"
-            f"**Branch:** `{branch}`\n"
-            f"**Update Scope:** `{feed_type}`\n\n"
-            f"This bulletin summarizes newly detected source-control activity.\n"
-            f"Reported by {reported_by} on {now_utc}."
-        ),
-        color=discord.Color.from_rgb(30, 144, 255),
-        url=repo_url_clean,
-    )
-    header_embed.add_field(name="Repository Link", value=f"[Open Repository]({repo_url_clean})", inline=True)
-    header_embed.set_footer(text="Formal Source Control Bulletin")
-    await target_channel.send(embed=header_embed)
-
-    for idx, pr in enumerate(merged_prs, start=1):
+    prepared_prs: list[dict] = []
+    for pr in merged_prs:
         pr_url = pr.get("html_url", repo_url_clean)
         pr_num = pr.get("number", "?")
         pr_title = pr.get("title", "(no title)")
@@ -266,6 +251,62 @@ async def post_project_updates(
             truncated = pr_body[:300] + ("…" if len(pr_body) > 300 else "")
             description += f"\n\n{truncated}"
 
+        if mark_event_posted is not None:
+            is_new = await mark_event_posted(
+                f"pr:{owner}/{repo}:{pr_num}",
+                int(getattr(target_channel, "id", 0) or 0),
+            )
+            if not is_new:
+                continue
+        prepared_prs.append(pr)
+
+    prepared_commits: list[dict] = []
+    for commit in new_commits:
+        sha = commit.get("sha", "")
+        if mark_event_posted is not None:
+            is_new = await mark_event_posted(
+                f"commit:{owner}/{repo}:{sha}",
+                int(getattr(target_channel, "id", 0) or 0),
+            )
+            if not is_new:
+                continue
+        prepared_commits.append(commit)
+
+    if not prepared_prs and not prepared_commits:
+        return True, "No newly postable events after idempotency filter.", 0, 0
+
+    now_utc = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M UTC")
+    header_embed = discord.Embed(
+        title="Project Repository Bulletin",
+        description=(
+            f"**Repository:** [{owner}/{repo}]({repo_url_clean})\n"
+            f"**Branch:** `{branch}`\n"
+            f"**Update Scope:** `{feed_type}`\n\n"
+            f"This bulletin summarizes newly detected source-control activity.\n"
+            f"Reported by {reported_by} on {now_utc}."
+        ),
+        color=discord.Color.from_rgb(30, 144, 255),
+        url=repo_url_clean,
+    )
+    header_embed.add_field(name="Repository Link", value=f"[Open Repository]({repo_url_clean})", inline=True)
+    header_embed.set_footer(text="Formal Source Control Bulletin")
+    await target_channel.send(embed=header_embed)
+
+    posted_pr_count = 0
+    for idx, pr in enumerate(prepared_prs, start=1):
+        pr_url = pr.get("html_url", repo_url_clean)
+        pr_num = pr.get("number", "?")
+        pr_title = pr.get("title", "(no title)")
+        pr_author = pr.get("user", {}).get("login", "unknown")
+        pr_body = (pr.get("body") or "").strip()
+        merged_at_raw = pr.get("merged_at", "")
+        merged_dt = None
+        if merged_at_raw:
+            try:
+                merged_dt = datetime.strptime(merged_at_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+
         embed = discord.Embed(
             title=f"Merged Pull Request  #{pr_num}",
             description=description,
@@ -276,10 +317,12 @@ async def post_project_updates(
         embed.add_field(name="Author", value=f"`{pr_author}`", inline=True)
         embed.add_field(name="PR Number", value=f"[#{pr_num}]({pr_url})", inline=True)
         embed.add_field(name="View PR", value=f"[Open on GitHub]({pr_url})", inline=True)
-        embed.set_footer(text=f"Merged PR {idx} of {len(merged_prs)}")
+        embed.set_footer(text=f"Merged PR {idx} of {len(prepared_prs)}")
         await target_channel.send(embed=embed)
+        posted_pr_count += 1
 
-    for idx, commit in enumerate(new_commits, start=1):
+    posted_commit_count = 0
+    for idx, commit in enumerate(prepared_commits, start=1):
         sha = commit.get("sha", "")
         short_sha = sha[:7]
         commit_info = commit.get("commit", {})
@@ -313,7 +356,69 @@ async def post_project_updates(
             inline=True,
         )
         embed.add_field(name="Reference", value=f"[View on GitHub]({commit_url})", inline=True)
-        embed.set_footer(text=f"Commit {idx} of {len(new_commits)}")
+        embed.set_footer(text=f"Commit {idx} of {len(prepared_commits)}")
         await target_channel.send(embed=embed)
+        posted_commit_count += 1
 
-    return True, "Posted update bulletin.", len(new_commits), len(merged_prs)
+    return True, "Posted update bulletin.", posted_commit_count, posted_pr_count
+
+
+async def post_push_commits_from_payload(
+    *,
+    target_channel: discord.abc.Messageable,
+    repo_owner: str,
+    repo_name: str,
+    branch: str,
+    commits: list[dict],
+    mark_event_posted: Callable[[str, int], Awaitable[bool]] | None = None,
+) -> int:
+    """Post commit updates from a GitHub push payload."""
+    if not commits:
+        return 0
+
+    repo_url_clean = f"https://github.com/{repo_owner}/{repo_name}"
+    posted = 0
+    for idx, commit in enumerate(commits, start=1):
+        sha = commit.get("id", "")
+        if not sha:
+            continue
+        short_sha = sha[:7]
+        subject = (commit.get("message") or "(no message)").split("\n")[0]
+        author = commit.get("author", {}).get("name", "unknown")
+        timestamp_raw = commit.get("timestamp", "")
+        commit_url = commit.get("url") or f"{repo_url_clean}/commit/{sha}"
+
+        if mark_event_posted is not None:
+            is_new = await mark_event_posted(
+                f"commit:{repo_owner}/{repo_name}:{sha}",
+                int(getattr(target_channel, "id", 0) or 0),
+            )
+            if not is_new:
+                continue
+
+        commit_dt = None
+        if timestamp_raw:
+            try:
+                commit_dt = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
+            except ValueError:
+                commit_dt = None
+
+        is_merge = subject.lower().startswith("merge")
+        embed_color = discord.Color.from_rgb(88, 101, 242) if is_merge else discord.Color.from_rgb(87, 242, 135)
+        kind_label = "Merge Commit" if is_merge else "Commit"
+        embed = discord.Embed(
+            title=f"{kind_label}  {short_sha}",
+            description=f"**{subject}**",
+            url=commit_url,
+            color=embed_color,
+            timestamp=commit_dt,
+        )
+        embed.add_field(name="Repository", value=f"`{repo_owner}/{repo_name}`", inline=True)
+        embed.add_field(name="Branch", value=f"`{branch}`", inline=True)
+        embed.add_field(name="Author", value=f"`{author}`", inline=True)
+        embed.add_field(name="Reference", value=f"[View on GitHub]({commit_url})", inline=False)
+        embed.set_footer(text=f"Webhook commit {idx} of {len(commits)}")
+        await target_channel.send(embed=embed)
+        posted += 1
+
+    return posted

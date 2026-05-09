@@ -8,6 +8,10 @@ import re
 import tempfile
 import subprocess
 import asyncio
+import json
+import hmac
+import hashlib
+from collections import deque
 from urllib.parse import urlparse
 from datetime import datetime, time, timezone, timedelta
 from config import (
@@ -37,6 +41,10 @@ from database import (
     async_get_leaderboard_dev, async_get_leaderboard_qa,
     async_get_setting, async_set_setting, async_get_stale_threads,
     async_log_command_metric, async_log_audit_event,
+    async_upsert_repo_update_config, async_get_repo_update_config,
+    async_list_enabled_repo_update_configs, async_set_repo_update_enabled,
+    async_mark_repo_event_posted, async_register_webhook_delivery,
+    async_get_command_metrics_summary, async_get_last_audit_events, async_measure_db_ping_ms,
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
@@ -54,10 +62,11 @@ from scan_project import (
 from roadmap_builder import build_project_roadmap
 from ai_client import NvidiaAIClient, AIClientError
 from pdf_brief_scanner import PDFScanResult, default_pdf_folder, scan_pdf_brief
-from repo_updates import parse_github_repo, post_project_updates
+from repo_updates import parse_github_repo, post_project_updates, post_push_commits_from_payload
+from logging_utils import configure_logging
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 # Initialize bot with intents
@@ -92,17 +101,21 @@ def _safe_poll_minutes() -> int:
         return 30
 
 
-# Commit / merge announcement settings (must be defined before task decorators)
-COMMIT_CHANNEL_SETTING = "commit_announce_channel_id"
-AUTO_UPDATES_ENABLED_SETTING = "auto_repo_updates_enabled"
-AUTO_UPDATES_REPO_SETTING = "auto_repo_updates_repo_url"
-AUTO_UPDATES_BRANCH_SETTING = "auto_repo_updates_branch"
-AUTO_UPDATES_FEED_TYPE_SETTING = "auto_repo_updates_feed_type"
-AUTO_UPDATES_LIMIT_SETTING = "auto_repo_updates_limit"
 AUTO_UPDATES_POLL_MINUTES = _safe_poll_minutes()
+REPO_UPDATE_MODE_WEBHOOK = "webhook"
+REPO_UPDATE_MODE_POLLING = "polling"
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+WEBHOOK_REQUIRE_SECRET = os.getenv("WEBHOOK_REQUIRE_SECRET", "true").lower() == "true"
 
 _ticket_summary_lock = asyncio.Lock()
 _repo_updates_lock = asyncio.Lock()
+_webhook_queue: asyncio.Queue[dict] = asyncio.Queue()
+_bot_loop: asyncio.AbstractEventLoop | None = None
+_recent_webhook_errors: deque[str] = deque(maxlen=10)
+_last_repo_update_run_at: datetime | None = None
+_last_repo_update_summary: str = "never"
+_last_webhook_event_at: datetime | None = None
+_last_webhook_summary: str = "none"
 
 
 def _enabled_scan_detectors() -> set[str]:
@@ -158,46 +171,141 @@ async def _record_audit_event(
         logger.warning("Failed to write audit event %s: %s", event_type, exc)
 
 
-def _validate_auto_update_boot_config() -> None:
-    """Disable auto updates at startup when required settings are invalid."""
-    enabled = (get_setting(AUTO_UPDATES_ENABLED_SETTING) or "false").lower() == "true"
-    if not enabled:
-        return
+def _webhook_mode_default() -> str:
+    """Prefer webhook mode when secret configured; fallback to polling."""
+    return REPO_UPDATE_MODE_WEBHOOK if GITHUB_WEBHOOK_SECRET else REPO_UPDATE_MODE_POLLING
 
-    errors: list[str] = []
 
-    channel_id = get_setting(COMMIT_CHANNEL_SETTING)
-    if not channel_id:
-        errors.append("missing commit channel")
-    else:
-        try:
-            int(channel_id)
-        except ValueError:
-            errors.append(f"invalid channel id '{channel_id}'")
+def _verify_github_signature(raw_body: bytes, signature_header: str | None) -> bool:
+    """Verify X-Hub-Signature-256 for webhook body."""
+    if not GITHUB_WEBHOOK_SECRET:
+        return not WEBHOOK_REQUIRE_SECRET
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(
+        GITHUB_WEBHOOK_SECRET.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
 
-    repo_url = get_setting(AUTO_UPDATES_REPO_SETTING)
-    owner, repo = parse_github_repo(repo_url or "")
-    if not repo_url or not owner or not repo:
-        errors.append("invalid or missing repository URL")
 
-    feed_type = get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
-    if feed_type not in {"both", "merged", "commits"}:
-        errors.append(f"invalid feed type '{feed_type}'")
+def _enqueue_webhook_event(raw_body: bytes, headers: dict) -> tuple[int, str]:
+    """Thread-safe enqueue from Flask thread into bot event loop."""
+    global _bot_loop
 
-    limit_str = get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10"
+    if _bot_loop is None:
+        return 503, "Bot loop not ready"
+
+    event_type = headers.get("X-GitHub-Event", "")
+    delivery_id = headers.get("X-GitHub-Delivery", "")
+    signature = headers.get("X-Hub-Signature-256")
+
+    if not event_type:
+        return 400, "Missing X-GitHub-Event"
+    if not delivery_id:
+        return 400, "Missing X-GitHub-Delivery"
+    if not _verify_github_signature(raw_body, signature):
+        return 401, "Invalid webhook signature"
+
     try:
-        limit = int(limit_str)
-        if limit < 1 or limit > 30:
-            raise ValueError("out of range")
-    except ValueError:
-        errors.append(f"invalid limit '{limit_str}'")
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return 400, "Invalid JSON payload"
 
-    if errors:
-        set_setting(AUTO_UPDATES_ENABLED_SETTING, "false")
-        logger.warning(
-            "Auto repo updates disabled at startup due to invalid config: %s",
-            "; ".join(errors),
+    # Replay protection (persisted): reject duplicate delivery ids.
+    try:
+        is_new = asyncio.run_coroutine_threadsafe(
+            async_register_webhook_delivery(delivery_id, event_type),
+            _bot_loop,
+        ).result(timeout=3)
+    except Exception:
+        return 503, "Could not validate webhook delivery"
+
+    if not is_new:
+        return 202, "Duplicate delivery ignored"
+
+    event = {
+        "delivery_id": delivery_id,
+        "event_type": event_type,
+        "payload": payload,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _bot_loop.call_soon_threadsafe(_webhook_queue.put_nowait, event)
+    return 202, "Webhook accepted"
+
+
+async def _handle_webhook_push_event(payload: dict) -> int:
+    """Process GitHub push event and post commit updates for matching configs."""
+    repo = payload.get("repository", {}) or {}
+    owner = (repo.get("owner", {}) or {}).get("name") or (repo.get("owner", {}) or {}).get("login")
+    name = repo.get("name")
+    if not owner or not name:
+        return 0
+
+    ref = payload.get("ref") or ""
+    branch = ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else ref
+    commits = payload.get("commits") or []
+    if not commits:
+        return 0
+
+    posted_total = 0
+    configs = await async_list_enabled_repo_update_configs(REPO_UPDATE_MODE_WEBHOOK)
+    for cfg in configs:
+        if cfg.get("repo_owner") != owner or cfg.get("repo_name") != name:
+            continue
+        if cfg.get("branch") != branch:
+            continue
+        if cfg.get("feed_type") not in {"both", "commits"}:
+            continue
+
+        channel_id = int(cfg.get("channel_id"))
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                continue
+
+        post_limit = max(1, min(int(cfg.get("post_limit") or 10), 30))
+        posted = await post_push_commits_from_payload(
+            target_channel=channel,
+            repo_owner=owner,
+            repo_name=name,
+            branch=branch,
+            commits=commits[:post_limit],
+            mark_event_posted=async_mark_repo_event_posted,
         )
+        posted_total += posted
+    return posted_total
+
+
+@tasks.loop(seconds=5)
+async def process_webhook_events():
+    """Background worker for queued webhook events."""
+    global _last_webhook_event_at, _last_webhook_summary
+    while not _webhook_queue.empty():
+        event = await _webhook_queue.get()
+        try:
+            event_type = event.get("event_type")
+            payload = event.get("payload") or {}
+            if event_type == "push":
+                posted = await _handle_webhook_push_event(payload)
+                _last_webhook_event_at = datetime.now(timezone.utc)
+                _last_webhook_summary = f"push posted_commits={posted}"
+            else:
+                _last_webhook_event_at = datetime.now(timezone.utc)
+                _last_webhook_summary = f"{event_type} ignored"
+        except Exception as exc:
+            _recent_webhook_errors.append(str(exc))
+            logger.error("Webhook processing error: %s", exc)
+        finally:
+            _webhook_queue.task_done()
+
+
+def _validate_auto_update_boot_config() -> None:
+    """Validate legacy auto-update settings and migrate to per-guild configs when possible."""
+    logger.info("Auto-update boot validation complete.")
 
 
 async def clear_global_app_commands() -> int:
@@ -264,6 +372,8 @@ def parse_thread_name(thread_name: str) -> tuple[str | None, str | None]:
 @bot.event
 async def on_ready():
     """When the bot is ready, sync commands and initialize database."""
+    global _bot_loop
+    _bot_loop = asyncio.get_running_loop()
     logger.info(f"Logged in as {bot.user}")
     try:
         # Strict guild-only strategy:
@@ -303,6 +413,10 @@ async def on_ready():
     if not scheduled_repo_updates.is_running():
         scheduled_repo_updates.start()
         logger.info("Scheduled repository updates task started")
+
+    if not process_webhook_events.is_running():
+        process_webhook_events.start()
+        logger.info("Webhook processor task started")
 
 
 @bot.tree.error
@@ -731,60 +845,73 @@ async def scheduled_ticket_summary():
 @tasks.loop(minutes=AUTO_UPDATES_POLL_MINUTES)
 async def scheduled_repo_updates():
     """Background monitor for commit/merge bulletins."""
+    global _last_repo_update_run_at, _last_repo_update_summary
     if _repo_updates_lock.locked():
         logger.info("Auto updates skipped: previous run still active.")
         return
 
     async with _repo_updates_lock:
         try:
-            enabled = (await async_get_setting(AUTO_UPDATES_ENABLED_SETTING) or "false").lower() == "true"
-            if not enabled:
-                return
-
-            channel_id_str = await async_get_setting(COMMIT_CHANNEL_SETTING)
-            repo_url = await async_get_setting(AUTO_UPDATES_REPO_SETTING)
-            branch = await async_get_setting(AUTO_UPDATES_BRANCH_SETTING) or "main"
-            feed_type = await async_get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
-            limit_str = await async_get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10"
-
-            if not channel_id_str or not repo_url:
-                return
-
-            try:
-                limit = max(1, min(int(limit_str), 30))
-            except ValueError:
-                limit = 10
-
-            channel_id = int(channel_id_str)
-            channel = bot.get_channel(channel_id)
-            if not channel:
-                try:
-                    channel = await bot.fetch_channel(channel_id)
-                except Exception:
-                    logger.warning("Auto updates: could not find channel %s", channel_id)
+            configs = await async_list_enabled_repo_update_configs(REPO_UPDATE_MODE_POLLING)
+            if not configs:
+                legacy_enabled = (await async_get_setting("auto_repo_updates_enabled") or "false").lower() == "true"
+                if legacy_enabled:
+                    legacy_channel = await async_get_setting("commit_announce_channel_id")
+                    legacy_repo = await async_get_setting("auto_repo_updates_repo_url")
+                    legacy_branch = await async_get_setting("auto_repo_updates_branch") or "main"
+                    legacy_feed = await async_get_setting("auto_repo_updates_feed_type") or "both"
+                    legacy_limit = await async_get_setting("auto_repo_updates_limit") or "10"
+                    if legacy_channel and legacy_repo:
+                        configs = [{
+                            "channel_id": int(legacy_channel),
+                            "repo_url": legacy_repo,
+                            "branch": legacy_branch,
+                            "feed_type": legacy_feed,
+                            "post_limit": int(legacy_limit),
+                        }]
+                if not configs:
+                    _last_repo_update_run_at = datetime.now(timezone.utc)
+                    _last_repo_update_summary = "no enabled polling configs"
                     return
 
-            ok, message, commit_count, pr_count = await post_project_updates(
-                target_channel=channel,
-                repo_url=repo_url,
-                branch=branch,
-                limit=limit,
-                feed_type=feed_type,
-                reported_by="Automation",
-                github_token=GITHUB_TOKEN,
-                get_setting=async_get_setting,
-                set_setting=async_set_setting,
-            )
+            total_commits = 0
+            total_prs = 0
+            for cfg in configs:
+                repo_url = cfg.get("repo_url")
+                branch = cfg.get("branch") or "main"
+                feed_type = cfg.get("feed_type") or "both"
+                limit = max(1, min(int(cfg.get("post_limit") or 10), 30))
+                channel_id = int(cfg.get("channel_id"))
 
-            if ok and (commit_count or pr_count):
-                logger.info(
-                    "Auto repo updates posted: %s commits + %s merged PRs for %s",
-                    commit_count,
-                    pr_count,
-                    repo_url,
+                channel = bot.get_channel(channel_id)
+                if not channel:
+                    try:
+                        channel = await bot.fetch_channel(channel_id)
+                    except Exception:
+                        logger.warning("Auto updates: could not find channel %s", channel_id)
+                        continue
+
+                ok, message, commit_count, pr_count = await post_project_updates(
+                    target_channel=channel,
+                    repo_url=repo_url,
+                    branch=branch,
+                    limit=limit,
+                    feed_type=feed_type,
+                    reported_by="Automation",
+                    github_token=GITHUB_TOKEN,
+                    get_setting=async_get_setting,
+                    set_setting=async_set_setting,
+                    mark_event_posted=async_mark_repo_event_posted,
                 )
-            elif not ok:
-                logger.warning("Auto repo updates failed: %s", message)
+
+                if ok:
+                    total_commits += commit_count
+                    total_prs += pr_count
+                else:
+                    logger.warning("Auto repo updates failed for %s: %s", repo_url, message)
+
+            _last_repo_update_run_at = datetime.now(timezone.utc)
+            _last_repo_update_summary = f"posted commits={total_commits} prs={total_prs} configs={len(configs)}"
 
         except Exception as e:
             logger.error("Error in scheduled repo updates: %s", e)
@@ -2868,6 +2995,85 @@ async def ticket_info(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Error fetching ticket info: {e}")
 
 
+@bot.tree.command(
+    name="health-details",
+    description="Show bot operational diagnostics (PM only)"
+)
+async def health_details(interaction: discord.Interaction):
+    """Show DB latency, webhook/auto-update state, and recent telemetry."""
+    await safe_defer(interaction, ephemeral=True)
+
+    if not await async_has_role(interaction.user.id, "pm"):
+        await interaction.followup.send("❌ Only Project Managers can use `/health-details`.")
+        return
+
+    try:
+        db_ping_ms = await async_measure_db_ping_ms()
+        metrics = await async_get_command_metrics_summary(60)
+        audits = await async_get_last_audit_events(5)
+        cfg = await async_get_repo_update_config(interaction.guild.id)
+
+        repo_status = "Not configured"
+        if cfg:
+            repo_status = (
+                f"Repo `{cfg.get('repo_owner')}/{cfg.get('repo_name')}` "
+                f"branch `{cfg.get('branch')}` mode `{cfg.get('mode')}` "
+                f"enabled `{cfg.get('enabled')}`"
+            )
+
+        embed = discord.Embed(
+            title="🩺 Bot Health Details",
+            color=discord.Color.blue(),
+        )
+        embed.add_field(name="DB Ping", value=f"`{db_ping_ms} ms`", inline=True)
+        embed.add_field(
+            name="Webhook Queue",
+            value=f"`{_webhook_queue.qsize()}` pending",
+            inline=True,
+        )
+        embed.add_field(
+            name="Last Repo Poll",
+            value=_last_repo_update_run_at.isoformat() if _last_repo_update_run_at else "never",
+            inline=False,
+        )
+        embed.add_field(name="Repo Poll Summary", value=_last_repo_update_summary, inline=False)
+        embed.add_field(
+            name="Last Webhook Event",
+            value=_last_webhook_event_at.isoformat() if _last_webhook_event_at else "never",
+            inline=False,
+        )
+        embed.add_field(name="Webhook Summary", value=_last_webhook_summary, inline=False)
+        embed.add_field(name="Repo Auto-Update Config", value=repo_status, inline=False)
+        embed.add_field(
+            name="Command Metrics (60m)",
+            value=(
+                f"total={metrics.get('total', 0)} | "
+                f"ok={metrics.get('success_count', 0)} | "
+                f"errors={metrics.get('error_count', 0)} | "
+                f"avg={metrics.get('avg_duration_ms', 0)}ms | "
+                f"max={metrics.get('max_duration_ms', 0)}ms"
+            ),
+            inline=False,
+        )
+        if audits:
+            audit_lines = []
+            for row in audits:
+                created_at = row.get("created_at")
+                stamp = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+                audit_lines.append(f"• {stamp} — {row.get('event_type')} ({row.get('actor_name') or 'unknown'})")
+            embed.add_field(name="Recent Audit Events", value="\n".join(audit_lines[:5]), inline=False)
+        if _recent_webhook_errors:
+            embed.add_field(
+                name="Recent Webhook Errors",
+                value="\n".join([f"• {err}" for err in list(_recent_webhook_errors)[-3:]]),
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as exc:
+        await interaction.followup.send(f"❌ Failed to collect diagnostics: {exc}", ephemeral=True)
+
+
 
 # ─── Commit / Merge Announcements ─────────────────────────────────────────────
 
@@ -2889,7 +3095,22 @@ async def set_commit_channel(interaction: discord.Interaction, channel: discord.
             await interaction.followup.send("❌ Only Project Managers can configure the commit channel.")
             return
 
-        await async_set_setting(COMMIT_CHANNEL_SETTING, str(channel.id))
+        cfg = await async_get_repo_update_config(interaction.guild.id)
+        if cfg:
+            await async_upsert_repo_update_config(
+                guild_id=interaction.guild.id,
+                channel_id=channel.id,
+                repo_url=cfg["repo_url"],
+                repo_owner=cfg["repo_owner"],
+                repo_name=cfg["repo_name"],
+                branch=cfg["branch"],
+                feed_type=cfg["feed_type"],
+                post_limit=int(cfg["post_limit"]),
+                mode=cfg["mode"],
+                enabled=bool(cfg["enabled"]),
+            )
+        else:
+            await async_set_setting("commit_announce_channel_id", str(channel.id))
         await interaction.followup.send(
             f"✅ Commit announcements will now be posted to {channel.mention}."
         )
@@ -2957,13 +3178,16 @@ async def auto_updates(
             await interaction.followup.send("❌ Only Project Managers can manage automatic updates.")
             return
 
+        cfg = await async_get_repo_update_config(interaction.guild.id)
+
         if action == "status":
-            enabled = (await async_get_setting(AUTO_UPDATES_ENABLED_SETTING) or "false").lower() == "true"
-            configured_repo = await async_get_setting(AUTO_UPDATES_REPO_SETTING) or "(not set)"
-            configured_branch = await async_get_setting(AUTO_UPDATES_BRANCH_SETTING) or "main"
-            configured_feed = await async_get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
-            configured_limit = await async_get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10"
-            channel_id = await async_get_setting(COMMIT_CHANNEL_SETTING)
+            enabled = bool(cfg and cfg.get("enabled"))
+            configured_repo = cfg.get("repo_url") if cfg else "(not set)"
+            configured_branch = cfg.get("branch") if cfg else "main"
+            configured_feed = cfg.get("feed_type") if cfg else "both"
+            configured_limit = str(cfg.get("post_limit")) if cfg else "10"
+            mode = cfg.get("mode") if cfg else "(not set)"
+            channel_id = str(cfg.get("channel_id")) if cfg else await async_get_setting("commit_announce_channel_id")
 
             channel_text = "(not set)"
             if channel_id:
@@ -2984,13 +3208,15 @@ async def auto_updates(
             embed.add_field(name="Branch", value=f"`{configured_branch}`", inline=True)
             embed.add_field(name="Feed", value=f"`{configured_feed}`", inline=True)
             embed.add_field(name="Limit", value=f"`{configured_limit}`", inline=True)
+            embed.add_field(name="Mode", value=f"`{mode}`", inline=True)
 
             await interaction.followup.send(embed=embed)
             success = True
             return
 
         if action == "disable":
-            await async_set_setting(AUTO_UPDATES_ENABLED_SETTING, "false")
+            if cfg:
+                await async_set_repo_update_enabled(interaction.guild.id, False)
             await interaction.followup.send("⏸️ Automatic repo updates are now disabled.")
             logger.info("Auto repo updates disabled by %s", interaction.user)
             await _record_audit_event(
@@ -3002,10 +3228,10 @@ async def auto_updates(
             return
 
         # action == enable
-        final_repo = repo_url or await async_get_setting(AUTO_UPDATES_REPO_SETTING)
-        final_branch = branch or await async_get_setting(AUTO_UPDATES_BRANCH_SETTING) or "main"
-        final_feed = feed_type or await async_get_setting(AUTO_UPDATES_FEED_TYPE_SETTING) or "both"
-        limit_setting = await async_get_setting(AUTO_UPDATES_LIMIT_SETTING) or "10"
+        final_repo = repo_url or (cfg.get("repo_url") if cfg else None)
+        final_branch = branch or (cfg.get("branch") if cfg else None) or "main"
+        final_feed = feed_type or (cfg.get("feed_type") if cfg else None) or "both"
+        limit_setting = str(cfg.get("post_limit")) if cfg else "10"
         try:
             saved_limit = int(limit_setting)
         except ValueError:
@@ -3022,19 +3248,30 @@ async def auto_updates(
             )
             return
 
-        channel_id = await async_get_setting(COMMIT_CHANNEL_SETTING)
+        channel_id = str(cfg.get("channel_id")) if cfg else await async_get_setting("commit_announce_channel_id")
         if not channel_id:
             await interaction.followup.send(
                 "❌ No commit channel configured. Run `/set-commit-channel` first."
             )
             return
 
-        # Persist configuration and enable.
-        await async_set_setting(AUTO_UPDATES_REPO_SETTING, final_repo)
-        await async_set_setting(AUTO_UPDATES_BRANCH_SETTING, final_branch)
-        await async_set_setting(AUTO_UPDATES_FEED_TYPE_SETTING, final_feed)
-        await async_set_setting(AUTO_UPDATES_LIMIT_SETTING, str(final_limit))
-        await async_set_setting(AUTO_UPDATES_ENABLED_SETTING, "true")
+        owner, repo_name = parse_github_repo(final_repo)
+        if not owner:
+            await interaction.followup.send("❌ Invalid repository URL. Use GitHub URL or owner/repo.")
+            return
+
+        await async_upsert_repo_update_config(
+            guild_id=interaction.guild.id,
+            channel_id=int(channel_id),
+            repo_url=final_repo,
+            repo_owner=owner,
+            repo_name=repo_name,
+            branch=final_branch,
+            feed_type=final_feed,
+            post_limit=int(final_limit),
+            mode=_webhook_mode_default(),
+            enabled=True,
+        )
 
         await interaction.followup.send(
             "✅ Automatic repo updates enabled.\n"
@@ -3042,6 +3279,7 @@ async def auto_updates(
             f"Branch: `{final_branch}`\n"
             f"Feed: `{final_feed}`\n"
             f"Limit: `{final_limit}`\n"
+            f"Mode: `{_webhook_mode_default()}`\n"
             f"Poll Interval: `{AUTO_UPDATES_POLL_MINUTES}` min"
         )
         logger.info(
@@ -3190,8 +3428,9 @@ async def update_project(
             return
 
         target_channel = channel
+        existing_cfg = await async_get_repo_update_config(interaction.guild.id)
         if target_channel is None:
-            channel_id_str = await async_get_setting(COMMIT_CHANNEL_SETTING)
+            channel_id_str = str(existing_cfg.get("channel_id")) if existing_cfg else await async_get_setting("commit_announce_channel_id")
             if not channel_id_str:
                 await interaction.followup.send(
                     "❌ No update channel configured yet. Run `/set-commit-channel` first, "
@@ -3216,19 +3455,31 @@ async def update_project(
             github_token=GITHUB_TOKEN,
             get_setting=async_get_setting,
             set_setting=async_set_setting,
+            mark_event_posted=async_mark_repo_event_posted,
         )
 
         if not ok:
             await interaction.followup.send(f"❌ {message}")
             return
 
+        owner, repo_name = parse_github_repo(repo_url)
+        if not owner:
+            await interaction.followup.send("❌ Invalid repository URL. Use GitHub URL or owner/repo.")
+            return
+
         # Persist automatic monitor configuration from latest successful run.
-        await async_set_setting(COMMIT_CHANNEL_SETTING, str(target_channel.id))
-        await async_set_setting(AUTO_UPDATES_REPO_SETTING, repo_url)
-        await async_set_setting(AUTO_UPDATES_BRANCH_SETTING, branch)
-        await async_set_setting(AUTO_UPDATES_FEED_TYPE_SETTING, feed_type)
-        await async_set_setting(AUTO_UPDATES_LIMIT_SETTING, str(limit))
-        await async_set_setting(AUTO_UPDATES_ENABLED_SETTING, "true")
+        await async_upsert_repo_update_config(
+            guild_id=interaction.guild.id,
+            channel_id=target_channel.id,
+            repo_url=repo_url,
+            repo_owner=owner,
+            repo_name=repo_name,
+            branch=branch,
+            feed_type=feed_type,
+            post_limit=int(limit),
+            mode=_webhook_mode_default(),
+            enabled=True,
+        )
 
         await _record_audit_event(
             "update-project-run",
@@ -3295,7 +3546,8 @@ def main():
             keep_alive_enabled = "true" if os.getenv("RENDER") else "false"
 
         if keep_alive_enabled.lower() == "true":
-            from keep_alive import keep_alive
+            from keep_alive import keep_alive, set_github_webhook_handler
+            set_github_webhook_handler(_enqueue_webhook_event)
             keep_alive()
         else:
             logger.info("Keep-alive server disabled (set KEEP_ALIVE_ENABLED=true to enable).")

@@ -7,6 +7,7 @@ Thread-safe via a plain dict + lock (the bot is single-process).
 
 import time
 import threading
+import os
 from typing import Any
 
 _lock = threading.Lock()
@@ -47,5 +48,5 @@ def cache_delete_prefix(prefix: str) -> None:
 
 
 # ── TTL constants ──────────────────────────────────────────────────────────────
-ROLE_TTL   = 300   # 5 minutes  — roles change rarely
-THREAD_TTL =  30   # 30 seconds — status changes more often
+ROLE_TTL   = int(os.getenv("ROLE_CACHE_TTL_SECONDS", "300"))   # roles change rarely
+THREAD_TTL = int(os.getenv("THREAD_CACHE_TTL_SECONDS", "30"))  # status changes more often

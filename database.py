@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 import json
+import time
 from contextlib import contextmanager
 from datetime import datetime
 import glob
@@ -584,6 +585,207 @@ def delete_setting(key: str):
         cursor.execute("DELETE FROM settings WHERE key = %s", (key,))
         conn.commit()
 
+
+# ===== Repo Update Config =====
+
+def upsert_repo_update_config(
+    *,
+    guild_id: int,
+    channel_id: int,
+    repo_url: str,
+    repo_owner: str,
+    repo_name: str,
+    branch: str,
+    feed_type: str,
+    post_limit: int,
+    mode: str,
+    enabled: bool,
+):
+    """Insert/update repo update config for a guild."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO repo_update_configs (
+                guild_id, channel_id, repo_url, repo_owner, repo_name,
+                branch, feed_type, post_limit, mode, enabled, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (guild_id) DO UPDATE SET
+                channel_id = EXCLUDED.channel_id,
+                repo_url = EXCLUDED.repo_url,
+                repo_owner = EXCLUDED.repo_owner,
+                repo_name = EXCLUDED.repo_name,
+                branch = EXCLUDED.branch,
+                feed_type = EXCLUDED.feed_type,
+                post_limit = EXCLUDED.post_limit,
+                mode = EXCLUDED.mode,
+                enabled = EXCLUDED.enabled,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(guild_id),
+                int(channel_id),
+                repo_url,
+                repo_owner,
+                repo_name,
+                branch,
+                feed_type,
+                max(1, min(int(post_limit), 30)),
+                mode,
+                bool(enabled),
+            ),
+        )
+        conn.commit()
+
+
+def get_repo_update_config(guild_id: int) -> dict | None:
+    """Fetch repo update config for one guild."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT guild_id, channel_id, repo_url, repo_owner, repo_name, branch,
+                   feed_type, post_limit, mode, enabled, updated_at
+            FROM repo_update_configs
+            WHERE guild_id = %s
+            """,
+            (int(guild_id),),
+        )
+        row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def list_enabled_repo_update_configs(mode: str | None = None) -> list[dict]:
+    """List enabled repo update configs, optionally by mode."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if mode:
+            cursor.execute(
+                """
+                SELECT guild_id, channel_id, repo_url, repo_owner, repo_name, branch,
+                       feed_type, post_limit, mode, enabled, updated_at
+                FROM repo_update_configs
+                WHERE enabled = TRUE AND mode = %s
+                ORDER BY updated_at DESC
+                """,
+                (mode,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT guild_id, channel_id, repo_url, repo_owner, repo_name, branch,
+                       feed_type, post_limit, mode, enabled, updated_at
+                FROM repo_update_configs
+                WHERE enabled = TRUE
+                ORDER BY updated_at DESC
+                """
+            )
+        rows = cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_repo_update_enabled(guild_id: int, enabled: bool):
+    """Enable/disable repo update config for a guild."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE repo_update_configs SET enabled = %s, updated_at = CURRENT_TIMESTAMP WHERE guild_id = %s",
+            (bool(enabled), int(guild_id)),
+        )
+        conn.commit()
+
+
+def mark_repo_event_posted(event_key: str, channel_id: int) -> bool:
+    """Insert idempotency key for posted repo event. Returns True if new."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO posted_repo_events (event_key, channel_id)
+            VALUES (%s, %s)
+            ON CONFLICT (event_key, channel_id) DO NOTHING
+            """,
+            (event_key, int(channel_id)),
+        )
+        inserted = (cursor.rowcount or 0) > 0
+        conn.commit()
+    return inserted
+
+
+def register_webhook_delivery(delivery_id: str, event_type: str) -> bool:
+    """Store webhook delivery id for replay protection. Returns True if first seen."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO github_webhook_receipts (delivery_id, event_type)
+            VALUES (%s, %s)
+            ON CONFLICT (delivery_id) DO NOTHING
+            """,
+            (delivery_id, event_type),
+        )
+        inserted = (cursor.rowcount or 0) > 0
+        conn.commit()
+    return inserted
+
+
+def get_command_metrics_summary(minutes: int = 60) -> dict:
+    """Aggregate command metrics for diagnostics."""
+    lookback = max(1, int(minutes))
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,
+                SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS error_count,
+                COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+                COALESCE(MAX(duration_ms), 0) AS max_duration_ms
+            FROM command_metrics
+            WHERE created_at >= NOW() - (%s || ' minutes')::interval
+            """,
+            (lookback,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return {"total": 0, "success_count": 0, "error_count": 0, "avg_duration_ms": 0, "max_duration_ms": 0}
+    result = dict(row)
+    result["total"] = int(result.get("total") or 0)
+    result["success_count"] = int(result.get("success_count") or 0)
+    result["error_count"] = int(result.get("error_count") or 0)
+    result["avg_duration_ms"] = int(float(result.get("avg_duration_ms") or 0))
+    result["max_duration_ms"] = int(result.get("max_duration_ms") or 0)
+    return result
+
+
+def get_last_audit_events(limit: int = 5) -> list[dict]:
+    """Return latest audit events for diagnostics."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT event_type, actor_name, created_at
+            FROM audit_logs
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (max(1, min(int(limit), 20)),),
+        )
+        rows = cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+def measure_db_ping_ms() -> int:
+    """Measure DB round-trip latency with SELECT 1."""
+    started = time.perf_counter()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+    return int((time.perf_counter() - started) * 1000)
+
 # ===== Telemetry and Audit =====
 
 def log_command_metric(
@@ -735,3 +937,39 @@ async def async_log_audit_event(
 ) -> None:
     """Non-blocking version of log_audit_event."""
     return await asyncio.to_thread(log_audit_event, event_type, actor_id, actor_name, details)
+
+async def async_upsert_repo_update_config(**kwargs) -> None:
+    """Non-blocking version of upsert_repo_update_config."""
+    return await asyncio.to_thread(upsert_repo_update_config, **kwargs)
+
+async def async_get_repo_update_config(guild_id: int) -> dict | None:
+    """Non-blocking version of get_repo_update_config."""
+    return await asyncio.to_thread(get_repo_update_config, guild_id)
+
+async def async_list_enabled_repo_update_configs(mode: str | None = None) -> list[dict]:
+    """Non-blocking version of list_enabled_repo_update_configs."""
+    return await asyncio.to_thread(list_enabled_repo_update_configs, mode)
+
+async def async_set_repo_update_enabled(guild_id: int, enabled: bool) -> None:
+    """Non-blocking version of set_repo_update_enabled."""
+    return await asyncio.to_thread(set_repo_update_enabled, guild_id, enabled)
+
+async def async_mark_repo_event_posted(event_key: str, channel_id: int) -> bool:
+    """Non-blocking version of mark_repo_event_posted."""
+    return await asyncio.to_thread(mark_repo_event_posted, event_key, channel_id)
+
+async def async_register_webhook_delivery(delivery_id: str, event_type: str) -> bool:
+    """Non-blocking version of register_webhook_delivery."""
+    return await asyncio.to_thread(register_webhook_delivery, delivery_id, event_type)
+
+async def async_get_command_metrics_summary(minutes: int = 60) -> dict:
+    """Non-blocking version of get_command_metrics_summary."""
+    return await asyncio.to_thread(get_command_metrics_summary, minutes)
+
+async def async_get_last_audit_events(limit: int = 5) -> list[dict]:
+    """Non-blocking version of get_last_audit_events."""
+    return await asyncio.to_thread(get_last_audit_events, limit)
+
+async def async_measure_db_ping_ms() -> int:
+    """Non-blocking version of measure_db_ping_ms."""
+    return await asyncio.to_thread(measure_db_ping_ms)

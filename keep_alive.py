@@ -1,8 +1,9 @@
-from flask import Flask
+from flask import Flask, request, jsonify
 from threading import Thread
 import logging
 import os
 from wsgiref.simple_server import make_server
+from typing import Callable
 
 # Suppress Flask default logging
 log = logging.getLogger('werkzeug')
@@ -10,6 +11,7 @@ log.setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 app = Flask('')
+_github_webhook_handler: Callable[[bytes, dict], tuple[int, str]] | None = None
 
 @app.route('/')
 def home():
@@ -19,6 +21,24 @@ def home():
 @app.route('/health')
 def health():
     return "ok", 200
+
+
+@app.route('/webhook/github', methods=['POST'])
+def github_webhook():
+    """Receive GitHub webhook events and hand off to bot-level handler."""
+    if _github_webhook_handler is None:
+        return jsonify({"ok": False, "message": "Webhook handler is not configured"}), 503
+
+    raw_body = request.get_data(cache=False, as_text=False)
+    headers = {k: v for k, v in request.headers.items()}
+    status_code, message = _github_webhook_handler(raw_body, headers)
+    return jsonify({"ok": status_code < 400, "message": message}), status_code
+
+
+def set_github_webhook_handler(handler: Callable[[bytes, dict], tuple[int, str]]) -> None:
+    """Set callback used by /webhook/github endpoint."""
+    global _github_webhook_handler
+    _github_webhook_handler = handler
 
 def run(host: str = "0.0.0.0", port: int = 8080):
     """Run a tiny WSGI server for health checks without Flask dev-server noise."""

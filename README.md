@@ -82,6 +82,15 @@ Use `/scan-repo` instead:
 ### Scheduled Summaries
 A daily task posts a ticket summary grouped by status to a channel set with `/setreminderschannel`. Runs at 8:00 AM PH Time (00:00 UTC).
 
+### GitHub Webhook Auto Updates
+Automatic repository updates support webhook-first delivery:
+- Endpoint: `POST /webhook/github`
+- Signature verification via `X-Hub-Signature-256` using `GITHUB_WEBHOOK_SECRET`
+- Replay protection using persisted delivery IDs (`X-GitHub-Delivery`)
+- Idempotent posting by commit/PR key so restarts do not duplicate announcements
+
+If webhook secret is configured, repo updates default to webhook mode; polling remains available for fallback setups.
+
 ### Leaderboards
 Separate scoreboards for Developers and QAs. Scores update automatically when tickets move through the pipeline and decrement correctly on undo.
 
@@ -265,6 +274,12 @@ KEEP_ALIVE_ENABLED=true
 DB_CONNECT_TIMEOUT_SECONDS=10
 DB_STATEMENT_TIMEOUT_MS=15000
 REPO_UPDATES_MAX_POSTS=50
+GITHUB_WEBHOOK_SECRET=your_webhook_secret
+WEBHOOK_REQUIRE_SECRET=true
+LOG_FORMAT=json
+LOG_LEVEL=INFO
+ROLE_CACHE_TTL_SECONDS=300
+THREAD_CACHE_TTL_SECONDS=30
 ```
 
 Tip:
@@ -321,8 +336,9 @@ In Render logs, confirm:
 | `/scan-roadmap <path_or_repo_url> <folder> [threshold] [generate_tickets]` | Scan local folder or HTTPS repo URL and generate roadmap markdown with suggested improvements |
 | `/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]` | Cloud-safe scan by cloning a repo URL and generating issue + feature tickets |
 | `/set-commit-channel <channel>` | Set default channel for formal commit/merge bulletins |
-| `/update-project <repo_url> [branch] [limit] [feed_type] [channel]` | Post formal repository updates (commits, merged PRs, or both) with GitHub links and enable automatic polling notifications |
+| `/update-project <repo_url> [branch] [limit] [feed_type] [channel]` | Post formal repository updates (commits, merged PRs, or both) with GitHub links and enable automatic notifications (webhook-first) |
 | `/auto-updates <enable\|disable\|status> [repo_url] [branch] [feed_type] [limit]` | Control automatic repository notifications (pause, resume, inspect config) |
+| `/health-details` | Show DB latency, auto-update/webhook status, and recent operational diagnostics |
 | `/ai-status` | Show current AI provider/model configuration (PM only) |
 
 Automatic updates track a per-branch commit cursor and post each new commit title detected since the previous run. `/update-project` now also persists the destination channel for background polling.
@@ -429,6 +445,9 @@ The bot uses SQLite (`tickets.db`) with migration-based schema management:
 | `settings` | Key-value store for bot configuration (e.g., reminders channel) |
 | `command_metrics` | Slash-command telemetry (success/failure + duration) |
 | `audit_logs` | Audit trail for administrative configuration changes |
+| `repo_update_configs` | Per-guild repository auto-update configuration (repo, branch, mode, channel, enabled) |
+| `posted_repo_events` | Idempotency keys for posted commit/PR events |
+| `github_webhook_receipts` | Webhook delivery IDs for replay protection |
 | `migrations` | Tracks which SQL migrations have been applied |
 
 The database and all tables are created automatically on first run via `migrations/001_initial_schema.sql`.
