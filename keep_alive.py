@@ -15,11 +15,26 @@ _github_webhook_handler: Callable[[bytes, dict], tuple[int, str]] | None = None
 
 @app.route('/', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
 def home():
-    if request.method in {'POST', 'OPTIONS'}:
+    # If GitHub is (mis)configured to post to the root URL, accept and forward it.
+    if request.method == 'POST':
+        gh_event = request.headers.get('X-GitHub-Event') or request.headers.get('X-Github-Event')
+        gh_delivery = request.headers.get('X-GitHub-Delivery') or request.headers.get('X-Github-Delivery')
+        if gh_event and gh_delivery:
+            if _github_webhook_handler is None:
+                return jsonify({"ok": False, "message": "Webhook handler is not configured"}), 503
+            raw_body = request.get_data(cache=False, as_text=False)
+            headers = {k: v for k, v in request.headers.items()}
+            status_code, message = _github_webhook_handler(raw_body, headers)
+            return jsonify({"ok": status_code < 400, "message": message}), status_code
+
         return jsonify({
             "ok": True,
             "message": "Service is alive. For GitHub webhooks use /webhook/github",
         }), 202
+
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True, "message": "ok"}), 200
+
     return "Bot is alive!"
 
 
