@@ -3762,6 +3762,12 @@ async def update_project(
 def main():
     """Start the bot."""
     try:
+        if not DISCORD_TOKEN:
+            raise ValueError(
+                "DISCORD_TOKEN not found in environment variables. "
+                "Please set it in the .env file."
+            )
+
         if not verify_database_connection():
             raise RuntimeError("Database startup verification failed. Check DATABASE_URL credentials and host settings.")
 
