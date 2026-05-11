@@ -1,5 +1,6 @@
 """Configuration module for the Discord bot."""
 import os
+import warnings
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -8,7 +9,11 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not DISCORD_TOKEN:
-    raise ValueError("DISCORD_TOKEN not found in environment variables. Please set it in .env file.")
+    warnings.warn(
+        "DISCORD_TOKEN not found in environment variables. "
+        "The bot will not start without it.",
+        stacklevel=1,
+    )
 
 # Bot configuration
 COMMAND_PREFIX = "/"
