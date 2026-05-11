@@ -13,19 +13,30 @@ logger = logging.getLogger(__name__)
 app = Flask('')
 _github_webhook_handler: Callable[[bytes, dict], tuple[int, str]] | None = None
 
-@app.route('/')
+@app.route('/', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
 def home():
+    if request.method in {'POST', 'OPTIONS'}:
+        return jsonify({
+            "ok": True,
+            "message": "Service is alive. For GitHub webhooks use /webhook/github",
+        }), 202
     return "Bot is alive!"
 
 
-@app.route('/health')
+@app.route('/health', methods=['GET', 'HEAD'], strict_slashes=False)
 def health():
     return "ok", 200
 
 
-@app.route('/webhook/github', methods=['POST'])
+@app.route('/webhook/github', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
+@app.route('/webhook/github/', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
 def github_webhook():
     """Receive GitHub webhook events and hand off to bot-level handler."""
+    if request.method in {'GET', 'HEAD'}:
+        return jsonify({"ok": True, "message": "GitHub webhook endpoint is ready. Send POST events."}), 200
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True, "message": "ok"}), 200
+
     if _github_webhook_handler is None:
         return jsonify({"ok": False, "message": "Webhook handler is not configured"}), 503
 

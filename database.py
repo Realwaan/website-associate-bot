@@ -730,6 +730,139 @@ def register_webhook_delivery(delivery_id: str, event_type: str) -> bool:
     return inserted
 
 
+def enqueue_webhook_dead_letter(
+    delivery_id: str,
+    event_type: str,
+    payload: dict,
+    error_text: str,
+):
+    """Persist failed webhook event for retry."""
+    payload_json = json.dumps(payload or {})
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO webhook_dead_letters (delivery_id, event_type, payload_json, error_text)
+            VALUES (%s, %s, %s::jsonb, %s)
+            """,
+            (delivery_id, event_type, payload_json, error_text[:2000]),
+        )
+        conn.commit()
+
+
+def get_due_webhook_dead_letters(limit: int = 20) -> list[dict]:
+    """Return pending dead-letter rows that are ready for retry."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, delivery_id, event_type, payload_json, error_text, retry_count
+            FROM webhook_dead_letters
+            WHERE status = 'pending'
+              AND next_attempt_at <= NOW()
+            ORDER BY next_attempt_at ASC
+            LIMIT %s
+            """,
+            (max(1, min(int(limit), 100)),),
+        )
+        rows = cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_webhook_dead_letter_retry(
+    row_id: int,
+    *,
+    success: bool,
+    error_text: str | None = None,
+    max_retries: int = 8,
+):
+    """Mark dead-letter retry result and schedule next attempt if needed."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if success:
+            cursor.execute(
+                """
+                UPDATE webhook_dead_letters
+                SET status = 'resolved',
+                    last_attempt_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (int(row_id),),
+            )
+            conn.commit()
+            return
+
+        cursor.execute("SELECT retry_count FROM webhook_dead_letters WHERE id = %s", (int(row_id),))
+        row = cursor.fetchone()
+        current_retry = int(row["retry_count"] if row else 0)
+        new_retry = current_retry + 1
+        if new_retry >= max_retries:
+            cursor.execute(
+                """
+                UPDATE webhook_dead_letters
+                SET status = 'failed',
+                    retry_count = %s,
+                    error_text = %s,
+                    last_attempt_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (new_retry, (error_text or "")[:2000], int(row_id)),
+            )
+        else:
+            backoff_minutes = min(60, 2 ** min(new_retry, 5))
+            cursor.execute(
+                """
+                UPDATE webhook_dead_letters
+                SET retry_count = %s,
+                    error_text = %s,
+                    next_attempt_at = NOW() + (%s || ' minutes')::interval,
+                    last_attempt_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (new_retry, (error_text or "")[:2000], backoff_minutes, int(row_id)),
+            )
+        conn.commit()
+
+
+def cleanup_old_operational_data(
+    *,
+    webhook_receipt_days: int = 14,
+    metrics_days: int = 30,
+    audit_days: int = 60,
+    dead_letter_days: int = 45,
+) -> dict[str, int]:
+    """Prune old operational rows to control table growth."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM github_webhook_receipts WHERE received_at < NOW() - (%s || ' days')::interval",
+            (max(1, int(webhook_receipt_days)),),
+        )
+        webhook_deleted = cursor.rowcount or 0
+        cursor.execute(
+            "DELETE FROM command_metrics WHERE created_at < NOW() - (%s || ' days')::interval",
+            (max(1, int(metrics_days)),),
+        )
+        metrics_deleted = cursor.rowcount or 0
+        cursor.execute(
+            "DELETE FROM audit_logs WHERE created_at < NOW() - (%s || ' days')::interval",
+            (max(1, int(audit_days)),),
+        )
+        audit_deleted = cursor.rowcount or 0
+        cursor.execute(
+            "DELETE FROM webhook_dead_letters WHERE created_at < NOW() - (%s || ' days')::interval",
+            (max(1, int(dead_letter_days)),),
+        )
+        dead_letter_deleted = cursor.rowcount or 0
+        conn.commit()
+    return {
+        "webhook_receipts_deleted": int(webhook_deleted),
+        "metrics_deleted": int(metrics_deleted),
+        "audit_deleted": int(audit_deleted),
+        "dead_letters_deleted": int(dead_letter_deleted),
+    }
+
+
 def get_command_metrics_summary(minutes: int = 60) -> dict:
     """Aggregate command metrics for diagnostics."""
     lookback = max(1, int(minutes))
@@ -961,6 +1094,57 @@ async def async_mark_repo_event_posted(event_key: str, channel_id: int) -> bool:
 async def async_register_webhook_delivery(delivery_id: str, event_type: str) -> bool:
     """Non-blocking version of register_webhook_delivery."""
     return await asyncio.to_thread(register_webhook_delivery, delivery_id, event_type)
+
+async def async_enqueue_webhook_dead_letter(
+    delivery_id: str,
+    event_type: str,
+    payload: dict,
+    error_text: str,
+) -> None:
+    """Non-blocking version of enqueue_webhook_dead_letter."""
+    return await asyncio.to_thread(
+        enqueue_webhook_dead_letter,
+        delivery_id,
+        event_type,
+        payload,
+        error_text,
+    )
+
+async def async_get_due_webhook_dead_letters(limit: int = 20) -> list[dict]:
+    """Non-blocking version of get_due_webhook_dead_letters."""
+    return await asyncio.to_thread(get_due_webhook_dead_letters, limit)
+
+async def async_mark_webhook_dead_letter_retry(
+    row_id: int,
+    *,
+    success: bool,
+    error_text: str | None = None,
+    max_retries: int = 8,
+) -> None:
+    """Non-blocking version of mark_webhook_dead_letter_retry."""
+    return await asyncio.to_thread(
+        mark_webhook_dead_letter_retry,
+        row_id,
+        success=success,
+        error_text=error_text,
+        max_retries=max_retries,
+    )
+
+async def async_cleanup_old_operational_data(
+    *,
+    webhook_receipt_days: int = 14,
+    metrics_days: int = 30,
+    audit_days: int = 60,
+    dead_letter_days: int = 45,
+) -> dict[str, int]:
+    """Non-blocking version of cleanup_old_operational_data."""
+    return await asyncio.to_thread(
+        cleanup_old_operational_data,
+        webhook_receipt_days=webhook_receipt_days,
+        metrics_days=metrics_days,
+        audit_days=audit_days,
+        dead_letter_days=dead_letter_days,
+    )
 
 async def async_get_command_metrics_summary(minutes: int = 60) -> dict:
     """Non-blocking version of get_command_metrics_summary."""

@@ -9,8 +9,6 @@ import tempfile
 import subprocess
 import asyncio
 import json
-import hmac
-import hashlib
 from collections import deque
 from urllib.parse import urlparse
 from datetime import datetime, time, timezone, timedelta
@@ -45,6 +43,8 @@ from database import (
     async_list_enabled_repo_update_configs, async_set_repo_update_enabled,
     async_mark_repo_event_posted, async_register_webhook_delivery,
     async_get_command_metrics_summary, async_get_last_audit_events, async_measure_db_ping_ms,
+    async_enqueue_webhook_dead_letter, async_get_due_webhook_dead_letters,
+    async_mark_webhook_dead_letter_retry, async_cleanup_old_operational_data,
 )
 from ticket_loader import load_tickets_from_folder, get_available_folders
 from pathlib import Path
@@ -64,6 +64,7 @@ from ai_client import NvidiaAIClient, AIClientError
 from pdf_brief_scanner import PDFScanResult, default_pdf_folder, scan_pdf_brief
 from repo_updates import parse_github_repo, post_project_updates, post_push_commits_from_payload
 from logging_utils import configure_logging
+from webhook_security import verify_github_signature
 
 # Set up logging
 configure_logging()
@@ -106,6 +107,15 @@ REPO_UPDATE_MODE_WEBHOOK = "webhook"
 REPO_UPDATE_MODE_POLLING = "polling"
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 WEBHOOK_REQUIRE_SECRET = os.getenv("WEBHOOK_REQUIRE_SECRET", "true").lower() == "true"
+WEBHOOK_QUEUE_MAX_SIZE = max(10, int(os.getenv("WEBHOOK_QUEUE_MAX_SIZE", "500")))
+WEBHOOK_PROCESS_TIMEOUT_SECONDS = max(5, int(os.getenv("WEBHOOK_PROCESS_TIMEOUT_SECONDS", "30")))
+WEBHOOK_ALERT_THRESHOLD = max(2, int(os.getenv("WEBHOOK_ALERT_THRESHOLD", "3")))
+REPO_UPDATE_ALERT_THRESHOLD = max(2, int(os.getenv("REPO_UPDATE_ALERT_THRESHOLD", "3")))
+BOT_ADMIN_ROLE_NAMES = {
+    r.strip().lower()
+    for r in os.getenv("BOT_ADMIN_ROLE_NAMES", "Project Manager").split(",")
+    if r.strip()
+}
 
 _ticket_summary_lock = asyncio.Lock()
 _repo_updates_lock = asyncio.Lock()
@@ -116,6 +126,46 @@ _last_repo_update_run_at: datetime | None = None
 _last_repo_update_summary: str = "never"
 _last_webhook_event_at: datetime | None = None
 _last_webhook_summary: str = "none"
+_webhook_reject_count: int = 0
+_repo_update_failure_counts: dict[int, int] = {}
+
+
+def _has_admin_allowlist_role(user: discord.Member) -> bool:
+    role_names = {r.name.strip().lower() for r in getattr(user, "roles", [])}
+    return bool(role_names.intersection(BOT_ADMIN_ROLE_NAMES))
+
+
+async def _is_sensitive_command_allowed(interaction: discord.Interaction) -> bool:
+    """Permission gate for sensitive PM/admin commands."""
+    if not interaction or not interaction.user:
+        return False
+    user = interaction.user
+    if user.guild_permissions.administrator:
+        return True
+    if isinstance(user, discord.Member) and _has_admin_allowlist_role(user):
+        return True
+    return await async_has_role(user.id, "pm")
+
+
+async def _send_ops_alert(message: str, *, guild_id: int | None = None):
+    """Send operational alert into configured commit channel when available."""
+    try:
+        if guild_id is not None:
+            cfg = await async_get_repo_update_config(guild_id)
+            if cfg and cfg.get("channel_id"):
+                channel_id = int(cfg["channel_id"])
+                channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                await channel.send(f"⚠️ **Bot Ops Alert**\n{message}")
+                return
+
+        configs = await async_list_enabled_repo_update_configs()
+        for cfg in configs[:1]:
+            channel_id = int(cfg["channel_id"])
+            channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+            await channel.send(f"⚠️ **Bot Ops Alert**\n{message}")
+            break
+    except Exception as exc:
+        logger.warning("Failed to send ops alert: %s", exc)
 
 
 def _enabled_scan_detectors() -> set[str]:
@@ -176,36 +226,30 @@ def _webhook_mode_default() -> str:
     return REPO_UPDATE_MODE_WEBHOOK if GITHUB_WEBHOOK_SECRET else REPO_UPDATE_MODE_POLLING
 
 
-def _verify_github_signature(raw_body: bytes, signature_header: str | None) -> bool:
-    """Verify X-Hub-Signature-256 for webhook body."""
-    if not GITHUB_WEBHOOK_SECRET:
-        return not WEBHOOK_REQUIRE_SECRET
-    if not signature_header or not signature_header.startswith("sha256="):
-        return False
-    expected = "sha256=" + hmac.new(
-        GITHUB_WEBHOOK_SECRET.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, signature_header)
-
-
 def _enqueue_webhook_event(raw_body: bytes, headers: dict) -> tuple[int, str]:
     """Thread-safe enqueue from Flask thread into bot event loop."""
-    global _bot_loop
+    global _bot_loop, _webhook_reject_count
 
     if _bot_loop is None:
         return 503, "Bot loop not ready"
 
-    event_type = headers.get("X-GitHub-Event", "")
-    delivery_id = headers.get("X-GitHub-Delivery", "")
-    signature = headers.get("X-Hub-Signature-256")
+    # Flask/Werkzeug may normalize header casing (e.g. X-Github-Event). Treat as case-insensitive.
+    lower_headers = {str(k).lower(): v for k, v in (headers or {}).items()}
+    event_type = lower_headers.get("x-github-event", "")
+    delivery_id = lower_headers.get("x-github-delivery", "")
+    signature = lower_headers.get("x-hub-signature-256")
 
     if not event_type:
         return 400, "Missing X-GitHub-Event"
     if not delivery_id:
         return 400, "Missing X-GitHub-Delivery"
-    if not _verify_github_signature(raw_body, signature):
+    if not verify_github_signature(
+        raw_body=raw_body,
+        signature_header=signature,
+        secret=GITHUB_WEBHOOK_SECRET,
+        require_secret=WEBHOOK_REQUIRE_SECRET,
+    ):
+        _webhook_reject_count += 1
         return 401, "Invalid webhook signature"
 
     try:
@@ -213,24 +257,15 @@ def _enqueue_webhook_event(raw_body: bytes, headers: dict) -> tuple[int, str]:
     except Exception:
         return 400, "Invalid JSON payload"
 
-    # Replay protection (persisted): reject duplicate delivery ids.
-    try:
-        is_new = asyncio.run_coroutine_threadsafe(
-            async_register_webhook_delivery(delivery_id, event_type),
-            _bot_loop,
-        ).result(timeout=3)
-    except Exception:
-        return 503, "Could not validate webhook delivery"
-
-    if not is_new:
-        return 202, "Duplicate delivery ignored"
-
     event = {
         "delivery_id": delivery_id,
         "event_type": event_type,
         "payload": payload,
         "received_at": datetime.now(timezone.utc).isoformat(),
     }
+    if _webhook_queue.qsize() >= WEBHOOK_QUEUE_MAX_SIZE:
+        _webhook_reject_count += 1
+        return 503, "Webhook queue is full; retry later"
     _bot_loop.call_soon_threadsafe(_webhook_queue.put_nowait, event)
     return 202, "Webhook accepted"
 
@@ -283,14 +318,24 @@ async def _handle_webhook_push_event(payload: dict) -> int:
 @tasks.loop(seconds=5)
 async def process_webhook_events():
     """Background worker for queued webhook events."""
-    global _last_webhook_event_at, _last_webhook_summary
+    global _last_webhook_event_at, _last_webhook_summary, _webhook_reject_count
     while not _webhook_queue.empty():
         event = await _webhook_queue.get()
         try:
             event_type = event.get("event_type")
+            delivery_id = event.get("delivery_id", "")
             payload = event.get("payload") or {}
+            is_new = await async_register_webhook_delivery(delivery_id, event_type)
+            if not is_new:
+                _last_webhook_event_at = datetime.now(timezone.utc)
+                _last_webhook_summary = f"{event_type} duplicate delivery ignored"
+                continue
+
             if event_type == "push":
-                posted = await _handle_webhook_push_event(payload)
+                posted = await asyncio.wait_for(
+                    _handle_webhook_push_event(payload),
+                    timeout=WEBHOOK_PROCESS_TIMEOUT_SECONDS,
+                )
                 _last_webhook_event_at = datetime.now(timezone.utc)
                 _last_webhook_summary = f"push posted_commits={posted}"
             else:
@@ -299,8 +344,59 @@ async def process_webhook_events():
         except Exception as exc:
             _recent_webhook_errors.append(str(exc))
             logger.error("Webhook processing error: %s", exc)
+            await async_enqueue_webhook_dead_letter(
+                event.get("delivery_id", ""),
+                event.get("event_type", "unknown"),
+                event.get("payload") or {},
+                str(exc),
+            )
+            if len(_recent_webhook_errors) >= WEBHOOK_ALERT_THRESHOLD:
+                await _send_ops_alert(
+                    f"Webhook processing failures reached {len(_recent_webhook_errors)}. Latest error: `{str(exc)[:300]}`"
+                )
         finally:
             _webhook_queue.task_done()
+
+    if _webhook_reject_count >= WEBHOOK_ALERT_THRESHOLD:
+        await _send_ops_alert(
+            f"Webhook rejects reached {_webhook_reject_count} (signature/queue issues). Check GitHub webhook URL and secret."
+        )
+        _webhook_reject_count = 0
+
+
+@tasks.loop(seconds=30)
+async def retry_webhook_dead_letters():
+    """Retry pending webhook dead-letter events."""
+    rows = await async_get_due_webhook_dead_letters(20)
+    for row in rows:
+        row_id = int(row["id"])
+        try:
+            event_type = row.get("event_type")
+            payload = row.get("payload_json") or {}
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if event_type == "push":
+                await asyncio.wait_for(
+                    _handle_webhook_push_event(payload),
+                    timeout=WEBHOOK_PROCESS_TIMEOUT_SECONDS,
+                )
+            await async_mark_webhook_dead_letter_retry(row_id, success=True)
+        except Exception as exc:
+            await async_mark_webhook_dead_letter_retry(
+                row_id,
+                success=False,
+                error_text=str(exc),
+            )
+
+
+@tasks.loop(hours=24)
+async def cleanup_operational_data():
+    """Daily cleanup of old operational rows."""
+    try:
+        deleted = await async_cleanup_old_operational_data()
+        logger.info("Operational data cleanup: %s", deleted)
+    except Exception as exc:
+        logger.warning("Operational data cleanup failed: %s", exc)
 
 
 def _validate_auto_update_boot_config() -> None:
@@ -417,6 +513,14 @@ async def on_ready():
     if not process_webhook_events.is_running():
         process_webhook_events.start()
         logger.info("Webhook processor task started")
+
+    if not retry_webhook_dead_letters.is_running():
+        retry_webhook_dead_letters.start()
+        logger.info("Webhook dead-letter retry task started")
+
+    if not cleanup_operational_data.is_running():
+        cleanup_operational_data.start()
+        logger.info("Operational cleanup task started")
 
 
 @bot.tree.error
@@ -566,9 +670,8 @@ async def set_role(interaction: discord.Interaction, role: str):
         
         # Check if user is trying to set PM role
         if role_lower == "pm":
-            # Only admins can assign PM role
-            if not interaction.user.guild_permissions.administrator:
-                await interaction.followup.send("❌ Only server admins can set the Project Manager role.")
+            if not await _is_sensitive_command_allowed(interaction):
+                await interaction.followup.send("❌ You are not allowed to assign the Project Manager role.")
                 return
         
         # Determine role parameters
@@ -3003,7 +3106,7 @@ async def health_details(interaction: discord.Interaction):
     """Show DB latency, webhook/auto-update state, and recent telemetry."""
     await safe_defer(interaction, ephemeral=True)
 
-    if not await async_has_role(interaction.user.id, "pm"):
+    if not await _is_sensitive_command_allowed(interaction):
         await interaction.followup.send("❌ Only Project Managers can use `/health-details`.")
         return
 
@@ -3091,7 +3194,7 @@ async def set_commit_channel(interaction: discord.Interaction, channel: discord.
     error_text: str | None = None
 
     try:
-        if not await async_has_role(interaction.user.id, "pm"):
+        if not await _is_sensitive_command_allowed(interaction):
             await interaction.followup.send("❌ Only Project Managers can configure the commit channel.")
             return
 
@@ -3174,7 +3277,7 @@ async def auto_updates(
     error_text: str | None = None
 
     try:
-        if not await async_has_role(interaction.user.id, "pm"):
+        if not await _is_sensitive_command_allowed(interaction):
             await interaction.followup.send("❌ Only Project Managers can manage automatic updates.")
             return
 
@@ -3313,6 +3416,128 @@ async def auto_updates(
             success,
             error_text,
         )
+# ── /sync-missed-commits ───────────────────────────────────────────────────
+
+@bot.tree.command(
+    name="sync-missed-commits",
+    description="Backfill missed commits since a specific SHA (PM only)",
+)
+@app_commands.describe(
+    from_sha="The last seen commit SHA (the bot will post commits after this SHA)",
+    repo_url="Optional GitHub repo URL/owner-repo (defaults to configured repo)",
+    branch="Branch to backfill (defaults to configured branch)",
+    limit="Max commits to post (default 10)",
+    channel="Optional destination channel",
+)
+async def sync_missed_commits(
+    interaction: discord.Interaction,
+    from_sha: str,
+    repo_url: str | None = None,
+    branch: str | None = None,
+    limit: app_commands.Range[int, 1, 30] = 10,
+    channel: discord.TextChannel | None = None,
+):
+    await safe_defer(interaction, ephemeral=True)
+    started_at = datetime.now(timezone.utc)
+    success = False
+    error_text: str | None = None
+
+    try:
+        if not await _is_sensitive_command_allowed(interaction):
+            await interaction.followup.send("❌ Only Project Managers can run backfills.")
+            return
+
+        if not interaction.guild:
+            await interaction.followup.send("❌ This command must be run in a server.")
+            return
+
+        cfg = await async_get_repo_update_config(interaction.guild.id)
+        final_repo = (repo_url or (cfg.get("repo_url") if cfg else None) or "").strip()
+        final_branch = (branch or (cfg.get("branch") if cfg else None) or "main").strip()
+        final_from_sha = (from_sha or "").strip()
+
+        if len(final_from_sha) < 7:
+            await interaction.followup.send("❌ `from_sha` must be at least 7 characters.")
+            return
+
+        if not final_repo:
+            await interaction.followup.send(
+                "❌ No repository configured yet. Provide `repo_url` now or run `/update-project` first."
+            )
+            return
+
+        target_channel = channel
+        if target_channel is None:
+            channel_id = str(cfg.get("channel_id")) if cfg else await async_get_setting("commit_announce_channel_id")
+            if not channel_id:
+                await interaction.followup.send("❌ No commit channel configured. Run `/set-commit-channel` first.")
+                return
+            target_channel = interaction.guild.get_channel(int(channel_id))
+            if not target_channel:
+                await interaction.followup.send("❌ Configured channel not found. Run `/set-commit-channel` again.")
+                return
+
+        owner, repo_name = parse_github_repo(final_repo)
+        if not owner:
+            await interaction.followup.send("❌ Invalid repository URL. Use GitHub URL or owner/repo.")
+            return
+
+        override_key = f"last_commit_sha:{owner}/{repo_name}/{final_branch}"
+
+        async def _get_setting_override(key: str) -> str | None:
+            if key == override_key:
+                return final_from_sha
+            return await async_get_setting(key)
+
+        ok, message, commit_count, _ = await post_project_updates(
+            target_channel=target_channel,
+            repo_url=final_repo,
+            branch=final_branch,
+            limit=int(limit),
+            feed_type="commits",
+            reported_by=(interaction.user.display_name or interaction.user.name),
+            github_token=GITHUB_TOKEN,
+            get_setting=_get_setting_override,
+            set_setting=async_set_setting,
+            mark_event_posted=async_mark_repo_event_posted,
+        )
+
+        if not ok:
+            await interaction.followup.send(f"❌ {message}")
+            return
+
+        await _record_audit_event(
+            "sync-missed-commits",
+            interaction,
+            {
+                "repo_url": final_repo,
+                "branch": final_branch,
+                "from_sha": final_from_sha,
+                "limit": int(limit),
+                "channel_id": getattr(target_channel, "id", None),
+                "posted_commits": int(commit_count),
+            },
+        )
+
+        await interaction.followup.send(
+            f"✅ Backfill finished. Posted **{commit_count}** commit(s) from `{final_repo}` on `{final_branch}`.\n"
+            f"(Starting after SHA: `{final_from_sha[:12]}`)"
+        )
+        success = True
+    except Exception as exc:
+        error_text = str(exc)
+        logger.error("Error running sync-missed-commits: %s", exc)
+        await interaction.followup.send(f"❌ Error running sync-missed-commits: {exc}")
+    finally:
+        await _record_command_metric(
+            "sync-missed-commits",
+            interaction.user.id if interaction.user else None,
+            started_at,
+            success,
+            error_text,
+        )
+
+
 # ── /update-project ──────────────────────────────────────────────────────────
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")          # optional, raises rate limit
@@ -3419,7 +3644,7 @@ async def update_project(
     error_text: str | None = None
 
     try:
-        if not await async_has_role(interaction.user.id, "pm"):
+        if not await _is_sensitive_command_allowed(interaction):
             await interaction.followup.send("❌ Only Project Managers can post project updates.")
             return
 
