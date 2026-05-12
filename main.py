@@ -2368,17 +2368,42 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
 
         _SYSTEM = (
             "You are an expert assistant. "
-            "Give accurate, well-structured, and concise answers. "
+            "Give accurate, well-structured, and concise answers in a direct style. "
             "Use markdown formatting (bold, bullet lists, headings) when it helps clarity. "
-            "Be direct — do not repeat the question or add unnecessary preamble."
+            "\n"
+            "MATH NOTATION RULES (IMPORTANT):\n"
+            "1. Detect if the query involves mathematics, physics, calculus, statistics, equations, or formulas.\n"
+            "2. ONLY IF math-related: Use proper LaTeX notation:\n"
+            "   - Inline math: $expression$ (e.g., $a^2 + b^2 = c^2$)\n"
+            "   - Display math (for complex equations): $$expression$$ (e.g., $$\\int_a^b f(x)dx$$)\n"
+            "3. NEVER use parentheses like ( ... ) to represent math notation.\n"
+            "4. If NOT math-related: Write naturally without dollar signs.\n"
+            "\n"
+            "OUTPUT STYLE:\n"
+            "- Skip preamble and repetition. Answer directly.\n"
+            "- Keep responses focused and concise.\n"
+            "- Use clear examples when relevant."
         )
+        
+        # Detect if prompt appears to be mathematical/technical for better tuning
+        is_technical = any(word in prompt.lower() for word in [
+            'math', 'equation', 'formula', 'calculate', 'solve', 'integral',
+            'derivative', 'theorem', 'proof', 'function', 'algorithm', 'physics',
+            'chemistry', 'statistics', 'probability', 'data', 'compute'
+        ])
+        
+        # Optimize parameters for speed and accuracy
+        optimized_temp = min(temperature, 0.5) if is_technical else min(temperature, 1.0)
+        optimized_max_tokens = 1200
+        optimized_top_p = 0.85
+        
         answer = await asyncio.to_thread(
             ai_client.chat,
             prompt,
             system=_SYSTEM,
-            temperature=min(temperature, 1.0),  # cap at 1.0 for accuracy
-            max_tokens=2048,
-            top_p=0.9,
+            temperature=optimized_temp,
+            max_tokens=optimized_max_tokens,
+            top_p=optimized_top_p,
             enable_thinking=False,
             profile="answer",
         )
@@ -2392,8 +2417,18 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             answer = answer[: cut + 1 if cut > 0 else EMBED_LIMIT]
             truncated = True
 
+        # Format LaTeX equations in code blocks for better visibility in Discord
+        # Replace $$...$$ (display math) with markdown code blocks
+        formatted_answer = re.sub(
+            r'\$\$(.*?)\$\$',
+            r'```latex\n\1\n```',
+            answer,
+            flags=re.DOTALL
+        )
+        # Keep inline math as-is: $...$
+        
         embed = discord.Embed(
-            description=answer,
+            description=formatted_answer,
             color=discord.Color.from_rgb(100, 65, 165),  # NVIDIA purple-ish
         )
         embed.set_author(name="🤖 AI Response")
