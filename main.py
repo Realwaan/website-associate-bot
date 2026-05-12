@@ -2370,6 +2370,15 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             "You are an expert assistant. "
             "Give accurate, well-structured, and concise answers. "
             "Use markdown formatting (bold, bullet lists, headings) when it helps clarity. "
+            "\n"
+            "MATH NOTATION RULES (IMPORTANT):\n"
+            "1. Detect if the query involves mathematics, physics, calculus, statistics, equations, or formulas.\n"
+            "2. ONLY IF math-related: Use proper LaTeX notation:\n"
+            "   - Inline math: $expression$ (e.g., $a^2 + b^2 = c^2$)\n"
+            "   - Display math (for complex equations): $$expression$$ (e.g., $$\\int_a^b f(x)dx$$)\n"
+            "3. NEVER use parentheses like ( ... ) to represent math notation.\n"
+            "4. If NOT math-related: Write naturally without dollar signs.\n"
+            "\n"
             "Be direct — do not repeat the question or add unnecessary preamble."
         )
         answer = await asyncio.to_thread(
