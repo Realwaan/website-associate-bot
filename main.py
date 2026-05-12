@@ -2368,7 +2368,7 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
 
         _SYSTEM = (
             "You are an expert assistant. "
-            "Give accurate, well-structured, and concise answers. "
+            "Give accurate, well-structured, and concise answers in a direct style. "
             "Use markdown formatting (bold, bullet lists, headings) when it helps clarity. "
             "\n"
             "MATH NOTATION RULES (IMPORTANT):\n"
@@ -2379,15 +2379,35 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             "3. NEVER use parentheses like ( ... ) to represent math notation.\n"
             "4. If NOT math-related: Write naturally without dollar signs.\n"
             "\n"
-            "Be direct — do not repeat the question or add unnecessary preamble."
+            "OUTPUT STYLE:\n"
+            "- Skip preamble and repetition. Answer directly.\n"
+            "- Keep responses focused and concise.\n"
+            "- Use clear examples when relevant."
         )
+        
+        # Detect if prompt appears to be mathematical/technical for better tuning
+        is_technical = any(word in prompt.lower() for word in [
+            'math', 'equation', 'formula', 'calculate', 'solve', 'integral',
+            'derivative', 'theorem', 'proof', 'function', 'algorithm', 'physics',
+            'chemistry', 'statistics', 'probability', 'data', 'compute'
+        ])
+        
+        # Optimize parameters for speed and accuracy
+        # Technical queries benefit from lower temp (more focused), non-technical can be creative
+        optimized_temp = min(temperature, 0.5) if is_technical else min(temperature, 1.0)
+        # Reduced max_tokens for faster responses (Discord limit is 4096 anyway)
+        # Most queries don't need 2048 tokens; 1200 is a sweet spot
+        optimized_max_tokens = 1200
+        # Slightly tighter top_p for faster convergence without losing quality
+        optimized_top_p = 0.85
+        
         answer = await asyncio.to_thread(
             ai_client.chat,
             prompt,
             system=_SYSTEM,
-            temperature=min(temperature, 1.0),  # cap at 1.0 for accuracy
-            max_tokens=2048,
-            top_p=0.9,
+            temperature=optimized_temp,
+            max_tokens=optimized_max_tokens,
+            top_p=optimized_top_p,
             enable_thinking=False,
             profile="answer",
         )
