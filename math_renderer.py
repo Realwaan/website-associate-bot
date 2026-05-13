@@ -24,6 +24,31 @@ def has_latex() -> bool:
         return False
 
 
+def has_imagemagick() -> bool:
+    """Check if ImageMagick is installed (prefer `magick` on Windows)."""
+    try:
+        subprocess.run(
+            ["magick", "-version"],
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass
+
+    try:
+        subprocess.run(
+            ["convert", "-version"],
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return False
+
+
 def render_latex_to_png(latex_code: str, dpi: int = 150) -> Optional[bytes]:
     """
     Render LaTeX equation to PNG bytes.
@@ -83,18 +108,11 @@ def render_latex_to_png(latex_code: str, dpi: int = 150) -> Optional[bytes]:
             # Convert PDF to PNG using ImageMagick (if available)
             png_file = tmp_path / "equation.png"
             try:
-                subprocess.run(
-                    [
-                        "convert",
-                        "-density", str(dpi),
-                        "-trim",
-                        str(pdf_file),
-                        str(png_file),
-                    ],
-                    capture_output=True,
-                    timeout=10,
-                    check=True,
-                )
+                if not has_imagemagick():
+                    raise FileNotFoundError("ImageMagick not found")
+
+                cmd = ["magick", "-density", str(dpi), "-trim", str(pdf_file), str(png_file)]
+                subprocess.run(cmd, capture_output=True, timeout=10, check=True)
 
                 if png_file.exists():
                     return png_file.read_bytes()

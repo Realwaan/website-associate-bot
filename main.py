@@ -2573,12 +2573,16 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
 
         equations = extract_latex_equations(answer)
 
-        if equations and has_latex():
-            display_text, images = replace_equations_with_images(answer)
-            formatted_answer = _format_math_content(display_text)
-        elif equations:
-            formatted_answer = format_equation_display(answer)
-            images = []
+        missing_render_deps = False
+
+        if equations:
+            if has_latex():
+                display_text, images = replace_equations_with_images(answer)
+                formatted_answer = _format_math_content(display_text)
+            else:
+                formatted_answer = _format_math_content(answer)
+                images = []
+                missing_render_deps = True
         else:
             formatted_answer = _format_math_content(answer)
             images = []
@@ -2591,6 +2595,8 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
         footer = f"Model: {ai_client.model}"
         if truncated:
             footer += "  •  Response truncated (too long)"
+        if missing_render_deps:
+            footer += "  •  LaTeX rendering unavailable (install pdflatex + ImageMagick)"
         embed.set_footer(text=footer)
 
         await interaction.followup.send(embed=embed)
