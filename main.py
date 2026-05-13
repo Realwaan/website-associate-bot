@@ -9,6 +9,7 @@ import tempfile
 import subprocess
 import asyncio
 import json
+import io
 from collections import deque
 from urllib.parse import urlparse
 from datetime import datetime, time, timezone, timedelta
@@ -65,6 +66,8 @@ from pdf_brief_scanner import PDFScanResult, default_pdf_folder, scan_pdf_brief
 from repo_updates import parse_github_repo, post_project_updates, post_push_commits_from_payload
 from logging_utils import configure_logging
 from webhook_security import verify_github_signature
+from math_renderer import extract_latex_equations, render_latex_to_png, has_latex
+from latex_formatter import format_equation_display
 
 # Set up logging
 configure_logging()
@@ -84,6 +87,56 @@ intents.members = False
 
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
 ai_client = NvidiaAIClient()
+
+
+async def send_message_with_equations(thread: discord.Thread, message: str) -> None:
+    """
+    Send a message to a thread, rendering any LaTeX equations to PNG images.
+    
+    If LaTeX equations are found and can be rendered, they are sent as image files.
+    If LaTeX tools aren't available, equations are converted to Unicode symbols.
+    
+    Parameters
+    ----------
+    thread : discord.Thread
+        The Discord thread to send the message to
+    message : str
+        The message text, potentially containing LaTeX equations ($...$ or $$...$$)
+    """
+    try:
+        # Extract equations from the message
+        equations = extract_latex_equations(message)
+        
+        if not equations:
+            # No equations, send as normal
+            await thread.send(message)
+            return
+        
+        # Try to render equations to PNG if LaTeX is available
+        if has_latex():
+            # Send the original message first
+            await thread.send(message)
+            
+            # Render and send each equation as an image
+            for i, (full_match, eq_type, eq_code) in enumerate(equations):
+                try:
+                    png_bytes = render_latex_to_png(eq_code)
+                    if png_bytes:
+                        # Create a file-like object and send it
+                        file = discord.File(io.BytesIO(png_bytes), filename=f"equation_{i+1}.png")
+                        await thread.send(file=file)
+                    else:
+                        logger.debug(f"Could not render equation {i+1}: {eq_code[:50]}...")
+                except Exception as e:
+                    logger.warning(f"Failed to render equation {i+1}: {e}")
+        else:
+            # LaTeX not available, convert to Unicode for better readability
+            formatted_message = format_equation_display(message)
+            await thread.send(formatted_message)
+    except Exception as e:
+        logger.error(f"Error in send_message_with_equations: {e}")
+        # Fallback: send the message anyway
+        await thread.send(message)
 
 
 def _safe_poll_minutes() -> int:
@@ -1269,7 +1322,7 @@ async def load_tickets(interaction: discord.Interaction, folder: str, channel: d
                             messages.extend(build_section_messages("Details", raw_content))
 
                 for message in messages:
-                    await thread.send(message)
+                    await send_message_with_equations(thread, message)
                 
                 created_count += 1
                 logger.info(f"Created thread: {thread_name} (ID: {thread.id})")
