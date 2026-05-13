@@ -136,7 +136,7 @@ def convert_latex_equation(latex_str: str) -> str:
     result = re.sub(r'\(([a-zA-Z])\)\^(\d)', lambda m: f"({m.group(1)})" + chr(0x00B2 + int(m.group(2)) - 2) if int(m.group(2)) in [2,3] else m.group(0), result)
     
     # Format integrals more nicely
-    result = re.sub(r'\\int_\{([^}]+)\}\^\{([^}]+)\}', r'∫_{1}^{2} ', result)
+    result = re.sub(r'\\int_\{([^}]+)\}\^\{([^}]+)\}', r'∫_\1^\2 ', result)
     
     return result
 
