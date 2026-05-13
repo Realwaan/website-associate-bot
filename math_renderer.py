@@ -155,3 +155,130 @@ def replace_equations_with_images(text: str) -> tuple[str, list[bytes]]:
             logger.debug(f"Could not render equation: {eq_code[:50]}...")
 
     return modified_text, images
+
+
+def count_equations(text: str) -> dict[str, int]:
+    """
+    Count the number of inline and display equations in text.
+    
+    Returns
+    -------
+    dict with keys 'inline' and 'display'
+    """
+    equations = extract_latex_equations(text)
+    counts = {'inline': 0, 'display': 0}
+    for _, eq_type, _ in equations:
+        counts[eq_type] += 1
+    return counts
+
+
+def validate_latex_syntax(latex_code: str) -> bool:
+    """
+    Validate LaTeX syntax by attempting to render it.
+    
+    Parameters
+    ----------
+    latex_code : str
+        LaTeX equation code to validate
+        
+    Returns
+    -------
+    bool
+        True if LaTeX is valid, False otherwise
+    """
+    if not has_latex():
+        return None  # Cannot validate without LaTeX installed
+    
+    try:
+        # Try to render; if it succeeds, syntax is valid
+        png_bytes = render_latex_to_png(latex_code, dpi=100)
+        return png_bytes is not None
+    except Exception:
+        return False
+
+
+def extract_math_sections(text: str) -> list[dict]:
+    """
+    Extract mathematical content sections from text.
+    
+    Returns list of sections with structure:
+    {
+        'header': str,
+        'content': str,
+        'equations': list[tuple(type, code)],
+        'complexity': 'simple' | 'moderate' | 'complex'
+    }
+    """
+    sections = []
+    
+    # Split by section headers (lines with === or --- below)
+    section_pattern = r'^([A-Z][A-Za-z\s]+)\n[\-=]{3,}$'
+    parts = re.split(section_pattern, text, flags=re.MULTILINE)
+    
+    for i in range(1, len(parts), 2):
+        if i + 1 < len(parts):
+            header = parts[i]
+            content = parts[i + 1]
+            equations = extract_latex_equations(content)
+            
+            # Determine complexity
+            equation_count = len(equations)
+            display_count = sum(1 for _, eq_type, _ in equations if eq_type == 'display')
+            
+            if equation_count == 0:
+                complexity = 'simple'
+            elif display_count >= 3 or any('\\int' in code or '\\sum' in code 
+                                          for _, _, code in equations):
+                complexity = 'complex'
+            else:
+                complexity = 'moderate'
+            
+            sections.append({
+                'header': header.strip(),
+                'content': content.strip(),
+                'equations': [(eq_type, code) for _, eq_type, code in equations],
+                'complexity': complexity
+            })
+    
+    return sections
+
+
+def format_for_discord_display(text: str, max_embed_length: int = 4000) -> str:
+    """
+    Format mathematical content for optimal Discord embed display.
+    
+    Features:
+    - Wraps display math in latex code blocks
+    - Preserves inline math notation
+    - Enhances section headers with markdown
+    - Ensures content fits in Discord embed limits
+    
+    Parameters
+    ----------
+    text : str
+        Mathematical content to format
+    max_embed_length : int
+        Maximum length for Discord embed description (default: 4000)
+        
+    Returns
+    -------
+    str
+        Formatted text suitable for Discord embeds
+    """
+    # Format display equations with syntax highlighting
+    formatted = re.sub(
+        r'\$\$(.*?)\$\$',
+        r'```latex\n\1\n```',
+        text,
+        flags=re.DOTALL
+    )
+    
+    # Enhance section headers
+    formatted = re.sub(
+        r'^([A-Z][A-Za-z\s]+)\n[\-=]{3,}$',
+        r'## \1',
+        formatted,
+        flags=re.MULTILINE
+    )
+    
+    return formatted

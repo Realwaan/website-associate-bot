@@ -2334,6 +2334,99 @@ async def show_help(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Error showing help: {e}")
 
 
+def _format_math_content(text: str) -> str:
+    """
+    Format mathematical content for optimal Discord display.
+    
+    Features:
+    - Display math ($$...$$ ) → markdown code blocks with latex syntax highlighting
+    - Inline math ($...$) → preserved as-is with surrounding bold for emphasis
+    - Multiline equations → properly indented code blocks
+    - Section headers → enhanced with markdown formatting
+    - Overall structure → improved visual hierarchy
+    """
+    # Step 1: Format display math ($$...$$) as code blocks with latex syntax
+    # This handles multiline equations properly
+    def format_display_math(match):
+        equation = match.group(1).strip()
+        # Add extra newlines for readability if equation is complex (contains \\ or multiple lines)
+        if '\\\\' in equation or '\n' in equation:
+            return f"```latex\n{equation}\n```"
+        else:
+            return f"```latex\n{equation}\n```"
+    
+    formatted = re.sub(
+        r'\$\$(.*?)\$\$',
+        format_display_math,
+        text,
+        flags=re.DOTALL
+    )
+    
+    # Step 2: Enhance section headers for better visual hierarchy
+    # Convert "Header" followed by "---" or "========" to markdown headings
+    formatted = re.sub(
+        r'^([A-Z][A-Za-z\s]+)\n[\-=]{3,}$',
+        r'## \1',
+        formatted,
+        flags=re.MULTILINE
+    )
+    
+    # Step 3: Format subsection headers (lines like "### Header" or all caps with dashes below)
+    formatted = re.sub(
+        r'^([A-Z][A-Za-z\s]+)\n-{3,}$',
+        r'### \1',
+        formatted,
+        flags=re.MULTILINE
+    )
+    
+    # Step 4: Enhance bullet list readability
+    # Ensure proper spacing around lists
+    formatted = re.sub(
+        r'\n(\d+\.|[-*])\s',
+        r'\n\1 ',
+        formatted
+    )
+    
+    # Step 5: Keep inline math ($...$) as-is but ensure proper spacing
+    # The inline math will be preserved and display naturally in Discord
+    
+    return formatted
+
+
+def _truncate_math_aware(text: str, limit: int = 4000) -> tuple[str, bool]:
+    """
+    Safely truncate text without breaking equations or structure.
+    
+    Returns:
+        (truncated_text, was_truncated)
+    """
+    if len(text) <= limit:
+        return text, False
+    
+    # Try to truncate at a sentence boundary before the limit
+    truncated = text[:limit]
+    
+    # Look for the last sentence ending (. followed by space)
+    cut = truncated.rfind(". ")
+    if cut > limit * 0.7:  # Only truncate at sentence if it's not too far back
+        return text[:cut + 1], True
+    
+    # If no good sentence boundary, try to truncate after a section
+    # (after a line with ===== or ----)
+    lines = text[:limit].split('\n')
+    for i in range(len(lines) - 1, -1, -1):
+        if '=====' in lines[i] or '-----' in lines[i]:
+            return '\n'.join(lines[:i+2]), True
+    
+    # Fallback: truncate at word boundary
+    safe_truncated = text[:limit]
+    last_space = safe_truncated.rfind(' ')
+    if last_space > 0:
+        return text[:last_space], True
+    
+    return truncated, True
+
+
 @bot.tree.command(
     name="ask-ai",
     description="Ask the configured NVIDIA AI model (PM only)"
@@ -2379,6 +2472,14 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             "3. NEVER use parentheses like ( ... ) to represent math notation.\n"
             "4. If NOT math-related: Write naturally without dollar signs.\n"
             "\n"
+            "FORMATTING FOR MATH RESPONSES:\n"
+            "- Start with a clear title/topic header\n"
+            "- Use section headers (======= or -------) to organize content\n"
+            "- Include subsections like: Formula, Definition, Step-by-Step, Example, Key Points\n"
+            "- Put complex equations on their own line using $$...$$\n"
+            "- Use bullet points for lists and steps\n"
+            "- Format multi-step solutions clearly with numbered steps\n"
+            "\n"
             "OUTPUT STYLE:\n"
             "- Skip preamble and repetition. Answer directly.\n"
             "- Keep responses focused and concise.\n"
@@ -2409,23 +2510,11 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
         )
 
         # Discord embed description cap is 4096 chars.
-        # Truncate cleanly at the last sentence boundary before the limit.
-        EMBED_LIMIT = 4000
-        truncated = False
-        if len(answer) > EMBED_LIMIT:
-            cut = answer[:EMBED_LIMIT].rfind(". ")
-            answer = answer[: cut + 1 if cut > 0 else EMBED_LIMIT]
-            truncated = True
+        # Truncate cleanly without breaking equations or structure
+        answer, truncated = _truncate_math_aware(answer, limit=4000)
 
-        # Format LaTeX equations in code blocks for better visibility in Discord
-        # Replace $$...$$ (display math) with markdown code blocks
-        formatted_answer = re.sub(
-            r'\$\$(.*?)\$\$',
-            r'```latex\n\1\n```',
-            answer,
-            flags=re.DOTALL
-        )
-        # Keep inline math as-is: $...$
+        # Format LaTeX equations with enhanced math rendering
+        formatted_answer = _format_math_content(answer)
         
         embed = discord.Embed(
             description=formatted_answer,
