@@ -66,7 +66,12 @@ from pdf_brief_scanner import PDFScanResult, default_pdf_folder, scan_pdf_brief
 from repo_updates import parse_github_repo, post_project_updates, post_push_commits_from_payload
 from logging_utils import configure_logging
 from webhook_security import verify_github_signature
-from math_renderer import extract_latex_equations, render_latex_to_png, has_latex
+from math_renderer import (
+    extract_latex_equations,
+    render_latex_to_png,
+    has_latex,
+    replace_equations_with_images,
+)
 from latex_formatter import format_equation_display
 
 # Set up logging
@@ -2566,9 +2571,18 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
         # Truncate cleanly without breaking equations or structure
         answer, truncated = _truncate_math_aware(answer, limit=4000)
 
-        # Format LaTeX equations with enhanced math rendering
-        formatted_answer = _format_math_content(answer)
-        
+        equations = extract_latex_equations(answer)
+
+        if equations and has_latex():
+            display_text, images = replace_equations_with_images(answer)
+            formatted_answer = _format_math_content(display_text)
+        elif equations:
+            formatted_answer = format_equation_display(answer)
+            images = []
+        else:
+            formatted_answer = _format_math_content(answer)
+            images = []
+
         embed = discord.Embed(
             description=formatted_answer,
             color=discord.Color.from_rgb(100, 65, 165),  # NVIDIA purple-ish
@@ -2580,6 +2594,11 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
         embed.set_footer(text=footer)
 
         await interaction.followup.send(embed=embed)
+
+        if images:
+            for i, png_bytes in enumerate(images):
+                file = discord.File(io.BytesIO(png_bytes), filename=f"equation_{i+1}.png")
+                await interaction.followup.send(file=file)
 
     except AIClientError as e:
         logger.warning("AI request failed: %s", e)
