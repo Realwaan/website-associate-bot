@@ -166,6 +166,22 @@ def render_latex_to_png(latex_code: str, dpi: int = 150) -> Optional[bytes]:
     return None
 
 
+def render_equations_to_single_png(text: str, dpi: int = 150) -> Optional[bytes]:
+    """Render all equations in text into a single PNG image."""
+    equations = extract_latex_equations(text)
+    if not equations:
+        return None
+
+    codes = [code for _, _, code in equations]
+    if len(codes) == 1:
+        latex_code = codes[0]
+    else:
+        joined = r" \\ ".join(codes)
+        latex_code = r"\begin{aligned}" + joined + r"\end{aligned}"
+
+    return render_latex_to_png(latex_code, dpi=dpi)
+
+
 def extract_latex_equations(text: str) -> list[tuple[str, str, str]]:
     """
     Extract LaTeX equations from text.

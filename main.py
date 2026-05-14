@@ -72,6 +72,7 @@ from math_renderer import (
     has_latex,
     has_imagemagick,
     replace_equations_with_images,
+    render_equations_to_single_png,
 )
 from latex_formatter import format_equation_display
 
@@ -2490,6 +2491,14 @@ def _normalize_math_blocks(text: str) -> str:
     return text
 
 
+def _strip_latex_equations(text: str) -> str:
+    """Remove LaTeX equations from text for cleaner embed descriptions."""
+    text = re.sub(r"\$\$(.*?)\$\$", "", text, flags=re.DOTALL)
+    text = re.sub(r"(?<!\$)\$(?!\$)(.*?)\$(?!\$)", "", text, flags=re.DOTALL)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _truncate_math_aware(text: str, limit: int = 4000) -> tuple[str, bool]:
     """
     Safely truncate text without breaking equations or structure.
@@ -2616,17 +2625,18 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
 
         missing_render_deps = False
 
+        image_bytes = None
+
         if equations:
             if has_latex():
-                display_text, images = replace_equations_with_images(answer)
+                image_bytes = render_equations_to_single_png(answer)
+                display_text = _strip_latex_equations(answer)
                 formatted_answer = _format_math_content(display_text)
             else:
                 formatted_answer = _format_math_content(answer)
-                images = []
                 missing_render_deps = True
         else:
             formatted_answer = _format_math_content(answer)
-            images = []
 
         embed = discord.Embed(
             description=formatted_answer,
@@ -2640,12 +2650,12 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             footer += "  •  LaTeX rendering unavailable (install pdflatex + ImageMagick)"
         embed.set_footer(text=footer)
 
-        await interaction.followup.send(embed=embed)
-
-        if images:
-            for i, png_bytes in enumerate(images):
-                file = discord.File(io.BytesIO(png_bytes), filename=f"equation_{i+1}.png")
-                await interaction.followup.send(file=file)
+        if image_bytes:
+            file = discord.File(io.BytesIO(image_bytes), filename="equations.png")
+            embed.set_image(url="attachment://equations.png")
+            await interaction.followup.send(embed=embed, file=file)
+        else:
+            await interaction.followup.send(embed=embed)
 
     except AIClientError as e:
         logger.warning("AI request failed: %s", e)
