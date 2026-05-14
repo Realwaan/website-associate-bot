@@ -39,11 +39,6 @@ def has_imagemagick() -> bool:
     cmd = _get_imagemagick_command()
     if not cmd:
         return False
-
-
-def has_poppler() -> bool:
-    """Check if pdftoppm (poppler-utils) is available for PDF conversion."""
-    return shutil.which("pdftoppm") is not None
     try:
         subprocess.run(
             cmd + ["-version"],
@@ -54,6 +49,11 @@ def has_poppler() -> bool:
         return True
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return False
+
+
+def has_poppler() -> bool:
+    """Check if pdftoppm (poppler-utils) is available for PDF conversion."""
+    return shutil.which("pdftoppm") is not None
 
 
 def render_latex_to_png(latex_code: str, dpi: int = 150) -> Optional[bytes]:
