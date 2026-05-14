@@ -112,25 +112,7 @@ def render_latex_to_png(latex_code: str, dpi: int = 150) -> Optional[bytes]:
                 logger.warning("Failed to generate PDF from LaTeX")
                 return None
 
-            # Convert PDF to PNG using ImageMagick (if available)
-            png_file = tmp_path / "equation.png"
-            try:
-                cmd_base = _get_imagemagick_command()
-                if not cmd_base:
-                    raise FileNotFoundError("ImageMagick not found")
-
-                cmd = cmd_base + ["-density", str(dpi), "-trim", str(pdf_file), str(png_file)]
-                subprocess.run(cmd, capture_output=True, timeout=10, check=True)
-
-                if png_file.exists():
-                    return png_file.read_bytes()
-            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-                logger.warning(
-                    "ImageMagick conversion failed; falling back to pdftoppm if available: %s",
-                    exc,
-                )
-
-            # Fallback: use pdftoppm (poppler) if ImageMagick failed or is unavailable
+            # Prefer pdftoppm (poppler) since ImageMagick often blocks PDF by policy.
             if has_poppler():
                 try:
                     output_base = tmp_path / "equation"
@@ -153,6 +135,24 @@ def render_latex_to_png(latex_code: str, dpi: int = 150) -> Optional[bytes]:
                         return poppler_png.read_bytes()
                 except (subprocess.CalledProcessError, FileNotFoundError) as exc:
                     logger.warning("pdftoppm conversion failed: %s", exc)
+
+            # Fallback: try ImageMagick if poppler is unavailable or failed
+            png_file = tmp_path / "equation.png"
+            try:
+                cmd_base = _get_imagemagick_command()
+                if not cmd_base:
+                    raise FileNotFoundError("ImageMagick not found")
+
+                cmd = cmd_base + ["-density", str(dpi), "-trim", str(pdf_file), str(png_file)]
+                subprocess.run(cmd, capture_output=True, timeout=10, check=True)
+
+                if png_file.exists():
+                    return png_file.read_bytes()
+            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+                logger.warning(
+                    "ImageMagick conversion failed; PDF policy may block it: %s",
+                    exc,
+                )
 
             logger.warning(
                 "PDF conversion failed; install ImageMagick or poppler-utils."
