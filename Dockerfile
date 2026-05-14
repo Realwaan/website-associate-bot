@@ -13,7 +13,8 @@ RUN apt-get update \
        tesseract-ocr \
        texlive-latex-base \
        texlive-latex-extra \
-       imagemagick \
+         imagemagick \
+         ghostscript \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv \
     && uv pip install --system -r requirements.txt

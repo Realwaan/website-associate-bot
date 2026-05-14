@@ -70,6 +70,7 @@ from math_renderer import (
     extract_latex_equations,
     render_latex_to_png,
     has_latex,
+    has_imagemagick,
     replace_equations_with_images,
 )
 from latex_formatter import format_equation_display
@@ -554,6 +555,12 @@ async def on_ready():
         getattr(ai_client, "model", None),
         getattr(ai_client, "timeout_seconds", None),
         getattr(ai_client, "invoke_url", None),
+    )
+
+    logger.info(
+        "Math rendering ready: latex=%s imagemagick=%s",
+        has_latex(),
+        has_imagemagick(),
     )
 
     # Prevent bad persisted settings from causing noisy auto-update failures.

@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 import subprocess
+import shutil
 import tempfile
 
 logger = logging.getLogger(__name__)
@@ -24,22 +25,23 @@ def has_latex() -> bool:
         return False
 
 
+def _get_imagemagick_command() -> list[str] | None:
+    """Return the ImageMagick command to invoke, if available."""
+    if shutil.which("magick"):
+        return ["magick"]
+    if shutil.which("convert"):
+        return ["convert"]
+    return None
+
+
 def has_imagemagick() -> bool:
     """Check if ImageMagick is installed (prefer `magick` on Windows)."""
+    cmd = _get_imagemagick_command()
+    if not cmd:
+        return False
     try:
         subprocess.run(
-            ["magick", "-version"],
-            capture_output=True,
-            timeout=5,
-            check=True,
-        )
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        pass
-
-    try:
-        subprocess.run(
-            ["convert", "-version"],
+            cmd + ["-version"],
             capture_output=True,
             timeout=5,
             check=True,
@@ -108,10 +110,11 @@ def render_latex_to_png(latex_code: str, dpi: int = 150) -> Optional[bytes]:
             # Convert PDF to PNG using ImageMagick (if available)
             png_file = tmp_path / "equation.png"
             try:
-                if not has_imagemagick():
+                cmd_base = _get_imagemagick_command()
+                if not cmd_base:
                     raise FileNotFoundError("ImageMagick not found")
 
-                cmd = ["magick", "-density", str(dpi), "-trim", str(pdf_file), str(png_file)]
+                cmd = cmd_base + ["-density", str(dpi), "-trim", str(pdf_file), str(png_file)]
                 subprocess.run(cmd, capture_output=True, timeout=10, check=True)
 
                 if png_file.exists():
