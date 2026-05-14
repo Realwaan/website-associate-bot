@@ -15,6 +15,7 @@ RUN apt-get update \
        texlive-latex-extra \
          imagemagick \
          ghostscript \
+       poppler-utils \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv \
     && uv pip install --system -r requirements.txt

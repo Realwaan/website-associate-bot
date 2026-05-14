@@ -39,6 +39,11 @@ def has_imagemagick() -> bool:
     cmd = _get_imagemagick_command()
     if not cmd:
         return False
+
+
+def has_poppler() -> bool:
+    """Check if pdftoppm (poppler-utils) is available for PDF conversion."""
+    return shutil.which("pdftoppm") is not None
     try:
         subprocess.run(
             cmd + ["-version"],
@@ -119,12 +124,40 @@ def render_latex_to_png(latex_code: str, dpi: int = 150) -> Optional[bytes]:
 
                 if png_file.exists():
                     return png_file.read_bytes()
-            except (subprocess.CalledProcessError, FileNotFoundError):
+            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
                 logger.warning(
-                    "ImageMagick not installed; cannot convert PDF to PNG. "
-                    "Install with: `choco install imagemagick` or `apt-get install imagemagick`"
+                    "ImageMagick conversion failed; falling back to pdftoppm if available: %s",
+                    exc,
                 )
-                return None
+
+            # Fallback: use pdftoppm (poppler) if ImageMagick failed or is unavailable
+            if has_poppler():
+                try:
+                    output_base = tmp_path / "equation"
+                    subprocess.run(
+                        [
+                            "pdftoppm",
+                            "-png",
+                            "-r",
+                            str(dpi),
+                            str(pdf_file),
+                            str(output_base),
+                        ],
+                        capture_output=True,
+                        timeout=10,
+                        check=True,
+                    )
+
+                    poppler_png = tmp_path / "equation-1.png"
+                    if poppler_png.exists():
+                        return poppler_png.read_bytes()
+                except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+                    logger.warning("pdftoppm conversion failed: %s", exc)
+
+            logger.warning(
+                "PDF conversion failed; install ImageMagick or poppler-utils."
+            )
+            return None
 
     except Exception as e:
         logger.warning(f"Failed to render LaTeX equation: {e}")
