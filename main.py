@@ -2458,6 +2458,38 @@ def _format_math_content(text: str) -> str:
     return formatted
 
 
+def _normalize_math_blocks(text: str) -> str:
+    """
+    Convert fenced math-like code blocks into $$...$$ so rendering can detect them.
+
+    Handles:
+    - ```latex ... ``` blocks
+    - unlabeled ``` ... ``` blocks that look like equations
+    """
+    def looks_like_math(block: str) -> bool:
+        snippet = block.strip()
+        if not snippet:
+            return False
+        return any(token in snippet for token in ["\\", "^", "_", "=", "\\frac", "\\sqrt", "\\int", "\\sum"])
+
+    def replace_latex_block(match: re.Match) -> str:
+        equation = match.group(1).strip()
+        if not equation:
+            return match.group(0)
+        return f"$${equation}$$"
+
+    def replace_plain_block(match: re.Match) -> str:
+        block = match.group(1)
+        if looks_like_math(block):
+            equation = block.strip()
+            return f"$${equation}$$"
+        return match.group(0)
+
+    text = re.sub(r"```latex\n(.*?)\n```", replace_latex_block, text, flags=re.DOTALL)
+    text = re.sub(r"```\n(.*?)\n```", replace_plain_block, text, flags=re.DOTALL)
+    return text
+
+
 def _truncate_math_aware(text: str, limit: int = 4000) -> tuple[str, bool]:
     """
     Safely truncate text without breaking equations or structure.
@@ -2573,6 +2605,8 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
             enable_thinking=False,
             profile="answer",
         )
+
+        answer = _normalize_math_blocks(answer)
 
         # Discord embed description cap is 4096 chars.
         # Truncate cleanly without breaking equations or structure
