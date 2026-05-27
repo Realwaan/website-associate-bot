@@ -127,7 +127,7 @@ def _detect_in_file(
     enabled_detectors: set[str] | None = None,
 ) -> list[Issue]:
     """Run all detectors on a single file's lines."""
-    enabled = enabled_detectors or DEFAULT_ENABLED_DETECTORS
+    enabled = DEFAULT_ENABLED_DETECTORS if enabled_detectors is None else enabled_detectors
     issues: list[Issue] = []
     basename = Path(rel_path).name.lower()
     is_test_file = any(p in basename for p in ("test", "spec", ".test.", ".spec."))
@@ -236,9 +236,9 @@ def scan_directory(
     Returns:
         List of Issue objects found across the project.
     """
-    ignore = ignore_dirs or DEFAULT_IGNORE_DIRS
-    extensions = file_extensions or DEFAULT_FILE_EXTENSIONS
-    enabled = enabled_detectors or DEFAULT_ENABLED_DETECTORS
+    ignore = DEFAULT_IGNORE_DIRS if ignore_dirs is None else ignore_dirs
+    extensions = DEFAULT_FILE_EXTENSIONS if file_extensions is None else file_extensions
+    enabled = DEFAULT_ENABLED_DETECTORS if enabled_detectors is None else enabled_detectors
     project = Path(project_path).resolve()
     all_issues: list[Issue] = []
 
@@ -316,8 +316,8 @@ def _count_scannable_files(
     file_extensions: set[str] | None = None,
 ) -> int:
     """Count source files that match scan filters for progress/reporting."""
-    ignore = ignore_dirs or DEFAULT_IGNORE_DIRS
-    extensions = file_extensions or DEFAULT_FILE_EXTENSIONS
+    ignore = DEFAULT_IGNORE_DIRS if ignore_dirs is None else ignore_dirs
+    extensions = DEFAULT_FILE_EXTENSIONS if file_extensions is None else file_extensions
     project = Path(project_path).resolve()
 
     total = 0

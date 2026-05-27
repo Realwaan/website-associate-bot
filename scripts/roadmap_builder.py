@@ -191,6 +191,80 @@ def _generate_feature_tickets(
     return generated
 
 
+def _generate_improvement_summary_ticket(
+    output_folder: str,
+    tickets_dir: str,
+    impactful_feature: dict[str, object],
+    detected_features: list[tuple[str, int]],
+    suggested_features: list[str],
+    feature_ticket_files: list[str],
+    *,
+    roadmap_written: bool,
+) -> str:
+    """Generate a consolidated improvement summary ticket."""
+    out_dir = Path(tickets_dir) / output_folder
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    impactful_title = str(impactful_feature.get("title", "Most Impactful Feature")).strip()
+    impactful_ticket = next(
+        (path for path in feature_ticket_files if "feature-most-impactful" in Path(path).name),
+        "",
+    )
+    expand_tickets = [
+        path for path in feature_ticket_files
+        if "feature-expand" in Path(path).name
+    ]
+
+    related_files: list[str] = []
+    if roadmap_written:
+        related_files.append(f"tickets/{output_folder}/ROADMAP.md")
+    for path in feature_ticket_files:
+        related_files.append(f"tickets/{output_folder}/{Path(path).name}")
+
+    if impactful_ticket:
+        impactful_ref = f"`{Path(impactful_ticket).name}`"
+    else:
+        impactful_ref = "Most impactful feature ticket (not generated)"
+
+    expand_refs = [f"`{Path(path).name}`" for path in expand_tickets]
+    expand_ref_text = ", ".join(expand_refs) if expand_refs else "No expand-feature tickets generated"
+
+    suggestion_text = "; ".join(suggested_features[:6]) if suggested_features else "No improvement suggestions generated"
+    feature_hotspots = ", ".join([f"{name} ({count})" for name, count in detected_features[:6]])
+    if not feature_hotspots:
+        feature_hotspots = "No detected feature hotspots"
+
+    roadmap_step = (
+        f"Review the roadmap in `tickets/{output_folder}/ROADMAP.md` and confirm priorities."
+        if roadmap_written
+        else "Review roadmap output in the scan response (repo scans do not write `ROADMAP.md`)."
+    )
+
+    return _write_feature_ticket(
+        out_dir=out_dir,
+        filename="utils-project-improvement-summary.md",
+        title="Project Improvement Summary",
+        problem=(
+            "Roadmap analysis generated multiple improvement artifacts (roadmap guidance, the most impactful feature, "
+            "and feature expansion tickets). This summary consolidates them into one place so the team can prioritize."
+        ),
+        what_to_fix=[
+            roadmap_step,
+            f"Review the most impactful feature ticket ({impactful_ref}) for **{impactful_title}**.",
+            f"Review expansion feature tickets: {expand_ref_text}.",
+            f"Use detected feature hotspots to focus improvements: {feature_hotspots}.",
+            f"Triage suggested improvements: {suggestion_text}.",
+        ],
+        acceptance_criteria=[
+            "Roadmap priorities are reviewed and agreed for the next phase.",
+            "Most impactful feature and expansion tickets are triaged with owners or statuses.",
+            "Top improvement suggestions are either converted into tickets or explicitly deferred.",
+        ],
+        related_files=related_files,
+        priority=True,
+    )
+
+
 def _collect_file_stats(
     project_path: str,
     ignore_dirs: set[str],
@@ -850,6 +924,7 @@ def build_project_roadmap(
     grouped = group_issues(issues) if issues else {}
 
     generated_files: list[str] = []
+    feature_ticket_files: list[str] = []
     if generate_issue_tickets and grouped and not skip_code_issues:
         generated_files = generate_tickets(grouped, output_folder, tickets_dir)
 
@@ -869,14 +944,25 @@ def build_project_roadmap(
     impactful_feature = _pick_most_impactful_feature(dict(category_counts), ext_counts, feature_component_counts)
     detected_features = sorted(feature_component_counts.items(), key=lambda x: x[1], reverse=True)[:8]
     if generate_issue_tickets:
-        generated_files.extend(
-            _generate_feature_tickets(
-                output_folder=output_folder,
-                tickets_dir=tickets_dir,
-                impactful_feature=impactful_feature,
-                detected_features=detected_features,
-            )
+        feature_ticket_files = _generate_feature_tickets(
+            output_folder=output_folder,
+            tickets_dir=tickets_dir,
+            impactful_feature=impactful_feature,
+            detected_features=detected_features,
         )
+        generated_files.extend(feature_ticket_files)
+
+        summary_ticket = _generate_improvement_summary_ticket(
+            output_folder=output_folder,
+            tickets_dir=tickets_dir,
+            impactful_feature=impactful_feature,
+            detected_features=detected_features,
+            suggested_features=suggestions,
+            feature_ticket_files=feature_ticket_files,
+            roadmap_written=write_roadmap_file,
+        )
+        if summary_ticket:
+            generated_files.append(summary_ticket)
     weekly_plan = _build_twelve_week_plan(components, dict(category_counts), impactful_feature)
 
     out_dir = Path(tickets_dir) / output_folder
