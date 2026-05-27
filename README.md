@@ -329,11 +329,11 @@ In Render logs, confirm:
 | Command | Description |
 |---------|-------------|
 | `/load-tickets <folder> <channel>` | Load markdown files from a folder into a channel as threads |
-| `/scan-pdf <pdf> [folder]` | Upload a website/design brief PDF and generate roadmap + tickets |
+| `/scan-pdf <pdf> [folder]` | Upload a website/design brief PDF and generate roadmap + tickets (ROADMAP.md attached) |
 | `/rebuild-db <folder> <channel>` | Rebuild database entries from existing threads (recovery tool) |
 | `/reset-loaded <folder> <channel>` | Clear loaded-ticket mappings so deleted tickets can be loaded again |
 | `/scan-project <path> <folder> [threshold]` | Scan a project directory for issues and auto-generate ticket files |
-| `/scan-roadmap <path_or_repo_url> <folder> [threshold] [generate_tickets]` | Scan local folder or HTTPS repo URL and generate roadmap markdown with suggested improvements |
+| `/scan-roadmap <path_or_repo_url> <folder> [threshold] [generate_tickets]` | Scan local folder or HTTPS repo URL and generate roadmap markdown with suggested improvements (ROADMAP.md attached) |
 | `/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]` | Cloud-safe scan by cloning a repo URL and generating issue + feature tickets |
 | `/set-commit-channel <channel>` | Set default channel for formal commit/merge bulletins |
 | `/update-project <repo_url> [branch] [limit] [feed_type] [channel]` | Post formal repository updates (commits, merged PRs, or both) with GitHub links and enable automatic notifications (webhook-first) |

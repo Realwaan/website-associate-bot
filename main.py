@@ -2757,7 +2757,14 @@ async def scan_pdf(interaction: discord.Interaction, pdf: discord.Attachment, fo
         embed.add_field(name="Extracted Text", value=str(result.chars_extracted), inline=True)
         embed.add_field(name="Extraction Mode", value="OCR fallback" if result.used_ocr else "Embedded PDF text", inline=True)
         embed.add_field(name="Output Folder", value=f"`tickets/{output_folder}/`", inline=False)
-        embed.add_field(name="Roadmap File", value=f"`tickets/{output_folder}/ROADMAP.md`", inline=False)
+        roadmap_attachment: discord.File | None = None
+        roadmap_path = Path(result.roadmap_file)
+        if roadmap_path.exists():
+            roadmap_attachment = discord.File(str(roadmap_path), filename=roadmap_path.name)
+        roadmap_label = f"`tickets/{output_folder}/ROADMAP.md`"
+        if roadmap_attachment:
+            roadmap_label = f"{roadmap_label} (attached)"
+        embed.add_field(name="Roadmap File", value=roadmap_label, inline=False)
 
         if result.features:
             feature_lines = "\n".join([f"• {item}" for item in result.features[:5]])
@@ -2779,7 +2786,10 @@ async def scan_pdf(interaction: discord.Interaction, pdf: discord.Attachment, fo
             inline=False,
         )
 
-        await interaction.followup.send(embed=embed)
+        if roadmap_attachment:
+            await interaction.followup.send(embed=embed, file=roadmap_attachment)
+        else:
+            await interaction.followup.send(embed=embed)
 
         # Push generated files to GitHub so they survive Render redeploys.
         all_files = result.generated_ticket_files + [result.roadmap_file, result.brief_file]
@@ -3009,7 +3019,14 @@ async def scan_roadmap(
         embed.add_field(name="Roadmap Weeks", value=str(result.roadmap_weeks), inline=True)
         embed.add_field(name="Issues Found", value=str(result.total_issues), inline=True)
         embed.add_field(name="Tickets Generated", value=str(result.total_tickets), inline=True)
-        embed.add_field(name="Roadmap File", value=f"`tickets/{folder}/ROADMAP.md`", inline=False)
+        roadmap_attachment: discord.File | None = None
+        roadmap_path = Path(result.roadmap_file)
+        if roadmap_path.exists():
+            roadmap_attachment = discord.File(str(roadmap_path), filename=roadmap_path.name)
+        roadmap_label = f"`tickets/{folder}/ROADMAP.md`"
+        if roadmap_attachment:
+            roadmap_label = f"{roadmap_label} (attached)"
+        embed.add_field(name="Roadmap File", value=roadmap_label, inline=False)
 
         if result.top_categories:
             top = "\n".join([f"• {name}: {count}" for name, count in result.top_categories[:5]])
@@ -3033,7 +3050,10 @@ async def scan_roadmap(
             inline=False,
         )
 
-        await interaction.followup.send(embed=embed)
+        if roadmap_attachment:
+            await interaction.followup.send(embed=embed, file=roadmap_attachment)
+        else:
+            await interaction.followup.send(embed=embed)
         logger.info(
             "Roadmap generated for %s: files=%s issues=%s tickets=%s folder=%s",
             path,
