@@ -135,6 +135,58 @@ class TestAIChatThread(unittest.IsolatedAsyncioTestCase):
         # Check send was called with AI output
         mock_thread.send.assert_called_once_with("AI Reply content")
 
+    @patch('main.async_has_role')
+    @patch('main.ai_client')
+    @patch('main.bot')
+    @patch('main.has_latex')
+    @patch('main.render_equations_to_single_png')
+    async def test_on_message_ai_chat_thread_with_math(self, mock_render, mock_has_latex, mock_bot, mock_ai_client, mock_async_has_role):
+        """Verify that math content in thread messages invokes render_equations_to_single_png."""
+        mock_async_has_role.return_value = True
+        mock_ai_client.chat = MagicMock(return_value="AI Reply with equation: $$V = \\pi r^2 h$$")
+        mock_bot.user.id = 12345
+        mock_has_latex.return_value = True
+        mock_render.return_value = b"fake_png_bytes"
+
+        # Mock message channel as Thread
+        mock_thread = MagicMock(spec=discord.Thread)
+        mock_thread.name = "💬 AI-Chat: physics-discussion"
+        
+        # Mock typing context manager
+        mock_typing = AsyncMock()
+        mock_thread.typing.return_value = mock_typing
+
+        # Mock thread history
+        mock_msg_1 = MagicMock(spec=discord.Message)
+        mock_msg_1.content = "Question 1"
+        mock_msg_1.author.id = 99999
+        mock_msg_1.created_at = 1
+
+        async def mock_history(limit):
+            yield mock_msg_1
+
+        mock_thread.history = mock_history
+        mock_thread.send = AsyncMock()
+
+        # Mock the trigger message
+        mock_message = MagicMock(spec=discord.Message)
+        mock_message.author.id = 99999
+        mock_message.channel = mock_thread
+        mock_message.content = "Question 1"
+        mock_message.mentions = []
+
+        # Run on_message
+        await on_message(mock_message)
+
+        # Check that math rendering was called
+        mock_render.assert_called_once_with("AI Reply with equation: $$V = \\pi r^2 h$$")
+        
+        # Check that thread.send was called with an attachment embed
+        mock_thread.send.assert_called_once()
+        call_kwargs = mock_thread.send.call_args[1]
+        self.assertIn("embed", call_kwargs)
+        self.assertIn("file", call_kwargs)
+
 
 if __name__ == '__main__':
     unittest.main()

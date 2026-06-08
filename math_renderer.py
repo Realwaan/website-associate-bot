@@ -7,10 +7,12 @@ from typing import Optional
 import subprocess
 import shutil
 import tempfile
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
 
+@lru_cache(maxsize=1)
 def has_latex() -> bool:
     """Check if LaTeX (pdflatex) is installed on the system."""
     try:
@@ -34,6 +36,7 @@ def _get_imagemagick_command() -> list[str] | None:
     return None
 
 
+@lru_cache(maxsize=1)
 def has_imagemagick() -> bool:
     """Check if ImageMagick is installed (prefer `magick` on Windows)."""
     cmd = _get_imagemagick_command()
@@ -51,6 +54,7 @@ def has_imagemagick() -> bool:
         return False
 
 
+@lru_cache(maxsize=1)
 def has_poppler() -> bool:
     """Check if pdftoppm (poppler-utils) is available for PDF conversion."""
     return shutil.which("pdftoppm") is not None

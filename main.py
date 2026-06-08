@@ -127,7 +127,7 @@ async def send_message_with_equations(thread: discord.Thread, message: str) -> N
             # Render and send each equation as an image
             for i, (full_match, eq_type, eq_code) in enumerate(equations):
                 try:
-                    png_bytes = render_latex_to_png(eq_code)
+                    png_bytes = await asyncio.to_thread(render_latex_to_png, eq_code)
                     if png_bytes:
                         # Create a file-like object and send it
                         file = discord.File(io.BytesIO(png_bytes), filename=f"equation_{i+1}.png")
@@ -2629,7 +2629,7 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
 
         if equations:
             if has_latex():
-                image_bytes = render_equations_to_single_png(answer)
+                image_bytes = await asyncio.to_thread(render_equations_to_single_png, answer)
                 if image_bytes:
                     display_text = _strip_latex_equations(answer)
                     formatted_answer = _format_math_content(display_text)
@@ -2788,7 +2788,7 @@ async def on_message(message: discord.Message):
                 image_bytes = None
                 
                 if equations and has_latex():
-                    image_bytes = render_equations_to_single_png(answer)
+                    image_bytes = await asyncio.to_thread(render_equations_to_single_png, answer)
                     
                 if image_bytes:
                     display_text = _strip_latex_equations(answer)
