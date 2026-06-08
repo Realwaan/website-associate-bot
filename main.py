@@ -89,7 +89,7 @@ intents.guild_messages = True
 # - members: Only needed for /rebuild-db role syncing.
 # If you enable "SERVER MEMBERS INTENT" and "MESSAGE CONTENT INTENT"
 # in the Developer Portal, you can set these to True.
-intents.message_content = False
+intents.message_content = os.getenv("INTENTS_MESSAGE_CONTENT", "false").lower() == "true"
 intents.members = False
 
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
@@ -2667,6 +2667,150 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
     except Exception as e:
         logger.error("Error running ask-ai: %s", e, exc_info=True)
         await interaction.followup.send(f"❌ Unexpected error: {e}")
+
+
+@bot.tree.command(
+    name="ai-chat",
+    description="Start a new interactive AI conversation thread (PM only)"
+)
+@app_commands.describe(
+    topic="The main topic of the conversation (default: general)"
+)
+async def ai_chat(interaction: discord.Interaction, topic: str = "general"):
+    """Create a dedicated thread for continuous conversation with the AI."""
+    await safe_defer(interaction, ephemeral=True)
+    
+    try:
+        if not await async_has_role(interaction.user.id, "pm"):
+            await interaction.followup.send("❌ Only Project Managers can start AI chats.", ephemeral=True)
+            return
+            
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send("❌ AI chats can only be started in standard text channels.", ephemeral=True)
+            return
+            
+        thread_name = f"💬 AI-Chat: {topic[:50]}"
+        thread = await channel.create_thread(
+            name=thread_name,
+            auto_archive_duration=60,
+            type=discord.ChannelType.public_thread,
+            reason="AI continuous conversation thread"
+        )
+        
+        welcome_embed = discord.Embed(
+            title="💬 AI Conversation Window",
+            description=(
+                f"Welcome to this dedicated conversation thread about **{topic}**!\n\n"
+                "**How to use:**\n"
+                "- Type any message in this thread and press Enter.\n"
+                "- The AI will read the history of this thread to continue the conversation.\n"
+                "- Enclose math equations in `$` (inline) or `$$` (display) to render them as images."
+            ),
+            color=discord.Color.from_rgb(100, 65, 165)
+        )
+        welcome_embed.set_footer(text="Type '/closed' in this thread to archive it.")
+        await thread.send(embed=welcome_embed)
+        
+        await interaction.followup.send(f"✅ AI Chat thread created: {thread.mention}", ephemeral=True)
+        
+    except Exception as e:
+        logger.error("Error creating AI chat: %s", e, exc_info=True)
+        await interaction.followup.send(f"❌ Failed to create AI chat: {e}", ephemeral=True)
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    # Ignore messages sent by the bot itself
+    if message.author.id == bot.user.id:
+        return
+        
+    is_ai_chat = False
+    if isinstance(message.channel, discord.Thread):
+        if message.channel.name.startswith("💬 AI-Chat:"):
+            is_ai_chat = True
+            
+    is_mentioned = bot.user in message.mentions
+    
+    if is_ai_chat or is_mentioned:
+        # Enforce PM role limit
+        if not await async_has_role(message.author.id, "pm"):
+            return
+            
+        async with message.channel.typing():
+            try:
+                # 1. Fetch message history (last 20 messages)
+                history_limit = 20
+                messages_list = []
+                async for msg in message.channel.history(limit=history_limit):
+                    if msg.content:
+                        # Skip if the message is from our bot's welcome embed itself
+                        if msg.author.id == bot.user.id and not msg.content.strip() and msg.embeds:
+                            continue
+                        role = "assistant" if msg.author.id == bot.user.id else "user"
+                        messages_list.append((role, msg.content, msg.created_at))
+                
+                # Sort chronologically
+                messages_list.sort(key=lambda x: x[2])
+                
+                # Convert to payload
+                payload_messages = [{"role": role, "content": content} for role, content, _ in messages_list]
+                
+                _SYSTEM = (
+                    "You are an expert assistant engaged in an ongoing conversation. "
+                    "Give accurate, well-structured, and concise answers in a direct style. "
+                    "Use markdown formatting (bold, bullet lists, headings) when it helps clarity. "
+                    "\n"
+                    "MATH NOTATION RULES (IMPORTANT):\n"
+                    "1. Detect if the query involves mathematics, physics, calculus, statistics, equations, or formulas.\n"
+                    "2. ONLY IF math-related: Use proper LaTeX notation:\n"
+                    "   - Inline math: $expression$ (e.g., $a^2 + b^2 = c^2$)\n"
+                    "   - Display math (for complex equations): $$expression$$ (e.g., $$\\int_a^b f(x)dx$$)\n"
+                    "3. NEVER use parentheses like ( ... ) to represent math notation.\n"
+                    "4. If NOT math-related: Write naturally without dollar signs.\n"
+                )
+                
+                # Call AI
+                answer = await asyncio.to_thread(
+                    ai_client.chat,
+                    payload_messages,
+                    system=_SYSTEM,
+                    temperature=0.7,
+                    max_tokens=1500,
+                    enable_thinking=False,
+                    profile="answer"
+                )
+                
+                answer = _normalize_math_blocks(answer)
+                answer, truncated = _truncate_math_aware(answer, limit=2000)
+                
+                equations = extract_latex_equations(answer)
+                image_bytes = None
+                
+                if equations and has_latex():
+                    image_bytes = render_equations_to_single_png(answer)
+                    
+                if image_bytes:
+                    display_text = _strip_latex_equations(answer)
+                    formatted_answer = _format_math_content(display_text)
+                    file = discord.File(io.BytesIO(image_bytes), filename="equations.png")
+                    
+                    embed = discord.Embed(
+                        description=formatted_answer,
+                        color=discord.Color.from_rgb(100, 65, 165)
+                    )
+                    embed.set_image(url="attachment://equations.png")
+                    await message.channel.send(embed=embed, file=file)
+                else:
+                    formatted_answer = _format_math_content(answer)
+                    await message.channel.send(formatted_answer)
+                    
+            except Exception as e:
+                logger.error("Error processing AI response in thread: %s", e, exc_info=True)
+                await message.channel.send(f"❌ Error getting AI response: {e}")
+        return
+        
+    await bot.process_commands(message)
 
 
 @bot.tree.command(

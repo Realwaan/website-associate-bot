@@ -178,7 +178,7 @@ class NvidiaAIClient:
 
     def chat(
         self,
-        prompt: str,
+        prompt: str | list[dict[str, str]],
         profile: str | None = None,
         *,
         system: str | None = None,
@@ -190,10 +190,12 @@ class NvidiaAIClient:
         **_kwargs: Any,
     ) -> str:
         """
-        Send a text prompt and return the assistant's reply.
+        Send a text prompt or conversation history and return the assistant's reply.
 
         Parameters
         ----------
+        prompt:
+            A string prompt or a list of message dictionaries representing history.
         enable_thinking:
             None/False — prepend /no_think so the model populates `content`
                          directly, skipping the reasoning chain (fast, default).
@@ -213,10 +215,14 @@ class NvidiaAIClient:
         # nemotron-super defaults to thinking; /no_think forces content to be populated.
         think_directive = "/think" if enable_thinking is True else "/no_think"
         system_content = f"{think_directive}\n\n{system}" if system else think_directive
-        messages: list[dict] = [
-            {"role": "system", "content": system_content},
-            {"role": "user",   "content": prompt},
-        ]
+        
+        if isinstance(prompt, list):
+            messages = [{"role": "system", "content": system_content}] + prompt
+        else:
+            messages = [
+                {"role": "system", "content": system_content},
+                {"role": "user",   "content": prompt},
+            ]
 
         # reasoning_budget is only sent when explicitly enabling thinking
         extra_body: dict[str, Any] = {}
