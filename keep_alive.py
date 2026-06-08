@@ -11,6 +11,25 @@ log.setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 app = Flask('')
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB payload limit
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Content-Security-Policy'] = "default-src 'none'; frame-ancestors 'none'"
+    return response
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({"ok": False, "message": "Payload too large. Maximum size is 10MB."}), 413
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    logger.error("Internal server error: %s", error)
+    return jsonify({"ok": False, "message": "An internal server error occurred."}), 500
+
 _github_webhook_handler: Callable[[bytes, dict], tuple[int, str]] | None = None
 
 @app.route('/', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
