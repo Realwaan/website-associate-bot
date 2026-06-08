@@ -2630,8 +2630,12 @@ async def ask_ai(interaction: discord.Interaction, prompt: str, temperature: flo
         if equations:
             if has_latex():
                 image_bytes = render_equations_to_single_png(answer)
-                display_text = _strip_latex_equations(answer)
-                formatted_answer = _format_math_content(display_text)
+                if image_bytes:
+                    display_text = _strip_latex_equations(answer)
+                    formatted_answer = _format_math_content(display_text)
+                else:
+                    formatted_answer = _format_math_content(answer)
+                    missing_render_deps = True
             else:
                 formatted_answer = _format_math_content(answer)
                 missing_render_deps = True
