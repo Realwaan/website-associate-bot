@@ -307,6 +307,11 @@ async def post_project_updates(
             except ValueError:
                 pass
 
+        description = f"**{pr_title}**"
+        if pr_body:
+            truncated = pr_body[:300] + ("…" if len(pr_body) > 300 else "")
+            description += f"\n\n{truncated}"
+
         embed = discord.Embed(
             title=f"Merged Pull Request  #{pr_num}",
             description=description,
