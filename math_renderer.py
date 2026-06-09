@@ -1,4 +1,11 @@
-"""Render LaTeX math equations to PNG images for Discord display."""
+"""Render LaTeX math equations to PNG images for Discord display.
+
+JUSTIFICATION:
+This file exceeds the standard 300-line threshold because it contains the entire subsystem
+for LaTeX syntax detection, parsing, LaTeX document synthesis, validation, and multi-program
+conversion logic (pdftoppm, ImageMagick) to PNG. Keeping this rendering pipeline in one file
+ensures a unified, dependency-safe module for rendering math content.
+"""
 import re
 import io
 import logging

@@ -3,6 +3,12 @@
 Walks a project directory, detects issues (TODOs, debug statements,
 empty catches, large files, etc.), and generates ticket .md files
 in the bot's tickets/ folder.
+
+JUSTIFICATION:
+This file exceeds the standard 300-line threshold because it houses the complete regex-based
+static analysis rule engine (detectors for hardcoded secrets, logger debug warnings, empty exception
+handlers, technical debt markers, and line counts), directory walking logic, categorizer/grouper
+system, and ticket formatting template generator in a single dependency-free pipeline.
 """
 import os
 import re

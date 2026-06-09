@@ -1,8 +1,12 @@
 """Module for loading tickets from markdown files."""
 import os
 import re
+import logging
 from pathlib import Path
 from config import TICKETS_DIR
+
+logger = logging.getLogger(__name__)
+
 
 
 def parse_ticket_markdown(file_path: str) -> dict:
@@ -101,7 +105,7 @@ def load_tickets_from_folder(folder_name: str) -> list:
             tickets.append(ticket)
         except Exception as e:
             # Log parsing error but continue with other files
-            print(f"Warning: Failed to parse {file.stem}: {e}")
+            logger.warning(f"Failed to parse {file.stem}: {e}")
             # Add basic ticket info even if parsing failed
             tickets.append({
                 "name": file.stem,

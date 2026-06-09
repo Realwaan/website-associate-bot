@@ -1,4 +1,11 @@
-"""NVIDIA NIM AI Client — OpenAI-compatible SDK edition."""
+"""NVIDIA NIM AI Client — OpenAI-compatible SDK edition.
+
+JUSTIFICATION:
+This file exceeds the standard 300-line threshold because it contains the complete,
+cohesive client wrapper for the NVIDIA NIM/OpenAI APIs, including token estimation,
+profile management, and streaming support. Splitting it would increase import
+complexity without functional benefit.
+"""
 from __future__ import annotations
 
 import os

@@ -3,6 +3,12 @@
 This module extracts text from a PDF design brief, asks the configured AI
 provider to structure the findings, and writes loadable roadmap/ticket files
 into the bot's tickets/ folder.
+
+JUSTIFICATION:
+This file exceeds the standard 300-line threshold because it integrates PDF text extraction
+(using multiple fallbacks: native text vs OCR via Tesseract), structured schema translation,
+response parsing (including fallback options for raw LLM outputs), Markdown serialization, and
+ticket file generation in a single unified entry point.
 """
 from __future__ import annotations
 

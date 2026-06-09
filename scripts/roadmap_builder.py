@@ -4,6 +4,12 @@ Scans the entire repository structure, analyzes each component and existing
 features, then generates a prioritized 12-week (3-month) development roadmap.
 It can also generate scanner ticket files in the same output folder to keep
 planning and execution aligned.
+
+JUSTIFICATION:
+This file exceeds the standard 300-line threshold because it contains the entire logic
+for project structure mapping, directory size/type analysis, feature footprint extraction,
+12-week implementation scheduling, ticket generation templates, and detailed markdown roadmap
+reports. Keeping this analytical code consolidated prevents fragmented metrics generation.
 """
 from __future__ import annotations
 

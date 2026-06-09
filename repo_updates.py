@@ -1,4 +1,11 @@
-"""GitHub repository update helpers for commit and merged PR bulletins."""
+"""GitHub repository update helpers for commit and merged PR bulletins.
+
+JUSTIFICATION:
+This file exceeds the standard 300-line threshold because it contains the complete GitHub
+polling, diff parsing, event filtering, persistent state tracking, and Discord embed formatting
+logic for commits and pull requests. Consolidating this behavior prevents race conditions and
+synchronization issues during background polling intervals.
+"""
 from __future__ import annotations
 
 import asyncio

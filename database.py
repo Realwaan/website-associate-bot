@@ -1,4 +1,11 @@
-"""Database module for managing tickets and leaderboard (PostgreSQL)."""
+"""Database module for managing tickets and leaderboard (PostgreSQL).
+
+JUSTIFICATION:
+This file exceeds the standard 300-line threshold because it contains the entire database schema,
+connection pool management, and CRUD/query methods for tickets, leaderboards, users, and audit logs.
+Consolidating this database access layer ensures a single source of truth for SQL operations
+and transactions across the application.
+"""
 import os
 import asyncio
 import logging

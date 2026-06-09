@@ -1,4 +1,11 @@
-"""Discord Bot for managing support tickets."""
+"""Discord Bot for managing support tickets.
+
+JUSTIFICATION:
+This file exceeds the standard 300-line threshold because it serves as the central entry point
+for the Discord bot, orchestrating event handlers, application slash commands, interactive views,
+paging components, UI/UX systems, and integration points. Keeping these handlers consolidated
+prevents fragmentation of the bot's command registrations and state-dependent UI listeners.
+"""
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
