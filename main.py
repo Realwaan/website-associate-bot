@@ -19,7 +19,7 @@ import json
 import io
 from collections import deque
 from urllib.parse import urlparse
-from datetime import datetime, time, timezone, timedelta
+from datetime import datetime, time, timezone
 from config import (
     DISCORD_TOKEN,
     TICKETS_DIR,
@@ -69,6 +69,12 @@ from scan_project import (
 )
 from roadmap_builder import build_project_roadmap
 from ai_client import NvidiaAIClient, AIClientError
+from concise_planner import (
+    generate_concise_plan,
+    parse_ai_plan_response,
+    write_plan_tickets,
+    build_plan_summary,
+)
 from pdf_brief_scanner import PDFScanResult, default_pdf_folder, scan_pdf_brief
 from repo_updates import parse_github_repo, post_project_updates, post_push_commits_from_payload
 from logging_utils import configure_logging
@@ -78,7 +84,6 @@ from math_renderer import (
     render_latex_to_png,
     has_latex,
     has_imagemagick,
-    replace_equations_with_images,
     render_equations_to_single_png,
 )
 from latex_formatter import format_equation_display
@@ -2857,6 +2862,207 @@ async def ai_status(interaction: discord.Interaction):
     except Exception as e:
         logger.error("Error showing AI status: %s", e)
         await interaction.followup.send(f"❌ Error showing AI status: {e}")
+
+
+@bot.tree.command(
+    name="plan-project",
+    description="Generate MVP-scoped tickets with CTA from a project description (PM only)"
+)
+@app_commands.describe(
+    description="Describe the project or feature you want to plan",
+    folder="Output folder name in tickets/ for generated plan and tickets",
+    context="Optional additional context (tech stack, constraints, existing code)",
+    max_tickets="Maximum number of tickets to generate (default 8, max 12)",
+    push_to_repo="Auto-push generated files to configured GitHub repo (default: false)"
+)
+async def plan_project(
+    interaction: discord.Interaction,
+    description: str,
+    folder: str,
+    context: str = "",
+    max_tickets: app_commands.Range[int, 1, 12] = 8,
+    push_to_repo: bool = False,
+):
+    """Use AI to generate a concise development plan with MVP-scoped tickets and CTA."""
+    await safe_defer(interaction)
+    started_at = datetime.now(timezone.utc)
+    success = False
+    error_text: str | None = None
+
+    try:
+        if not await async_has_role(interaction.user.id, "pm"):
+            await interaction.followup.send(
+                "❌ Only Project Managers can use `/plan-project`. Use `/set-role pm` first.",
+                ephemeral=True,
+            )
+            return
+
+        if len(description.strip()) < 10:
+            await interaction.followup.send(
+                "❌ Description is too short. Provide at least 10 characters describing the project.",
+                ephemeral=True,
+            )
+            return
+
+        if len(description) > 4000:
+            await interaction.followup.send(
+                "❌ Description is too long. Keep it under 4000 characters.",
+                ephemeral=True,
+            )
+            return
+
+        if not ai_client.is_configured("answer"):
+            await interaction.followup.send(
+                "❌ AI is not configured. Set `NVIDIA_API_KEY` and `NVIDIA_MODEL` in environment variables.",
+                ephemeral=True,
+            )
+            return
+
+        # Sanitize folder name
+        clean_folder = re.sub(r"[^a-zA-Z0-9_-]", "-", folder).strip("-").lower()
+        if not clean_folder:
+            clean_folder = "plan"
+
+        await interaction.followup.send(
+            f"📋 Generating concise plan for **{clean_folder}**... "
+            f"(up to {max_tickets} MVP tickets with CTA)"
+        )
+
+        # Call AI to generate the plan
+        raw_response = await asyncio.to_thread(
+            generate_concise_plan,
+            ai_client,
+            description,
+            context=context,
+            max_tickets=max_tickets,
+            profile="answer",
+        )
+
+        # Parse the AI response
+        project_summary, tickets = parse_ai_plan_response(raw_response)
+
+        # Write ticket files
+        ticket_files = write_plan_tickets(tickets, clean_folder, TICKETS_DIR)
+
+        # Write PLAN.md summary
+        plan_file = build_plan_summary(
+            project_summary=project_summary,
+            tickets=tickets,
+            folder=clean_folder,
+            description=description,
+            tickets_dir=TICKETS_DIR,
+        )
+
+        all_files = [plan_file] + ticket_files
+
+        # Optional GitHub push
+        push_message = ""
+        if push_to_repo:
+            push_ok, push_msg = await _github_push_tickets(
+                all_files,
+                commit_message=f"plan-project: {clean_folder} ({len(tickets)} tickets)",
+            )
+            if push_ok:
+                push_message = f"\n☁️ {push_msg}"
+            else:
+                push_message = f"\n⚠️ Push: {push_msg}"
+
+        # Build response embed
+        priority_tickets = [t for t in tickets if t.priority]
+        normal_tickets = [t for t in tickets if not t.priority]
+
+        embed = discord.Embed(
+            title=f"📋 Plan Generated: {clean_folder}",
+            description=project_summary[:400],
+            color=discord.Color.from_rgb(46, 204, 113),
+        )
+        embed.add_field(
+            name="Tickets",
+            value=f"**{len(tickets)}** total ({len(priority_tickets)} priority)",
+            inline=True,
+        )
+        embed.add_field(
+            name="MVP Scope",
+            value="Focused" if len(tickets) <= 8 else "Broad",
+            inline=True,
+        )
+
+        # Show top priorities with CTAs
+        top_display = priority_tickets[:3] if priority_tickets else tickets[:3]
+        cta_lines = []
+        for t in top_display:
+            prefix = "🔴" if t.priority else "🎯"
+            cta_lines.append(f"{prefix} **{t.title}**\n   → {t.cta}")
+        if cta_lines:
+            embed.add_field(
+                name="Top Priorities & CTAs",
+                value="\n".join(cta_lines),
+                inline=False,
+            )
+
+        embed.add_field(
+            name="Files",
+            value=f"`tickets/{clean_folder}/PLAN.md` + {len(ticket_files)} ticket file(s)",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Next Step",
+            value=f"Review tickets, then run `/load-tickets {clean_folder} #channel`",
+            inline=False,
+        )
+
+        embed.set_footer(text=f"Model: {ai_client.model} • Concise Planning")
+
+        # Attach PLAN.md as a file
+        plan_path = Path(plan_file)
+        plan_attachment = None
+        if plan_path.exists():
+            plan_attachment = discord.File(str(plan_path), filename="PLAN.md")
+
+        if plan_attachment:
+            await interaction.followup.send(
+                content=push_message if push_message else None,
+                embed=embed,
+                file=plan_attachment,
+            )
+        else:
+            await interaction.followup.send(
+                content=push_message if push_message else None,
+                embed=embed,
+            )
+
+        success = True
+        logger.info(
+            "plan-project: generated %d tickets in %s by %s",
+            len(tickets),
+            clean_folder,
+            interaction.user,
+        )
+
+    except AIClientError as e:
+        error_text = str(e)
+        logger.warning("AI request failed during plan-project: %s", e)
+        await interaction.followup.send(f"❌ AI request failed: {e}")
+    except ValueError as e:
+        error_text = str(e)
+        logger.warning("Plan parsing failed: %s", e)
+        await interaction.followup.send(
+            f"❌ Failed to parse AI plan: {e}\n"
+            "Try rephrasing your description or reducing `max_tickets`."
+        )
+    except Exception as e:
+        error_text = str(e)
+        logger.error("Error running plan-project: %s", e, exc_info=True)
+        await interaction.followup.send(f"❌ Unexpected error: {e}")
+    finally:
+        await _record_command_metric(
+            "plan-project",
+            interaction.user.id if interaction.user else None,
+            started_at,
+            success,
+            error_text,
+        )
 
 
 @bot.tree.command(
