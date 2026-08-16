@@ -237,6 +237,39 @@ WORKFLOW_SPECS = {
             }
         ]
     },
+    "user-research-study": {
+        "title": "Conduct a User Research Study",
+        "category": "Research",
+        "duration": "4 Days / 32h",
+        "color": 0x059669,
+        "description": "User research framework: Screener Criteria -> Semi-Structured Scripts -> Affinity Map Synthesis.",
+        "steps": [
+            {
+                "id": "ur-part1",
+                "title": "Research: Study Plan & Screener",
+                "priority": "HIGH",
+                "problem": "Lack of clear research hypothesis and screening criteria leads to biased sampling.",
+                "what_to_fix": [
+                    "Formulate 3 primary research questions and hypotheses",
+                    "Draft participant screener questionnaire with inclusion/exclusion criteria"
+                ],
+                "acceptance_criteria": ["Research plan approved", "Screener questions finalized"],
+                "files": ["docs/research/study-plan.md"]
+            },
+            {
+                "id": "ur-part2",
+                "title": "Research: Interview Script & Execution",
+                "priority": "HIGH",
+                "problem": "Unstandardized interview questions risk leading participants.",
+                "what_to_fix": [
+                    "Draft 45-minute semi-structured interview guide",
+                    "Include laddering probing questions (JTBD style)"
+                ],
+                "acceptance_criteria": ["Interview guide approved with non-leading questions"],
+                "files": ["docs/research/interview-guide.md"]
+            }
+        ]
+    },
     "usability-testing": {
         "title": "Run Usability Tests & Heuristics",
         "category": "Research",
@@ -289,6 +322,39 @@ WORKFLOW_SPECS = {
                     "Critical usability friction points resolved and verified"
                 ],
                 "files": ["src/components/"]
+            }
+        ]
+    },
+    "roadmap-planning": {
+        "title": "Product Roadmap & RICE Prioritization",
+        "category": "Product",
+        "duration": "3 Days / 24h",
+        "color": 0x3b82f6,
+        "description": "Strategic roadmap planning: Strategic Pillars -> RICE Scoring -> Now/Next/Later Releases.",
+        "steps": [
+            {
+                "id": "rm-part1",
+                "title": "Roadmap: Strategic Pillars & Value Stream",
+                "priority": "HIGH",
+                "problem": "Feature requests arrive haphazardly without alignment to core thesis pillars.",
+                "what_to_fix": [
+                    "Define 3 strategic pillars for project lifecycle",
+                    "Map all backlogged features to the 3 pillars"
+                ],
+                "acceptance_criteria": ["Strategic pillars approved by stakeholders"],
+                "files": ["docs/roadmap/strategic-themes.md"]
+            },
+            {
+                "id": "rm-part2",
+                "title": "Roadmap: RICE Scoring Matrix",
+                "priority": "CRITICAL",
+                "problem": "Priorities are debated subjectively rather than with objective ROI.",
+                "what_to_fix": [
+                    "Score top 15 features on Reach, Impact, Confidence, Effort",
+                    "Compute RICE Score = (R x I x C) / E"
+                ],
+                "acceptance_criteria": ["RICE scorecard finalized with ranked priority list"],
+                "files": ["docs/roadmap/rice-prioritization.md"]
             }
         ]
     },
@@ -398,6 +464,40 @@ WORKFLOW_SPECS = {
                 "files": ["src/types/index.ts"]
             }
         ]
+    },
+    "product-launch": {
+        "title": "Product Launch Checklist",
+        "category": "Product",
+        "duration": "3 Days / 24h",
+        "color": 0xe11d48,
+        "description": "Pre-flight QA checklist -> Deployment Runbook -> Day-1 Triage.",
+        "steps": [
+            {
+                "id": "launch-part1",
+                "title": "Launch: Pre-Flight QA & Security Sign-Off",
+                "priority": "CRITICAL",
+                "problem": "Deploying without formal pre-flight audit risks production downtime.",
+                "what_to_fix": [
+                    "Run automated tests and verify 100% pass rate",
+                    "Verify secrets and database permissions are secured",
+                    "Check lighthouse performance (>90) and latency (<200ms)"
+                ],
+                "acceptance_criteria": ["Zero open P0 bugs", "Security checklist signed off"],
+                "files": ["docs/launch/preflight-checklist.md"]
+            },
+            {
+                "id": "launch-part2",
+                "title": "Launch: Deployment Runbook & Day-1 Triage",
+                "priority": "CRITICAL",
+                "problem": "Deployment day requires synchronized execution and rollback triggers.",
+                "what_to_fix": [
+                    "Draft hour-by-hour deployment runbook with named owners",
+                    "Set up error alert channels in Discord / Sentry"
+                ],
+                "acceptance_criteria": ["Runbook lists rollback command and fallback DNS plan"],
+                "files": ["docs/launch/deployment-runbook.md"]
+            }
+        ]
     }
 }
 
@@ -437,9 +537,12 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
         app_commands.Choice(name="5-Day Design Sprint (Design)", value="design-sprint"),
         app_commands.Choice(name="Write a PRD / Product Spec (Product)", value="write-prd"),
         app_commands.Choice(name="Build a Design System (Design)", value="design-system"),
+        app_commands.Choice(name="Conduct User Research Study (Research)", value="user-research-study"),
         app_commands.Choice(name="Run Usability Tests & Heuristics (Research)", value="usability-testing"),
+        app_commands.Choice(name="Product Roadmap & RICE (Product)", value="roadmap-planning"),
         app_commands.Choice(name="Run an Accessibility Audit (a11y)", value="accessibility-audit"),
         app_commands.Choice(name="Engineering Handoff & Edge Cases (Dev)", value="design-handoff"),
+        app_commands.Choice(name="Product Launch Checklist (Product)", value="product-launch"),
     ])
     async def run_workflow(self, interaction: discord.Interaction, workflow_type: str, project_name: str = "Capstone Project"):
         await safe_defer(interaction)
