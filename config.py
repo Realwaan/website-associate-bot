@@ -31,6 +31,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("VITE_GEMINI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
 
+# GitHub & Default Repository Configuration
+DEFAULT_REPO_URL = os.getenv("DEFAULT_REPO_URL") or os.getenv("VITE_GITHUB_DEFAULT_REPO") or "https://github.com/Realwaan/USCCE"
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") or os.getenv("VITE_GITHUB_TOKEN") or os.getenv("VITE_GITHUB_PAT")
+
 # Scanner configuration
 SCAN_IGNORE_DIRS = {
     "node_modules", ".git", ".next", "dist", "build", "out",

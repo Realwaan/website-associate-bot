@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from services.code_scanner import scanner_service
 from services.ai_service import ai_service
-from config import TICKETS_DIR
+from config import TICKETS_DIR, DEFAULT_REPO_URL, GITHUB_TOKEN
 
 logger = logging.getLogger(__name__)
 
@@ -67,16 +67,21 @@ class ScannerCog(commands.Cog, name="Scanner"):
             await interaction.followup.send(f"❌ Scan failed: {e}")
 
     # 2. /scan-repo
-    @app_commands.command(name="scan-repo", description="Clone and scan a remote GitHub repository")
-    @app_commands.describe(repo_url="GitHub Repository URL (e.g. https://github.com/owner/repo)", folder="Ticket output folder")
-    async def scan_repo(self, interaction: discord.Interaction, repo_url: str, folder: str = "repo-scan"):
+    @app_commands.command(name="scan-repo", description="Clone and scan the project GitHub repository")
+    @app_commands.describe(repo_url="GitHub Repository URL (defaults to USCCE)", folder="Ticket output folder")
+    async def scan_repo(self, interaction: discord.Interaction, repo_url: str = DEFAULT_REPO_URL, folder: str = "repo-scan"):
         await safe_defer(interaction)
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 await interaction.followup.send(f"⏳ Cloning `{repo_url}` and analyzing codebase...")
                 
+                clone_target = repo_url
+                if GITHUB_TOKEN and "github.com" in repo_url:
+                    clean_repo = repo_url.replace("https://github.com/", "").replace("http://github.com/", "").replace(".git", "")
+                    clone_target = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{clean_repo}.git"
+
                 # Clone shallow
-                res = subprocess.run(["git", "clone", "--depth", "1", repo_url, tmpdir], capture_output=True, text=True)
+                res = subprocess.run(["git", "clone", "--depth", "1", clone_target, tmpdir], capture_output=True, text=True)
                 if res.returncode != 0:
                     await interaction.channel.send(f"❌ Failed to clone repository: {res.stderr[:200]}")
                     return
