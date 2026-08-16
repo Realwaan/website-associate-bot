@@ -1,0 +1,64 @@
+"""Leaderboard Cog for tracking Developer and QA contributions."""
+import discord
+from discord.ext import commands
+from discord import app_commands
+import logging
+from database import get_leaderboard_dev, get_leaderboard_qa
+
+logger = logging.getLogger(__name__)
+
+async def safe_defer(interaction: discord.Interaction):
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+
+class LeaderboardCog(commands.Cog, name="Leaderboard"):
+    """Displays Developer and QA contribution scoreboards."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    @app_commands.command(name="leaderboard", description="View Developer and QA contribution leaderboards")
+    async def show_leaderboard(self, interaction: discord.Interaction):
+        await safe_defer(interaction)
+        try:
+            dev_leaders = get_leaderboard_dev(limit=10)
+            qa_leaders = get_leaderboard_qa(limit=10)
+
+            embed = discord.Embed(
+                title="🏆 CapStoneFlow Team Leaderboard",
+                description="Live sprint metrics for Developers (Resolved) and QAs (Reviewed)",
+                color=0x6366f1 # Indigo
+            )
+
+            # Developer section
+            if dev_leaders:
+                dev_text = ""
+                for idx, row in enumerate(dev_leaders, 1):
+                    medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"`#{idx}`"
+                    user_id = row['user_id']
+                    count = row['resolved_count']
+                    dev_text += f"{medal} <@{user_id}>: **{count}** resolved\n"
+                embed.add_field(name="💻 Top Developers", value=dev_text, inline=False)
+            else:
+                embed.add_field(name="💻 Top Developers", value="*No resolved tickets yet.*", inline=False)
+
+            # QA section
+            if qa_leaders:
+                qa_text = ""
+                for idx, row in enumerate(qa_leaders, 1):
+                    medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"`#{idx}`"
+                    user_id = row['user_id']
+                    count = row['reviewed_count']
+                    qa_text += f"{medal} <@{user_id}>: **{count}** reviewed\n"
+                embed.add_field(name="🛡️ Top QA Reviewers", value=qa_text, inline=False)
+            else:
+                embed.add_field(name="🛡️ Top QA Reviewers", value="*No reviewed tickets yet.*", inline=False)
+
+            embed.set_footer(text="CapStoneFlow • Agile Peer Collaboration System")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error in /leaderboard: {e}")
+            await interaction.followup.send(f"❌ Error fetching leaderboard: {e}")
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(LeaderboardCog(bot))

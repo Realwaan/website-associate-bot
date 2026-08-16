@@ -1,10 +1,14 @@
 """Configuration module for the Discord bot."""
 import os
 import warnings
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from local .env or fallback to Capstone .env
 load_dotenv()
+capstone_env = Path(__file__).resolve().parent.parent / "Capstone" / ".env"
+if capstone_env.exists():
+    load_dotenv(dotenv_path=capstone_env, override=False)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -21,6 +25,11 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     print("Warning: DATABASE_URL not found in environment variables. Database operations may fail.")
 TICKETS_DIR = "tickets"
+
+# AI Configuration (Gemini Free Tier & OpenAI/NVIDIA Fallback)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("VITE_GEMINI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
 
 # Scanner configuration
 SCAN_IGNORE_DIRS = {
