@@ -1,4 +1,4 @@
-"""Admin and Ticket Loader Cog."""
+"""Admin, Ticket Loader, and Ticketing System Maintenance Cog."""
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -10,9 +10,10 @@ from datetime import time, timezone
 from database import (
     add_thread, is_ticket_loaded, mark_ticket_loaded,
     set_setting, get_setting, get_threads_by_status,
-    set_user_role, get_user_roles
+    set_user_role, get_user_roles, remove_thread_record,
+    clear_loaded_tickets, update_thread_status, get_thread
 )
-from ticket_loader import parse_ticket_file
+from ticket_loader import parse_ticket_file, get_available_folders, load_tickets_from_folder
 from config import TICKETS_DIR
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ async def safe_defer(interaction: discord.Interaction):
         await interaction.response.defer()
 
 class AdminCog(commands.Cog, name="Admin"):
-    """Handles ticket loading, channel configuration, and user roles."""
+    """Handles ticket loading, maintenance, channel configuration, and user roles."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -32,8 +33,8 @@ class AdminCog(commands.Cog, name="Admin"):
         self.daily_summary_task.cancel()
 
     # 1. /load-tickets
-    @app_commands.command(name="load-tickets", description="Load .md ticket files from a folder and create Discord threads")
-    @app_commands.describe(folder="Folder inside tickets/ (e.g. sprint-1)")
+    @app_commands.command(name="load-tickets", description="Import markdown tickets from a folder and create Discord threads")
+    @app_commands.describe(folder="Folder inside tickets/ (e.g. borneo, intramurals2026)")
     async def load_tickets(self, interaction: discord.Interaction, folder: str):
         await safe_defer(interaction)
         try:
@@ -51,14 +52,16 @@ class AdminCog(commands.Cog, name="Admin"):
             skipped_count = 0
 
             for filepath in md_files:
-                rel_path = str(filepath.relative_to(Path(TICKETS_DIR)))
-                if is_ticket_loaded(rel_path):
+                filename = filepath.name
+                if is_ticket_loaded(filename, folder):
                     skipped_count += 1
                     continue
 
                 ticket_data = parse_ticket_file(str(filepath))
-                title = ticket_data.get("title", filepath.stem)
-                thread_name = f"[OPEN]{title}"[:100]
+                title = ticket_data.get("title") or filepath.stem
+                priority = ticket_data.get("priority")
+                prefix = f"[{priority}]" if priority else "[OPEN]"
+                thread_name = f"{prefix} {title}"[:100]
 
                 # Create thread in the current channel
                 thread = await interaction.channel.create_thread(
@@ -67,29 +70,44 @@ class AdminCog(commands.Cog, name="Admin"):
                     type=discord.ChannelType.public_thread
                 )
 
-                # Post initial ticket embed
+                # Format description & lists
+                problem = ticket_data.get("problem") or "No problem description provided."
+                
                 embed = discord.Embed(
                     title=f"📋 Ticket: {title}",
-                    description=ticket_data.get("problem", "No problem statement provided."),
-                    color=0x38bdf8
+                    description=problem[:2000],
+                    color=0xef4444 if priority == "CRITICAL" else (0xf59e0b if priority == "PRIORITY" else 0x38bdf8)
                 )
-                if ticket_data.get("what_to_fix"):
-                    embed.add_field(name="🛠️ What to Fix", value=ticket_data["what_to_fix"][:1024], inline=False)
-                if ticket_data.get("acceptance_criteria"):
-                    embed.add_field(name="✅ Acceptance Criteria", value=ticket_data["acceptance_criteria"][:1024], inline=False)
-                if ticket_data.get("related_files"):
-                    embed.add_field(name="📁 Related Files", value=ticket_data["related_files"][:1024], inline=False)
 
-                embed.set_footer(text="Type /claim to take ownership of this ticket.")
+                if priority:
+                    embed.add_field(name="🚨 Priority", value=f"`{priority}`", inline=True)
+                embed.add_field(name="📂 Folder", value=f"`{folder}`", inline=True)
+
+                if ticket_data.get("what_to_fix"):
+                    items = ticket_data["what_to_fix"]
+                    fix_text = "\n".join(f"**{i+1}.** {item}" for i, item in enumerate(items)) if isinstance(items, list) else str(items)
+                    embed.add_field(name="🛠️ What to Fix", value=fix_text[:1024], inline=False)
+
+                if ticket_data.get("acceptance_criteria"):
+                    items = ticket_data["acceptance_criteria"]
+                    criteria_text = "\n".join(f"▫️ {item}" for i, item in enumerate(items)) if isinstance(items, list) else str(items)
+                    embed.add_field(name="✅ Acceptance Criteria", value=criteria_text[:1024], inline=False)
+
+                if ticket_data.get("related_files"):
+                    items = ticket_data["related_files"]
+                    files_text = "\n".join(f"📄 `{item}`" for item in items) if isinstance(items, list) else str(items)
+                    embed.add_field(name="📁 Related Files", value=files_text[:1024], inline=False)
+
+                embed.set_footer(text="Type /claim in this thread to take ownership.")
                 await thread.send(embed=embed)
 
-                add_thread(thread.id, title, "OPEN")
-                mark_ticket_loaded(rel_path)
+                add_thread(thread.id, title, folder, interaction.channel_id, interaction.user.name)
+                mark_ticket_loaded(filename, folder, thread.id, interaction.channel_id)
                 loaded_count += 1
 
             embed = discord.Embed(
-                title="📦 Ticket Batch Import",
-                description=f"Loaded **{loaded_count}** new tickets into threads.\nSkipped **{skipped_count}** already-loaded tickets.",
+                title="📦 Ticket Batch Import Complete",
+                description=f"✅ Created **{loaded_count}** new ticket threads.\n⏩ Skipped **{skipped_count}** previously loaded tickets.",
                 color=0x10b981
             )
             await interaction.followup.send(embed=embed)
@@ -97,26 +115,153 @@ class AdminCog(commands.Cog, name="Admin"):
             logger.error(f"Error in /load-tickets: {e}")
             await interaction.followup.send(f"❌ Error loading tickets: {e}")
 
-    # 2. /setreminderschannel
+    # 2. /cleanup-tickets
+    @app_commands.command(name="cleanup-tickets", description="Archive and clean up completed CLOSED tickets in this channel")
+    @app_commands.describe(action="Cleanup mode")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Archive Closed Threads (Clean Discord channel)", value="archive_closed"),
+        app_commands.Choice(name="Purge Closed Records from Database", value="purge_closed_db"),
+    ])
+    async def cleanup_tickets(self, interaction: discord.Interaction, action: str):
+        await safe_defer(interaction)
+        try:
+            user_roles = get_user_roles(interaction.user.id)
+            if not user_roles['is_pm']:
+                await interaction.followup.send("❌ Only Project Managers can run ticket cleanup.")
+                return
+
+            closed_tickets = get_threads_by_status("CLOSED")
+            if not closed_tickets:
+                await interaction.followup.send("ℹ️ No CLOSED tickets found to clean up.")
+                return
+
+            archived_count = 0
+            for t in closed_tickets:
+                thread_id = t['thread_id']
+                try:
+                    thread = interaction.guild.get_thread(thread_id)
+                    if thread:
+                        if action == "archive_closed":
+                            await thread.edit(archived=True, locked=True)
+                            archived_count += 1
+                    if action == "purge_closed_db":
+                        remove_thread_record(thread_id)
+                        archived_count += 1
+                except Exception as ex:
+                    logger.warning(f"Failed to process thread {thread_id}: {ex}")
+
+            embed = discord.Embed(
+                title="🧹 Ticket Cleanup Completed",
+                description=f"Successfully processed **{archived_count}** closed tickets.",
+                color=0x10b981
+            )
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error in /cleanup-tickets: {e}")
+            await interaction.followup.send(f"❌ Error during cleanup: {e}")
+
+    # 3. /reset-ticket
+    @app_commands.command(name="reset-ticket", description="Reset current ticket thread back to OPEN state (PM only)")
+    async def reset_ticket(self, interaction: discord.Interaction):
+        await safe_defer(interaction)
+        try:
+            if not isinstance(interaction.channel, discord.Thread):
+                await interaction.followup.send("❌ This command must be run inside a ticket thread.")
+                return
+
+            user_roles = get_user_roles(interaction.user.id)
+            if not user_roles['is_pm']:
+                await interaction.followup.send("❌ Only Project Managers can reset ticket states.")
+                return
+
+            thread = interaction.channel
+            thread_info = get_thread(thread.id)
+            if not thread_info:
+                await interaction.followup.send("❌ Thread is not tracked in the database.")
+                return
+
+            ticket_name = thread_info['ticket_name']
+            new_name = f"[OPEN] {ticket_name}"[:100]
+            await thread.edit(name=new_name)
+            update_thread_status(thread.id, "OPEN")
+
+            embed = discord.Embed(
+                title="🔄 Ticket Reset to OPEN",
+                description=f"Ticket state has been cleared and reset to `[OPEN]` by {interaction.user.mention}.",
+                color=0x38bdf8
+            )
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error in /reset-ticket: {e}")
+            await interaction.followup.send(f"❌ Error resetting ticket: {e}")
+
+    # 4. /clear-folder-tickets
+    @app_commands.command(name="clear-folder-tickets", description="Reset import cache for a folder so tickets can be reloaded")
+    @app_commands.describe(folder="Folder inside tickets/ to clear")
+    async def clear_folder(self, interaction: discord.Interaction, folder: str):
+        await safe_defer(interaction)
+        try:
+            user_roles = get_user_roles(interaction.user.id)
+            if not user_roles['is_pm']:
+                await interaction.followup.send("❌ Only Project Managers can clear folder import caches.")
+                return
+
+            count = clear_loaded_tickets(folder)
+            embed = discord.Embed(
+                title="🗑️ Folder Import Cache Cleared",
+                description=f"Cleared **{count}** ticket import markers for folder `{folder}`.\nYou can now run `/load-tickets {folder}` to re-import.",
+                color=0x10b981
+            )
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error in /clear-folder-tickets: {e}")
+            await interaction.followup.send(f"❌ Error clearing folder: {e}")
+
+    # 5. /ticket-folders
+    @app_commands.command(name="ticket-folders", description="List all available ticket folders in the repository")
+    async def list_folders(self, interaction: discord.Interaction):
+        await safe_defer(interaction)
+        folders = get_available_folders()
+        if not folders:
+            await interaction.followup.send("📂 No ticket folders found in `tickets/`.")
+            return
+
+        lines = []
+        for folder in folders:
+            folder_path = Path(TICKETS_DIR) / folder
+            count = len(list(folder_path.glob("*.md")))
+            lines.append(f"📁 **`{folder}`** — `{count}` ticket(s)")
+
+        embed = discord.Embed(
+            title="📂 Available Ticket Folders",
+            description="\n".join(lines),
+            color=0x6366f1
+        )
+        embed.set_footer(text="Use /load-tickets <folder> to create threads.")
+        await interaction.followup.send(embed=embed)
+
+    # 6. /setreminderschannel
     @app_commands.command(name="setreminderschannel", description="Set channel for daily 8:00 AM PHT ticket summaries")
     async def set_reminders_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await safe_defer(interaction)
         set_setting("reminders_channel_id", str(channel.id))
         await interaction.followup.send(f"✅ Daily sprint reminders channel set to {channel.mention}.")
 
-    # 3. /assign-role
-    @app_commands.command(name="assign-role", description="Set your active workspace role (Developer or QA)")
+    # 7. /assign-role
+    @app_commands.command(name="assign-role", description="Set your active workspace role (Developer, QA, or PM)")
     @app_commands.choices(role=[
         app_commands.Choice(name="Developer (Claim & Resolve)", value="dev"),
-        app_commands.Choice(name="QA (Verify & Review)", value="qa"),
+        app_commands.Choice(name="QA Reviewer (Verify & Review)", value="qa"),
+        app_commands.Choice(name="Project Manager (Lead & Manage)", value="pm"),
     ])
     async def assign_role(self, interaction: discord.Interaction, role: str):
         await safe_defer(interaction)
         is_dev = role == "dev"
         is_qa = role == "qa"
-        set_user_role(interaction.user.id, is_dev=is_dev, is_qa=is_qa, is_pm=False)
+        is_pm = role == "pm"
+        set_user_role(interaction.user.id, is_dev=is_dev, is_qa=is_qa, is_pm=is_pm)
         
-        role_label = "Developer" if is_dev else "QA Reviewer"
+        role_label = "Developer" if is_dev else ("QA Reviewer" if is_qa else "Project Manager")
         await interaction.followup.send(f"🎉 Your role has been set to **{role_label}**.")
 
     # Daily Summary Task at 8:00 AM PHT (00:00 UTC)
