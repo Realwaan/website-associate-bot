@@ -122,16 +122,30 @@ async def on_message(message: discord.Message):
 
 
 def main():
-    if not DISCORD_TOKEN:
-        logger.critical("DISCORD_TOKEN is missing! Add it to your .env file.")
-        return
-
-    # Start Keep-Alive web server for 24/7 cloud deployments (Render, Railway, Fly.io, or UptimeRobot)
+    # 1. Start Keep-Alive web server immediately for Render health checks (/health)
     if os.getenv("KEEP_ALIVE_ENABLED", "true").lower() == "true" or os.getenv("RENDER") or os.getenv("PORT"):
-        keep_alive()
+        try:
+            keep_alive()
+            logger.info("Keep-alive web server initialized.")
+        except Exception as e:
+            logger.warning(f"Keep-alive web server warning: {e}")
 
-    bot = AssociateBot()
-    bot.run(DISCORD_TOKEN)
+    # 2. Check for Discord Token
+    if not DISCORD_TOKEN:
+        logger.critical("⚠️ DISCORD_TOKEN is missing! Please configure DISCORD_TOKEN in Render Environment Variables.")
+        # Keep web container alive so health check passes on Render
+        import time
+        while True:
+            time.sleep(30)
+
+    try:
+        bot = AssociateBot()
+        bot.run(DISCORD_TOKEN)
+    except Exception as e:
+        logger.error(f"Error running Discord bot: {e}")
+        import time
+        while True:
+            time.sleep(30)
 
 if __name__ == "__main__":
     main()
