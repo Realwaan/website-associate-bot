@@ -45,7 +45,8 @@ class AssociateBot(commands.Bot):
             "cogs.tickets",
             "cogs.scanner",
             "cogs.leaderboard",
-            "cogs.admin"
+            "cogs.admin",
+            "cogs.workflows"
         ]
 
         for cog in cogs:
