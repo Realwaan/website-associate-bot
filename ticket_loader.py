@@ -79,6 +79,10 @@ def parse_ticket_markdown(file_path: str) -> dict:
     return ticket
 
 
+# Backward-compatible alias
+parse_ticket_file = parse_ticket_markdown
+
+
 def load_tickets_from_folder(folder_name: str) -> list:
     """
     Load all markdown ticket files from a specific folder with full parsing.

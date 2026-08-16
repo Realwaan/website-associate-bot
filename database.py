@@ -48,8 +48,8 @@ def _get_pool() -> psycopg2_pool.ThreadedConnectionPool | None:
     with _pool_lock:
         if _pool is not None:        # double-check after acquiring lock
             return _pool
-        if not DATABASE_URL:
-            logger.error("DATABASE_URL is not set. Database operations will fail.")
+        if not DATABASE_URL or not DATABASE_URL.startswith(("postgres://", "postgresql://")):
+            logger.info("DATABASE_URL is not set or not a postgresql:// connection string. Running in standalone mode.")
             return None
         try:
             _pool = psycopg2_pool.ThreadedConnectionPool(

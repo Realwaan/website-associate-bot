@@ -18,8 +18,8 @@ logger = logging.getLogger("CapStoneFlowBot")
 
 # Intents configuration
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+intents.message_content = os.getenv("INTENTS_MESSAGE_CONTENT", "false").lower() == "true"
+intents.members = os.getenv("INTENTS_MEMBERS", "false").lower() == "true"
 
 class AssociateBot(commands.Bot):
     """Modular Discord bot for CapStoneFlow support tickets and codebase scanning."""
