@@ -209,8 +209,11 @@ def main():
             logger.warning("Discord bot stopped; retrying in %s seconds.", retry_delay)
         except Exception as e:
             logger.error("Error running Discord bot: %s", e)
+            discord_status = getattr(e, "status", None)
+            if discord_status == 429 or "1015" in str(e) or "429" in str(e):
+                retry_delay = max(retry_delay, 900)
         time.sleep(retry_delay)
-        retry_delay = min(retry_delay * 2, 300)
+        retry_delay = min(retry_delay * 2, 900)
 
 if __name__ == "__main__":
     main()
