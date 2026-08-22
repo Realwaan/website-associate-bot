@@ -3,6 +3,8 @@ from threading import Thread
 import logging
 import os
 import hmac
+import time
+from collections import defaultdict, deque
 from wsgiref.simple_server import make_server
 from typing import Callable
 
@@ -33,6 +35,10 @@ def internal_server_error(error):
 
 _github_webhook_handler: Callable[[bytes, dict], tuple[int, str]] | None = None
 _capstone_ticket_handler: Callable[[dict], tuple[int, dict]] | None = None
+_capstone_ready_checker: Callable[[], bool] | None = None
+_capstone_request_times: dict[str, deque[float]] = defaultdict(deque)
+CAPSTONE_RATE_LIMIT = int(os.getenv('CAPSTONE_API_RATE_LIMIT', '30'))
+CAPSTONE_RATE_WINDOW_SECONDS = 60
 
 @app.route('/', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
 def home():
@@ -64,6 +70,15 @@ def health():
     return "ok", 200
 
 
+@app.route('/ready', methods=['GET', 'HEAD'], strict_slashes=False)
+def ready():
+    """Report whether the Discord client is connected and ready."""
+    is_ready = _capstone_ready_checker() if _capstone_ready_checker else False
+    if not is_ready:
+        return jsonify({"ok": False, "ready": False, "message": "Discord bot is not ready"}), 503
+    return jsonify({"ok": True, "ready": True}), 200
+
+
 @app.route('/webhook/github', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
 @app.route('/webhook/github/', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
 def github_webhook():
@@ -90,6 +105,16 @@ def capstone_ticket():
     if not configured_secret or not hmac.compare_digest(supplied_secret, configured_secret):
         return jsonify({"ok": False, "message": "Unauthorized"}), 401
 
+    now = time.monotonic()
+    request_times = _capstone_request_times[request.remote_addr or 'unknown']
+    while request_times and now - request_times[0] >= CAPSTONE_RATE_WINDOW_SECONDS:
+        request_times.popleft()
+    if len(request_times) >= CAPSTONE_RATE_LIMIT:
+        return jsonify({"ok": False, "message": "Too many requests"}), 429, {
+            'Retry-After': str(CAPSTONE_RATE_WINDOW_SECONDS)
+        }
+    request_times.append(now)
+
     if _capstone_ticket_handler is None:
         return jsonify({"ok": False, "message": "Ticket handler is not configured"}), 503
 
@@ -115,6 +140,12 @@ def set_capstone_ticket_handler(handler: Callable[[dict], tuple[int, dict]]) -> 
     """Set the callback used by the CapStoneFlow ticket API."""
     global _capstone_ticket_handler
     _capstone_ticket_handler = handler
+
+
+def set_capstone_ready_checker(checker: Callable[[], bool]) -> None:
+    """Set the readiness callback used by /ready."""
+    global _capstone_ready_checker
+    _capstone_ready_checker = checker
 
 def run(host: str = "0.0.0.0", port: int = 8080):
     """Run a tiny WSGI server for health checks without Flask dev-server noise."""
