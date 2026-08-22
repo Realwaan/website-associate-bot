@@ -61,8 +61,25 @@ class AssociateBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to load Cog {cog}: {e}")
 
-        # 3. Sync Slash Application Commands
+        # 3. Remove stale guild-scoped registrations, then sync the one
+        # canonical global command set.  Older deployments could leave a
+        # guild copy behind, which Discord displays beside the global copy.
         try:
+            guild_id_raw = os.getenv("CAPSTONE_GUILD_ID", "").strip()
+            if guild_id_raw:
+                try:
+                    guild = discord.Object(id=int(guild_id_raw))
+                    stale_commands = self.tree.get_commands(guild=guild)
+                    self.tree.clear_commands(guild=guild)
+                    await self.tree.sync(guild=guild)
+                    logger.info(
+                        "Removed %s stale guild-scoped application commands from %s.",
+                        len(stale_commands),
+                        guild_id_raw,
+                    )
+                except ValueError:
+                    logger.warning("Ignoring invalid CAPSTONE_GUILD_ID=%r", guild_id_raw)
+
             synced = await self.tree.sync()
             logger.info(f"Synced {len(synced)} application slash commands.")
         except Exception as e:
@@ -114,9 +131,9 @@ class AssociateBot(commands.Bot):
                     history.insert(0, {"role": role, "content": item.content})
 
                 if ai_client:
-                    reply = ai_client.chat(history)
+                    reply = await asyncio.to_thread(ai_client.chat, history)
                     if has_latex() and "$$" in reply:
-                        png_bytes = render_equations_to_single_png(reply)
+                        png_bytes = await asyncio.to_thread(render_equations_to_single_png, reply)
                         if png_bytes:
                             file = discord.File(io.BytesIO(png_bytes), filename="equation.png")
                             embed = discord.Embed(description=_strip_latex_equations(reply), color=0x38bdf8)
