@@ -61,38 +61,28 @@ class AssociateBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to load Cog {cog}: {e}")
 
-        # 3. Prefer a guild-scoped sync when CAPSTONE_GUILD_ID is configured.
-        # Guild commands become available immediately; global commands can take
-        # up to an hour to propagate.  Keep the local global command objects so
-        # the bot can still dispatch interactions after clearing old globals.
+        # 3. Keep one canonical global command set.  A previous deployment
+        # registered both guild and global copies, which Discord displays as
+        # duplicate autocomplete entries.  Remove the guild copy first, then
+        # sync the global set once.
         try:
             guild_id_raw = os.getenv("CAPSTONE_GUILD_ID", "").strip()
             if guild_id_raw:
                 try:
                     guild = discord.Object(id=int(guild_id_raw))
-                    global_commands = self.tree.get_commands()
-                    self.tree.copy_global_to(guild=guild)
-                    guild_synced = await self.tree.sync(guild=guild)
+                    stale_commands = self.tree.get_commands(guild=guild)
+                    self.tree.clear_commands(guild=guild)
+                    await self.tree.sync(guild=guild)
                     logger.info(
-                        "Synced %s guild-scoped application commands to %s.",
-                        len(guild_synced),
+                        "Removed %s guild-scoped command registrations from %s.",
+                        len(stale_commands),
                         guild_id_raw,
                     )
-
-                    # Remove global registrations from older deployments so
-                    # the server has one canonical command set.  Discord may
-                    # take time to remove an already-cached global copy, but
-                    # the guild copy above is available immediately.
-                    self.tree.clear_commands()
-                    await self.tree.sync()
-                    for command in global_commands:
-                        self.tree.add_command(command)
-                    logger.info("Cleared legacy global application commands.")
                 except ValueError:
                     logger.warning("Ignoring invalid CAPSTONE_GUILD_ID=%r", guild_id_raw)
-            else:
-                synced = await self.tree.sync()
-                logger.info("Synced %s global application slash commands.", len(synced))
+
+            synced = await self.tree.sync()
+            logger.info("Synced %s global application slash commands.", len(synced))
         except Exception as e:
             logger.error(f"Failed to sync slash commands: {e}")
 
