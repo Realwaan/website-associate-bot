@@ -1,4 +1,5 @@
 """Admin, Ticket Loader, and Ticketing System Maintenance Cog."""
+import asyncio
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
 
 class AdminCog(commands.Cog, name="Admin"):
     """Handles ticket loading, maintenance, channel configuration, and user roles."""
@@ -53,7 +54,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
             for filepath in md_files:
                 filename = filepath.name
-                if is_ticket_loaded(filename, folder):
+                if await asyncio.to_thread(is_ticket_loaded, filename, folder):
                     skipped_count += 1
                     continue
 
@@ -101,8 +102,21 @@ class AdminCog(commands.Cog, name="Admin"):
                 embed.set_footer(text="Type /claim in this thread to take ownership.")
                 await thread.send(embed=embed)
 
-                add_thread(thread.id, title, folder, interaction.channel_id, interaction.user.name)
-                mark_ticket_loaded(filename, folder, thread.id, interaction.channel_id)
+                await asyncio.to_thread(
+                    add_thread,
+                    thread.id,
+                    title,
+                    folder,
+                    interaction.channel_id,
+                    interaction.user.name,
+                )
+                await asyncio.to_thread(
+                    mark_ticket_loaded,
+                    filename,
+                    folder,
+                    thread.id,
+                    interaction.channel_id,
+                )
                 loaded_count += 1
 
             embed = discord.Embed(
@@ -125,12 +139,13 @@ class AdminCog(commands.Cog, name="Admin"):
     async def cleanup_tickets(self, interaction: discord.Interaction, action: str):
         await safe_defer(interaction)
         try:
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             if not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only Project Managers can run ticket cleanup.")
                 return
 
-            closed_tickets = get_threads_by_status("CLOSED")
+            grouped_tickets = await asyncio.to_thread(get_threads_by_status)
+            closed_tickets = grouped_tickets.get("CLOSED", [])
             if not closed_tickets:
                 await interaction.followup.send("ℹ️ No CLOSED tickets found to clean up.")
                 return
@@ -145,7 +160,7 @@ class AdminCog(commands.Cog, name="Admin"):
                             await thread.edit(archived=True, locked=True)
                             archived_count += 1
                     if action == "purge_closed_db":
-                        remove_thread_record(thread_id)
+                        await asyncio.to_thread(remove_thread_record, thread_id)
                         archived_count += 1
                 except Exception as ex:
                     logger.warning(f"Failed to process thread {thread_id}: {ex}")
@@ -169,13 +184,13 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.followup.send("❌ This command must be run inside a ticket thread.")
                 return
 
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             if not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only Project Managers can reset ticket states.")
                 return
 
             thread = interaction.channel
-            thread_info = get_thread(thread.id)
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
             if not thread_info:
                 await interaction.followup.send("❌ Thread is not tracked in the database.")
                 return
@@ -183,7 +198,7 @@ class AdminCog(commands.Cog, name="Admin"):
             ticket_name = thread_info['ticket_name']
             new_name = f"[OPEN] {ticket_name}"[:100]
             await thread.edit(name=new_name)
-            update_thread_status(thread.id, "OPEN")
+            await asyncio.to_thread(update_thread_status, thread.id, "OPEN")
 
             embed = discord.Embed(
                 title="🔄 Ticket Reset to OPEN",
@@ -201,12 +216,12 @@ class AdminCog(commands.Cog, name="Admin"):
     async def clear_folder(self, interaction: discord.Interaction, folder: str):
         await safe_defer(interaction)
         try:
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             if not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only Project Managers can clear folder import caches.")
                 return
 
-            count = clear_loaded_tickets(folder)
+            count = await asyncio.to_thread(clear_loaded_tickets, folder)
             embed = discord.Embed(
                 title="🗑️ Folder Import Cache Cleared",
                 description=f"Cleared **{count}** ticket import markers for folder `{folder}`.\nYou can now run `/load-tickets {folder}` to re-import.",
@@ -244,7 +259,7 @@ class AdminCog(commands.Cog, name="Admin"):
     @app_commands.command(name="setreminderschannel", description="Set channel for daily 8:00 AM PHT ticket summaries")
     async def set_reminders_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await safe_defer(interaction)
-        set_setting("reminders_channel_id", str(channel.id))
+        await asyncio.to_thread(set_setting, "reminders_channel_id", str(channel.id))
         await interaction.followup.send(f"✅ Daily sprint reminders channel set to {channel.mention}.")
 
     # 7. /assign-role
@@ -259,7 +274,14 @@ class AdminCog(commands.Cog, name="Admin"):
         is_dev = role == "dev"
         is_qa = role == "qa"
         is_pm = role == "pm"
-        set_user_role(interaction.user.id, is_dev=is_dev, is_qa=is_qa, is_pm=is_pm)
+        await asyncio.to_thread(
+            set_user_role,
+            interaction.user.id,
+            interaction.user.name,
+            is_developer=is_dev,
+            is_qa=is_qa,
+            is_pm=is_pm,
+        )
         
         role_label = "Developer" if is_dev else ("QA Reviewer" if is_qa else "Project Manager")
         await interaction.followup.send(f"🎉 Your role has been set to **{role_label}**.")
@@ -267,16 +289,17 @@ class AdminCog(commands.Cog, name="Admin"):
     # Daily Summary Task at 8:00 AM PHT (00:00 UTC)
     @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
     async def daily_summary_task(self):
-        channel_id = get_setting("reminders_channel_id")
+        channel_id = await asyncio.to_thread(get_setting, "reminders_channel_id")
         if not channel_id:
             return
         channel = self.bot.get_channel(int(channel_id))
         if not channel:
             return
 
-        open_tickets = get_threads_by_status("OPEN")
-        claimed_tickets = get_threads_by_status("CLAIMED")
-        review_tickets = get_threads_by_status("PENDING-REVIEW")
+        grouped_tickets = await asyncio.to_thread(get_threads_by_status)
+        open_tickets = grouped_tickets.get("OPEN", [])
+        claimed_tickets = grouped_tickets.get("CLAIMED", [])
+        review_tickets = grouped_tickets.get("PENDING-REVIEW", [])
 
         embed = discord.Embed(
             title="🌅 Daily Sprint Ticket Briefing",

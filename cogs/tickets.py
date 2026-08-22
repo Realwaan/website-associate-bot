@@ -1,4 +1,5 @@
 """Tickets Cog for managing ticket lifecycle (/claim, /unclaim, /resolved, /unresolve, /reviewed, /unreview, /closed)."""
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
 
 class TicketsCog(commands.Cog, name="Tickets"):
     """Handles ticket status workflow and assignment commands."""
@@ -33,7 +34,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             thread = interaction.channel
-            thread_info = get_thread(thread.id)
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
             if not thread_info:
                 await interaction.followup.send("❌ This thread is not tracked in the database.")
                 return
@@ -42,8 +43,8 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 await interaction.followup.send(f"⚠️ Ticket cannot be claimed. Current status is **{thread_info['status']}**.")
                 return
 
-            user_roles = get_user_roles(interaction.user.id)
-            if not (user_roles['is_dev'] or user_roles['is_pm']):
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            if not (user_roles['is_developer'] or user_roles['is_pm']):
                 await interaction.followup.send("❌ Only Developers or PMs can claim tickets.")
                 return
 
@@ -53,7 +54,13 @@ class TicketsCog(commands.Cog, name="Tickets"):
             new_name = f"[CLAIMED][{username}]{ticket_name}"
 
             await thread.edit(name=new_name)
-            update_thread_status(thread.id, "CLAIMED", claimed_by_id=interaction.user.id, claimed_by_username=username)
+            await asyncio.to_thread(
+                update_thread_status,
+                thread.id,
+                "CLAIMED",
+                claimed_by_id=interaction.user.id,
+                claimed_by_username=username,
+            )
 
             embed = discord.Embed(
                 title="🎯 Ticket Claimed",
@@ -78,7 +85,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             thread = interaction.channel
-            thread_info = get_thread(thread.id)
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
             if not thread_info:
                 await interaction.followup.send("❌ This thread is not tracked in the database.")
                 return
@@ -87,7 +94,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 await interaction.followup.send(f"⚠️ Ticket is not in CLAIMED status (Current: **{thread_info['status']}**).")
                 return
 
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             if interaction.user.id != thread_info['claimed_by_id'] and not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only the developer who claimed this ticket or a PM can unclaim it.")
                 return
@@ -96,7 +103,13 @@ class TicketsCog(commands.Cog, name="Tickets"):
             new_name = f"[OPEN]{ticket_name}"
 
             await thread.edit(name=new_name)
-            update_thread_status(thread.id, "OPEN", claimed_by_id=None, claimed_by_username=None)
+            await asyncio.to_thread(
+                update_thread_status,
+                thread.id,
+                "OPEN",
+                claimed_by_id=None,
+                claimed_by_username=None,
+            )
 
             embed = discord.Embed(
                 title="Ticket Unclaimed",
@@ -120,7 +133,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             thread = interaction.channel
-            thread_info = get_thread(thread.id)
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
             if not thread_info:
                 await interaction.followup.send("❌ This thread is not tracked in the database.")
                 return
@@ -129,7 +142,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 await interaction.followup.send(f"⚠️ Ticket must be CLAIMED before it can be resolved (Current: **{thread_info['status']}**).")
                 return
 
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             if interaction.user.id != thread_info['claimed_by_id'] and not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only the assigned developer or a PM can submit this ticket for review.")
                 return
@@ -140,8 +153,15 @@ class TicketsCog(commands.Cog, name="Tickets"):
             new_name = f"[Pending-Review][{username}]{ticket_name}"
 
             await thread.edit(name=new_name)
-            update_thread_status(thread.id, "PENDING-REVIEW", resolved_by_id=interaction.user.id, resolved_by_username=username, pr_url=pr_url)
-            increment_developer_resolved(interaction.user.id)
+            await asyncio.to_thread(
+                update_thread_status,
+                thread.id,
+                "PENDING-REVIEW",
+                resolved_by_id=interaction.user.id,
+                resolved_by_username=username,
+                pr_url=pr_url,
+            )
+            await asyncio.to_thread(increment_developer_resolved, interaction.user.id, username)
 
             embed = discord.Embed(
                 title="🚀 Ticket Ready for Review",
@@ -167,12 +187,12 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             thread = interaction.channel
-            thread_info = get_thread(thread.id)
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
             if not thread_info or thread_info['status'] != 'PENDING-REVIEW':
                 await interaction.followup.send("⚠️ Ticket is not currently in PENDING-REVIEW status.")
                 return
 
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             if interaction.user.id != thread_info['resolved_by_id'] and not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only the developer who resolved this ticket or a PM can unresolve it.")
                 return
@@ -183,9 +203,16 @@ class TicketsCog(commands.Cog, name="Tickets"):
             new_name = f"[CLAIMED][{dev_username}]{ticket_name}"
 
             await thread.edit(name=new_name)
-            update_thread_status(thread.id, "CLAIMED", resolved_by_id=None, resolved_by_username=None, pr_url=None)
+            await asyncio.to_thread(
+                update_thread_status,
+                thread.id,
+                "CLAIMED",
+                resolved_by_id=None,
+                resolved_by_username=None,
+                pr_url=None,
+            )
             if dev_id:
-                decrement_developer_resolved(dev_id)
+                await asyncio.to_thread(decrement_developer_resolved, dev_id)
 
             embed = discord.Embed(
                 title="Ticket Unresolved",
@@ -208,12 +235,12 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             thread = interaction.channel
-            thread_info = get_thread(thread.id)
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
             if not thread_info or thread_info['status'] != 'PENDING-REVIEW':
                 await interaction.followup.send("⚠️ Ticket must be in PENDING-REVIEW before it can be reviewed.")
                 return
 
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             if not (user_roles['is_qa'] or user_roles['is_pm']):
                 await interaction.followup.send("❌ Only QA or Project Managers can review tickets.")
                 return
@@ -229,8 +256,14 @@ class TicketsCog(commands.Cog, name="Tickets"):
             new_name = f"[Reviewed][{qa_username}]{ticket_name}"
 
             await thread.edit(name=new_name)
-            update_thread_status(thread.id, "REVIEWED", reviewed_by_id=interaction.user.id, reviewed_by_username=qa_username)
-            increment_qa_reviewed(interaction.user.id)
+            await asyncio.to_thread(
+                update_thread_status,
+                thread.id,
+                "REVIEWED",
+                reviewed_by_id=interaction.user.id,
+                reviewed_by_username=qa_username,
+            )
+            await asyncio.to_thread(increment_qa_reviewed, interaction.user.id, qa_username)
 
             embed = discord.Embed(
                 title="✅ Ticket Verified & Reviewed",
@@ -254,12 +287,12 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             thread = interaction.channel
-            thread_info = get_thread(thread.id)
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
             if not thread_info or thread_info['status'] != 'REVIEWED':
                 await interaction.followup.send("⚠️ Ticket is not currently in REVIEWED status.")
                 return
 
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             if interaction.user.id != thread_info['reviewed_by_id'] and not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only the QA who reviewed this ticket or a PM can unreview it.")
                 return
@@ -270,9 +303,15 @@ class TicketsCog(commands.Cog, name="Tickets"):
             new_name = f"[Pending-Review][{dev_username}]{ticket_name}"
 
             await thread.edit(name=new_name)
-            update_thread_status(thread.id, "PENDING-REVIEW", reviewed_by_id=None, reviewed_by_username=None)
+            await asyncio.to_thread(
+                update_thread_status,
+                thread.id,
+                "PENDING-REVIEW",
+                reviewed_by_id=None,
+                reviewed_by_username=None,
+            )
             if qa_id:
-                decrement_qa_reviewed(qa_id)
+                await asyncio.to_thread(decrement_qa_reviewed, qa_id)
 
             embed = discord.Embed(
                 title="Ticket Unreviewed",
@@ -295,7 +334,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             thread = interaction.channel
-            thread_info = get_thread(thread.id)
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
             if not thread_info:
                 await interaction.followup.send("❌ This thread is not tracked in the database.")
                 return
@@ -304,7 +343,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 await interaction.followup.send("⚠️ This ticket is already closed.")
                 return
 
-            user_roles = get_user_roles(interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             is_involved = (
                 interaction.user.id == thread_info['claimed_by_id'] or
                 interaction.user.id == thread_info['resolved_by_id'] or
@@ -321,7 +360,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
             new_name = f"[CLOSED][{username}]{ticket_name}"
 
             await thread.edit(name=new_name)
-            update_thread_status(thread.id, "CLOSED")
+            await asyncio.to_thread(update_thread_status, thread.id, "CLOSED")
 
             embed = discord.Embed(
                 title="🔒 Ticket Closed",

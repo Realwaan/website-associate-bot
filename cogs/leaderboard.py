@@ -1,4 +1,5 @@
 """Leaderboard Cog for tracking Developer and QA contributions."""
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
 
 class LeaderboardCog(commands.Cog, name="Leaderboard"):
     """Displays Developer and QA contribution scoreboards."""
@@ -21,8 +22,10 @@ class LeaderboardCog(commands.Cog, name="Leaderboard"):
     async def show_leaderboard(self, interaction: discord.Interaction):
         await safe_defer(interaction)
         try:
-            dev_leaders = get_leaderboard_dev(limit=10)
-            qa_leaders = get_leaderboard_qa(limit=10)
+            dev_leaders, qa_leaders = await asyncio.gather(
+                asyncio.to_thread(get_leaderboard_dev, 10),
+                asyncio.to_thread(get_leaderboard_qa, 10),
+            )
 
             embed = discord.Embed(
                 title="🏆 CapStoneFlow Team Leaderboard",

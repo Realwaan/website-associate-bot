@@ -34,9 +34,13 @@ class AssociateBot(commands.Bot):
 
     async def setup_hook(self):
         """Loads all modular extensions from cogs/ directory."""
+        # Every command is acknowledged immediately by its cog.  This handler
+        # is the last-resort safety net for errors that escape a command body.
+        self.tree.on_error = self.on_app_command_error
+
         # 1. Initialize Database Schema
         try:
-            init_db()
+            await asyncio.to_thread(init_db)
             logger.info("Database schema initialized successfully.")
         except Exception as e:
             logger.error(f"Database initialization warning: {e}")
@@ -63,6 +67,30 @@ class AssociateBot(commands.Bot):
             logger.info(f"Synced {len(synced)} application slash commands.")
         except Exception as e:
             logger.error(f"Failed to sync slash commands: {e}")
+
+    async def on_app_command_error(self, interaction: discord.Interaction, error: Exception):
+        """Log uncaught slash-command errors and always give the user feedback."""
+        original = getattr(error, "original", error)
+        logger.error(
+            "Unhandled application command error: %s",
+            original,
+            exc_info=(type(original), original, getattr(original, "__traceback__", None)),
+        )
+
+        if isinstance(original, discord.Forbidden):
+            message = "⚠️ The bot does not have permission to complete that command."
+        elif isinstance(original, RuntimeError) and "Database" in str(original):
+            message = "⚠️ The database is unavailable right now. Please try again shortly."
+        else:
+            message = "⚠️ The command failed, but the bot is still online. Please try again."
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            logger.exception("Could not send application command error response")
 
     async def on_ready(self):
         logger.info(f"🟢 Logged in as {self.user} (ID: {self.user.id})")

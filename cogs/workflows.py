@@ -1,4 +1,5 @@
 """AI UX Playground Multi-Step Workflows Cog."""
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
 
 WORKFLOW_SPECS = {
     "design-sprint": {
@@ -622,8 +623,21 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
                 step_embed.set_footer(text="Type /claim to take ownership of this step.")
                 await thread.send(embed=step_embed)
 
-                add_thread(thread.id, title, folder_slug, interaction.channel_id, interaction.user.name)
-                mark_ticket_loaded(filename, folder_slug, thread.id, interaction.channel_id)
+                await asyncio.to_thread(
+                    add_thread,
+                    thread.id,
+                    title,
+                    folder_slug,
+                    interaction.channel_id,
+                    interaction.user.name,
+                )
+                await asyncio.to_thread(
+                    mark_ticket_loaded,
+                    filename,
+                    folder_slug,
+                    thread.id,
+                    interaction.channel_id,
+                )
                 created_threads.append(thread.mention)
 
             summary_embed = discord.Embed(

@@ -1,4 +1,5 @@
 """Scanner Cog for automated codebase analysis, PDF brief parsing, and roadmap generation."""
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
 
 class ScannerCog(commands.Cog, name="Scanner"):
     """Handles codebase scanning, AI brief analysis, and roadmap generation."""
@@ -35,7 +36,7 @@ class ScannerCog(commands.Cog, name="Scanner"):
                 await interaction.followup.send(f"❌ Target path `{path}` does not exist.")
                 return
 
-            results = scanner_service.scan_directory(str(target_path))
+            results = await asyncio.to_thread(scanner_service.scan_directory, str(target_path))
             out_dir = Path(TICKETS_DIR) / folder
             out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -81,12 +82,17 @@ class ScannerCog(commands.Cog, name="Scanner"):
                     clone_target = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{clean_repo}.git"
 
                 # Clone shallow
-                res = subprocess.run(["git", "clone", "--depth", "1", clone_target, tmpdir], capture_output=True, text=True)
+                res = await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "clone", "--depth", "1", clone_target, tmpdir],
+                    capture_output=True,
+                    text=True,
+                )
                 if res.returncode != 0:
                     await interaction.channel.send(f"❌ Failed to clone repository: {res.stderr[:200]}")
                     return
 
-                results = scanner_service.scan_directory(tmpdir)
+                results = await asyncio.to_thread(scanner_service.scan_directory, tmpdir)
                 out_dir = Path(TICKETS_DIR) / folder
                 out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -120,18 +126,15 @@ class ScannerCog(commands.Cog, name="Scanner"):
 
             pdf_bytes = await pdf_attachment.read()
             
-            # Extract text using pypdf
-            import io
-            from pypdf import PdfReader
-            reader = PdfReader(io.BytesIO(pdf_bytes))
-            text = "\n".join([page.extract_text() or "" for page in reader.pages])
+            # Extract text using pypdf outside Discord's event loop.
+            text = await asyncio.to_thread(_extract_pdf_text, pdf_bytes)
 
             if not text.strip():
                 await interaction.followup.send("⚠️ Could not extract text from this PDF (it might be scanned images).")
                 return
 
             # AI Analysis via Gemini Free Tier
-            analysis = ai_service.analyze_pdf_brief(text)
+            analysis = await asyncio.to_thread(ai_service.analyze_pdf_brief, text)
 
             embed = discord.Embed(
                 title=f"📄 AI Brief Analysis: {analysis.get('projectTitle', pdf_attachment.filename)}",
@@ -157,3 +160,12 @@ class ScannerCog(commands.Cog, name="Scanner"):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ScannerCog(bot))
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract PDF text away from Discord's event loop."""
+    import io
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
