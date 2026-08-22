@@ -8,7 +8,6 @@ from pathlib import Path
 from database import (
     add_thread, mark_ticket_loaded, get_user_roles
 )
-from services.ai_service import ai_client
 from config import TICKETS_DIR
 
 logger = logging.getLogger(__name__)
