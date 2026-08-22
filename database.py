@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "10"))
 DB_STATEMENT_TIMEOUT_MS = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "15000"))
+DB_SSLMODE = os.getenv("DB_SSLMODE", "require")
 _UNSET = object()
 
 # ── Connection pool ────────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ def _get_pool() -> psycopg2_pool.ThreadedConnectionPool | None:
                 _DB_POOL_MAX,
                 DATABASE_URL,
                 cursor_factory=DictCursor,
-                sslmode="require",
+                sslmode=DB_SSLMODE,
                 connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
                 options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
             )

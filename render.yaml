@@ -23,3 +23,5 @@ services:
         value: "10"
       - key: DB_STATEMENT_TIMEOUT_MS
         value: "15000"
+      - key: DB_SSLMODE
+        value: "prefer"
