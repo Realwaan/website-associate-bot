@@ -197,7 +197,6 @@ def main():
     if not DISCORD_TOKEN:
         logger.critical("⚠️ DISCORD_TOKEN is missing! Please configure DISCORD_TOKEN in Render Environment Variables.")
         # Keep web container alive so health check passes on Render
-        import time
         while True:
             time.sleep(30)
 
