@@ -175,7 +175,110 @@ class AdminCog(commands.Cog, name="Admin"):
             logger.error(f"Error in /cleanup-tickets: {e}")
             await interaction.followup.send(f"❌ Error during cleanup: {e}")
 
-    # 3. /reset-ticket
+    # 3. /clear
+    @app_commands.command(
+        name="clear",
+        description="Clear messages here and close the ticket thread if used inside one",
+    )
+    @app_commands.describe(
+        amount="Maximum number of recent messages to delete (1-1000; default 100)",
+    )
+    async def clear_channel(
+        self,
+        interaction: discord.Interaction,
+        amount: app_commands.Range[int, 1, 1000] = 100,
+    ):
+        await safe_defer(interaction)
+        try:
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            if not user_roles["is_pm"]:
+                await interaction.followup.send(
+                    "❌ Only Project Managers can clear messages or close ticket threads.",
+                    ephemeral=True,
+                )
+                return
+
+            channel = interaction.channel
+            if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                await interaction.followup.send(
+                    "❌ This command can only be used in a text channel or ticket thread.",
+                    ephemeral=True,
+                )
+                return
+
+            member = interaction.guild.get_member(self.bot.user.id) if interaction.guild else None
+            if member is None:
+                await interaction.followup.send(
+                    "❌ I could not verify my server permissions. Please try again shortly.",
+                    ephemeral=True,
+                )
+                return
+
+            permissions = channel.permissions_for(member)
+            if not permissions.manage_messages:
+                await interaction.followup.send(
+                    "❌ I need the **Manage Messages** permission in this channel.",
+                    ephemeral=True,
+                )
+                return
+            if isinstance(channel, discord.Thread) and not permissions.manage_threads:
+                await interaction.followup.send(
+                    "❌ I need the **Manage Threads** permission to close this ticket thread.",
+                    ephemeral=True,
+                )
+                return
+
+            deleted = await channel.purge(
+                limit=int(amount),
+                bulk=True,
+                reason=f"CapStoneFlow /clear by {interaction.user}",
+            )
+
+            closed = False
+            database_warning = None
+            if isinstance(channel, discord.Thread):
+                thread_info = None
+                try:
+                    thread_info = await asyncio.to_thread(get_thread, channel.id)
+                except Exception as exc:
+                    database_warning = "The database status could not be updated."
+                    logger.warning("Could not load ticket %s before /clear: %s", channel.id, exc)
+
+                ticket_name = (thread_info or {}).get("ticket_name") or channel.name
+                await channel.edit(
+                    name=f"[CLOSED] {ticket_name}"[:100],
+                    archived=True,
+                    locked=True,
+                    reason=f"CapStoneFlow /clear by {interaction.user}",
+                )
+                closed = True
+
+                if thread_info:
+                    try:
+                        await asyncio.to_thread(update_thread_status, channel.id, "CLOSED")
+                    except Exception as exc:
+                        database_warning = "The database status could not be updated."
+                        logger.warning("Could not mark ticket %s closed after /clear: %s", channel.id, exc)
+
+            summary = f"✅ Cleared **{len(deleted)}** message(s)."
+            if closed:
+                summary += " The ticket thread was archived and locked."
+            if database_warning:
+                summary += f" ⚠️ {database_warning}"
+            await interaction.followup.send(summary, ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Discord denied the cleanup. Check **Manage Messages** and **Manage Threads** permissions.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.error(f"Error in /clear: {e}")
+            await interaction.followup.send(
+                "❌ Could not clear this channel. Please try again or check the bot permissions.",
+                ephemeral=True,
+            )
+
+    # 4. /reset-ticket
     @app_commands.command(name="reset-ticket", description="Reset current ticket thread back to OPEN state (PM only)")
     async def reset_ticket(self, interaction: discord.Interaction):
         await safe_defer(interaction)
