@@ -19,17 +19,38 @@ class LeaderboardCog(commands.Cog, name="Leaderboard"):
         self.bot = bot
 
     @app_commands.command(name="leaderboard", description="View Developer and QA contribution leaderboards")
-    async def show_leaderboard(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        role="Show both teams or filter to Developers/QA",
+        limit="Number of entries to show (1-50; default 10)",
+    )
+    @app_commands.choices(role=[
+        app_commands.Choice(name="Both teams", value="both"),
+        app_commands.Choice(name="Developers", value="dev"),
+        app_commands.Choice(name="QA reviewers", value="qa"),
+    ])
+    async def show_leaderboard(
+        self,
+        interaction: discord.Interaction,
+        role: str = "both",
+        limit: app_commands.Range[int, 1, 50] = 10,
+    ):
         await safe_defer(interaction)
         try:
-            dev_leaders, qa_leaders = await asyncio.gather(
-                asyncio.to_thread(get_leaderboard_dev, 10),
-                asyncio.to_thread(get_leaderboard_qa, 10),
-            )
+            role = role.lower()
+            dev_leaders = []
+            qa_leaders = []
+            if role in {"both", "dev"}:
+                dev_leaders = await asyncio.to_thread(get_leaderboard_dev, int(limit))
+            if role in {"both", "qa"}:
+                qa_leaders = await asyncio.to_thread(get_leaderboard_qa, int(limit))
 
             embed = discord.Embed(
-                title="🏆 CapStoneFlow Team Leaderboard",
-                description="Live sprint metrics for Developers (Resolved) and QAs (Reviewed)",
+                title="🏆 CapStoneFlow Leaderboard",
+                description=(
+                    "Live sprint metrics for both teams"
+                    if role == "both"
+                    else ("Developer resolution leaderboard" if role == "dev" else "QA review leaderboard")
+                ),
                 color=0x6366f1 # Indigo
             )
 
@@ -39,7 +60,7 @@ class LeaderboardCog(commands.Cog, name="Leaderboard"):
                 for idx, row in enumerate(dev_leaders, 1):
                     medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"`#{idx}`"
                     user_id = row['user_id']
-                    count = row['resolved_count']
+                    count = row['dev_resolved_count']
                     dev_text += f"{medal} <@{user_id}>: **{count}** resolved\n"
                 embed.add_field(name="💻 Top Developers", value=dev_text, inline=False)
             else:
@@ -51,13 +72,13 @@ class LeaderboardCog(commands.Cog, name="Leaderboard"):
                 for idx, row in enumerate(qa_leaders, 1):
                     medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"`#{idx}`"
                     user_id = row['user_id']
-                    count = row['reviewed_count']
+                    count = row['qa_reviewed_count']
                     qa_text += f"{medal} <@{user_id}>: **{count}** reviewed\n"
                 embed.add_field(name="🛡️ Top QA Reviewers", value=qa_text, inline=False)
             else:
                 embed.add_field(name="🛡️ Top QA Reviewers", value="*No reviewed tickets yet.*", inline=False)
 
-            embed.set_footer(text="CapStoneFlow • Agile Peer Collaboration System")
+            embed.set_footer(text=f"CapStoneFlow • Showing up to {int(limit)} entries")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /leaderboard: {e}")

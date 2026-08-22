@@ -6,8 +6,10 @@ from discord import app_commands
 import os
 import glob
 import logging
+import re
 from pathlib import Path
 from datetime import time, timezone
+from typing import Optional
 from database import (
     add_thread, is_ticket_loaded, mark_ticket_loaded,
     set_setting, get_setting, get_threads_by_status,
@@ -18,6 +20,54 @@ from ticket_loader import parse_ticket_file, get_available_folders, load_tickets
 from config import TICKETS_DIR
 
 logger = logging.getLogger(__name__)
+
+_THREAD_STATUS_RE = re.compile(
+    r"^\[(OPEN|CLAIMED|PENDING-REVIEW|REVIEWED|CLOSED)\](?:\[[^\]]+\])?\s*(.*)$",
+    re.IGNORECASE,
+)
+_PRIORITY_STATUS_RE = re.compile(
+    r"^\[(?:CRITICAL|PRIORITY|HIGH|MEDIUM|LOW)\]\s*"
+    r"\[(OPEN|CLAIMED|PENDING-REVIEW|REVIEWED|CLOSED)\]"
+    r"(?:\[[^\]]+\])?\s*(.*)$",
+    re.IGNORECASE,
+)
+_PRIORITY_ONLY_RE = re.compile(
+    r"^\[(?:CRITICAL|PRIORITY|HIGH|MEDIUM|LOW)\]\s*(.*)$",
+    re.IGNORECASE,
+)
+
+
+def _parse_thread_status(name: str) -> tuple[str | None, str]:
+    """Extract a tracked status and clean ticket name from a thread title."""
+    clean_name = (name or "").strip()
+    match = _THREAD_STATUS_RE.match(clean_name) or _PRIORITY_STATUS_RE.match(clean_name)
+    if not match:
+        priority_match = _PRIORITY_ONLY_RE.match(clean_name)
+        if priority_match:
+            return "OPEN", priority_match.group(1).strip()
+        return None, clean_name
+    return match.group(1).upper(), match.group(2).strip()
+
+
+def _normalize_ticket_name(value: str) -> str:
+    """Normalize titles so markdown files can be matched to Discord threads."""
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def _rebuild_thread_record(
+    thread_id: int,
+    ticket_name: str,
+    folder: str,
+    channel_id: int,
+    status: str,
+    created_by: str,
+    filename: str | None,
+) -> None:
+    """Persist one recovered thread in a worker thread."""
+    add_thread(thread_id, ticket_name, folder, channel_id, created_by)
+    update_thread_status(thread_id, status)
+    if filename:
+        mark_ticket_loaded(filename, folder, thread_id, channel_id)
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
@@ -35,10 +85,34 @@ class AdminCog(commands.Cog, name="Admin"):
 
     # 1. /load-tickets
     @app_commands.command(name="load-tickets", description="Import markdown tickets from a folder and create Discord threads")
-    @app_commands.describe(folder="Folder inside tickets/ (e.g. borneo, intramurals2026)")
-    async def load_tickets(self, interaction: discord.Interaction, folder: str):
+    @app_commands.describe(
+        folder="Folder inside tickets/ (e.g. borneo, intramurals2026)",
+        channel="Target text channel (defaults to the current channel)",
+    )
+    async def load_tickets(
+        self,
+        interaction: discord.Interaction,
+        folder: str,
+        channel: Optional[discord.TextChannel] = None,
+    ):
         await safe_defer(interaction)
         try:
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            if not user_roles["is_pm"]:
+                await interaction.followup.send(
+                    "❌ Only Project Managers can load tickets.",
+                    ephemeral=True,
+                )
+                return
+
+            target_channel = channel or interaction.channel
+            if not isinstance(target_channel, discord.TextChannel):
+                await interaction.followup.send(
+                    "❌ Choose a text channel or run this command in a text channel.",
+                    ephemeral=True,
+                )
+                return
+
             target_dir = Path(TICKETS_DIR) / folder
             if not target_dir.exists():
                 await interaction.followup.send(f"❌ Folder `{TICKETS_DIR}/{folder}` does not exist.")
@@ -61,11 +135,13 @@ class AdminCog(commands.Cog, name="Admin"):
                 ticket_data = parse_ticket_file(str(filepath))
                 title = ticket_data.get("title") or filepath.stem
                 priority = ticket_data.get("priority")
-                prefix = f"[{priority}]" if priority else "[OPEN]"
-                thread_name = f"{prefix} {title}"[:100]
+                # Keep the lifecycle prefix as OPEN so /claim and /rebuild-db
+                # can recognize every imported ticket. Priority is shown in
+                # the embed instead of replacing the workflow status.
+                thread_name = f"[OPEN] {title}"[:100]
 
-                # Create thread in the current channel
-                thread = await interaction.channel.create_thread(
+                # Create thread in the selected target channel.
+                thread = await target_channel.create_thread(
                     name=thread_name,
                     auto_archive_duration=1440,
                     type=discord.ChannelType.public_thread
@@ -107,7 +183,7 @@ class AdminCog(commands.Cog, name="Admin"):
                     thread.id,
                     title,
                     folder,
-                    interaction.channel_id,
+                    target_channel.id,
                     interaction.user.name,
                 )
                 await asyncio.to_thread(
@@ -115,13 +191,13 @@ class AdminCog(commands.Cog, name="Admin"):
                     filename,
                     folder,
                     thread.id,
-                    interaction.channel_id,
+                    target_channel.id,
                 )
                 loaded_count += 1
 
             embed = discord.Embed(
                 title="📦 Ticket Batch Import Complete",
-                description=f"✅ Created **{loaded_count}** new ticket threads.\n⏩ Skipped **{skipped_count}** previously loaded tickets.",
+                description=f"✅ Created **{loaded_count}** new ticket threads in {target_channel.mention}.\n⏩ Skipped **{skipped_count}** previously loaded tickets.",
                 color=0x10b981
             )
             await interaction.followup.send(embed=embed)
@@ -129,7 +205,97 @@ class AdminCog(commands.Cog, name="Admin"):
             logger.error(f"Error in /load-tickets: {e}")
             await interaction.followup.send(f"❌ Error loading tickets: {e}")
 
-    # 2. /cleanup-tickets
+    # 2. /rebuild-db
+    @app_commands.command(
+        name="rebuild-db",
+        description="Recover ticket database records from existing Discord threads",
+    )
+    @app_commands.describe(
+        folder="Folder containing the ticket markdown files",
+        channel="Text channel containing the ticket threads",
+    )
+    async def rebuild_db(
+        self,
+        interaction: discord.Interaction,
+        folder: str,
+        channel: discord.TextChannel,
+    ):
+        await safe_defer(interaction)
+        try:
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            if not user_roles["is_pm"]:
+                await interaction.followup.send(
+                    "❌ Only Project Managers can rebuild the ticket database.",
+                    ephemeral=True,
+                )
+                return
+
+            folder_path = Path(TICKETS_DIR) / folder
+            if not folder_path.is_dir():
+                await interaction.followup.send(
+                    f"❌ Folder `{folder}` was not found in `{TICKETS_DIR}/`.",
+                    ephemeral=True,
+                )
+                return
+
+            tickets = await asyncio.to_thread(load_tickets_from_folder, folder)
+            name_to_filename = {}
+            for ticket in tickets:
+                display_name = ticket.get("title") or ticket.get("name") or ""
+                filename = ticket.get("name")
+                if filename:
+                    name_to_filename[_normalize_ticket_name(display_name)] = filename
+
+            threads_by_id = {thread.id: thread for thread in channel.threads}
+            try:
+                async for thread in channel.archived_threads(limit=None):
+                    threads_by_id[thread.id] = thread
+            except discord.HTTPException as exc:
+                logger.warning("Could not read archived threads in %s: %s", channel.id, exc)
+
+            rebuilt_count = 0
+            skipped_count = 0
+            unmatched_count = 0
+            for thread in threads_by_id.values():
+                status, ticket_name = _parse_thread_status(thread.name)
+                if not status or not ticket_name:
+                    skipped_count += 1
+                    continue
+
+                filename = name_to_filename.get(_normalize_ticket_name(ticket_name))
+                await asyncio.to_thread(
+                    _rebuild_thread_record,
+                    thread.id,
+                    ticket_name,
+                    folder,
+                    channel.id,
+                    status,
+                    interaction.user.name,
+                    filename,
+                )
+                rebuilt_count += 1
+                if not filename:
+                    unmatched_count += 1
+
+            embed = discord.Embed(
+                title="🧰 Ticket Database Rebuild Complete",
+                description=(
+                    f"Rebuilt **{rebuilt_count}** ticket record(s) from {channel.mention}.\n"
+                    f"Skipped **{skipped_count}** thread(s) without a recognized ticket status.\n"
+                    f"Unmatched **{unmatched_count}** thread(s) to markdown files."
+                ),
+                color=0x10B981 if rebuilt_count else 0xF59E0B,
+            )
+            embed.set_footer(text="Existing Discord threads were preserved.")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.exception("Error in /rebuild-db: %s", e)
+            await interaction.followup.send(
+                "❌ Could not rebuild the ticket database. Check the folder, channel, and database connection.",
+                ephemeral=True,
+            )
+
+    # 3. /cleanup-tickets
     @app_commands.command(name="cleanup-tickets", description="Archive and clean up completed CLOSED tickets in this channel")
     @app_commands.describe(action="Cleanup mode")
     @app_commands.choices(action=[
@@ -278,7 +444,54 @@ class AdminCog(commands.Cog, name="Admin"):
                 ephemeral=True,
             )
 
-    # 4. /reset-ticket
+    # 4. /commands
+    @app_commands.command(
+        name="commands",
+        description="Show the available CapStoneFlow bot commands",
+    )
+    async def show_commands(self, interaction: discord.Interaction):
+        await safe_defer(interaction)
+        try:
+            commands = sorted(self.bot.tree.get_commands(), key=lambda command: command.name)
+            lines = [
+                f"`/{command.name}` — {command.description or 'No description available.'}"
+                for command in commands
+            ]
+
+            chunks: list[str] = []
+            current: list[str] = []
+            current_length = 0
+            for line in lines:
+                if current and current_length + len(line) + 1 > 950:
+                    chunks.append("\n".join(current))
+                    current = []
+                    current_length = 0
+                current.append(line)
+                current_length += len(line) + 1
+            if current:
+                chunks.append("\n".join(current))
+
+            embed = discord.Embed(
+                title="📖 CapStoneFlow Commands",
+                description="Use ticket lifecycle commands inside ticket threads. PM-only commands require the Project Manager role.",
+                color=0x6366F1,
+            )
+            for index, chunk in enumerate(chunks or ["No commands are currently synchronized."]):
+                embed.add_field(
+                    name="Available Commands" if index == 0 else "Available Commands (continued)",
+                    value=chunk,
+                    inline=False,
+                )
+            embed.set_footer(text="CapStoneFlow • Use /commands any time for this guide.")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.exception("Error in /commands: %s", e)
+            await interaction.followup.send(
+                "❌ Could not load the command guide.",
+                ephemeral=True,
+            )
+
+    # 5. /reset-ticket
     @app_commands.command(name="reset-ticket", description="Reset current ticket thread back to OPEN state (PM only)")
     async def reset_ticket(self, interaction: discord.Interaction):
         await safe_defer(interaction)
@@ -362,6 +575,13 @@ class AdminCog(commands.Cog, name="Admin"):
     @app_commands.command(name="setreminderschannel", description="Set channel for daily 8:00 AM PHT ticket summaries")
     async def set_reminders_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await safe_defer(interaction)
+        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+        if not user_roles["is_pm"]:
+            await interaction.followup.send(
+                "❌ Only Project Managers can change the reminders channel.",
+                ephemeral=True,
+            )
+            return
         await asyncio.to_thread(set_setting, "reminders_channel_id", str(channel.id))
         await interaction.followup.send(f"✅ Daily sprint reminders channel set to {channel.mention}.")
 
@@ -374,20 +594,100 @@ class AdminCog(commands.Cog, name="Admin"):
     ])
     async def assign_role(self, interaction: discord.Interaction, role: str):
         await safe_defer(interaction)
-        is_dev = role == "dev"
-        is_qa = role == "qa"
-        is_pm = role == "pm"
-        await asyncio.to_thread(
-            set_user_role,
-            interaction.user.id,
-            interaction.user.name,
-            is_developer=is_dev,
-            is_qa=is_qa,
-            is_pm=is_pm,
-        )
-        
-        role_label = "Developer" if is_dev else ("QA Reviewer" if is_qa else "Project Manager")
-        await interaction.followup.send(f"🎉 Your role has been set to **{role_label}**.")
+        try:
+            if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+                await interaction.followup.send(
+                    "❌ This command can only be used inside the Discord server.",
+                    ephemeral=True,
+                )
+                return
+
+            is_dev = role == "dev"
+            is_qa = role == "qa"
+            is_pm = role == "pm"
+            if is_pm and not interaction.user.guild_permissions.administrator:
+                await interaction.followup.send(
+                    "❌ Only server administrators can assign the Project Manager role.",
+                    ephemeral=True,
+                )
+                return
+
+            bot_member = interaction.guild.me
+            if bot_member is None or not bot_member.guild_permissions.manage_roles:
+                await interaction.followup.send(
+                    "❌ I need the **Manage Roles** permission to synchronize Discord roles.",
+                    ephemeral=True,
+                )
+                return
+
+            role_label = "Developer" if is_dev else ("QA Reviewer" if is_qa else "Project Manager")
+            discord_role_name = "Developer" if is_dev else ("QA" if is_qa else "Project Manager")
+            discord_role = discord.utils.get(interaction.guild.roles, name=discord_role_name)
+            if discord_role is None:
+                discord_role = await interaction.guild.create_role(
+                    name=discord_role_name,
+                    color=(
+                        discord.Color.blurple()
+                        if is_dev
+                        else (discord.Color.gold() if is_qa else discord.Color.purple())
+                    ),
+                    reason="CapStoneFlow role synchronization",
+                )
+
+            if discord_role >= bot_member.top_role:
+                await interaction.followup.send(
+                    f"❌ I cannot manage the **{discord_role_name}** role because it is above my highest role.",
+                    ephemeral=True,
+                )
+                return
+
+            managed_names = {"Developer", "QA", "Project Manager"}
+            old_roles = [
+                existing
+                for existing in interaction.user.roles
+                if existing.name in managed_names and existing != discord_role
+            ]
+            if old_roles:
+                await interaction.user.remove_roles(
+                    *old_roles,
+                    reason="CapStoneFlow role synchronization",
+                )
+            if discord_role not in interaction.user.roles:
+                await interaction.user.add_roles(
+                    discord_role,
+                    reason="CapStoneFlow role synchronization",
+                )
+
+            try:
+                await asyncio.to_thread(
+                    set_user_role,
+                    interaction.user.id,
+                    interaction.user.name,
+                    is_developer=is_dev,
+                    is_qa=is_qa,
+                    is_pm=is_pm,
+                )
+            except Exception as exc:
+                logger.exception("Discord role changed but database role sync failed: %s", exc)
+                await interaction.followup.send(
+                    f"⚠️ Discord role **{role_label}** was assigned, but the database could not be updated. Please retry after the database is available.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.followup.send(
+                f"🎉 Your **{role_label}** role has been synchronized in Discord and CapStoneFlow.",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Discord denied the role change. Check the bot's **Manage Roles** permission and role hierarchy.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.exception("Error in /assign-role: %s", e)
+            await interaction.followup.send(
+                "❌ Could not synchronize your role. Please try again.",
+                ephemeral=True,
+            )
 
     # Daily Summary Task at 8:00 AM PHT (00:00 UTC)
     @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
