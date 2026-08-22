@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from threading import Thread
 import logging
 import os
+import hmac
 from wsgiref.simple_server import make_server
 from typing import Callable
 
@@ -31,6 +32,7 @@ def internal_server_error(error):
     return jsonify({"ok": False, "message": "An internal server error occurred."}), 500
 
 _github_webhook_handler: Callable[[bytes, dict], tuple[int, str]] | None = None
+_capstone_ticket_handler: Callable[[dict], tuple[int, dict]] | None = None
 
 @app.route('/', methods=['GET', 'POST', 'HEAD', 'OPTIONS'], strict_slashes=False)
 def home():
@@ -80,10 +82,39 @@ def github_webhook():
     return jsonify({"ok": status_code < 400, "message": message}), status_code
 
 
+@app.route('/api/capstone/tickets', methods=['POST'])
+def capstone_ticket():
+    """Create a ticket thread for CapStoneFlow using the bot's Discord session."""
+    configured_secret = os.getenv('CAPSTONE_API_SECRET', '')
+    supplied_secret = request.headers.get('X-Capstone-API-Key', '')
+    if not configured_secret or not hmac.compare_digest(supplied_secret, configured_secret):
+        return jsonify({"ok": False, "message": "Unauthorized"}), 401
+
+    if _capstone_ticket_handler is None:
+        return jsonify({"ok": False, "message": "Ticket handler is not configured"}), 503
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "message": "A JSON object is required"}), 400
+
+    try:
+        status_code, result = _capstone_ticket_handler(payload)
+        return jsonify(result), status_code
+    except Exception as exc:
+        logger.exception("CapStoneFlow ticket request failed")
+        return jsonify({"ok": False, "message": "Ticket request failed"}), 500
+
+
 def set_github_webhook_handler(handler: Callable[[bytes, dict], tuple[int, str]]) -> None:
     """Set callback used by /webhook/github endpoint."""
     global _github_webhook_handler
     _github_webhook_handler = handler
+
+
+def set_capstone_ticket_handler(handler: Callable[[dict], tuple[int, dict]]) -> None:
+    """Set the callback used by the CapStoneFlow ticket API."""
+    global _capstone_ticket_handler
+    _capstone_ticket_handler = handler
 
 def run(host: str = "0.0.0.0", port: int = 8080):
     """Run a tiny WSGI server for health checks without Flask dev-server noise."""

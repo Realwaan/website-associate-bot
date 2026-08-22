@@ -258,14 +258,14 @@ def run_migrations():
     except Exception as e:
         logger.error("Migration run skipped: %s", e)
 
-def add_thread(thread_id: int, ticket_name: str, folder: str, channel_id: int, created_by: str | None = None):
+def add_thread(thread_id: int, ticket_name: str, folder: str, channel_id: int, created_by: str | None = None, external_task_id: str | None = None):
     """Add a new thread to the database."""
     cache_delete(f"thread:{thread_id}")
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO threads (thread_id, ticket_name, folder, channel_id, status, created_by)
-            VALUES (%s, %s, %s, %s, 'OPEN', %s)
+            INSERT INTO threads (thread_id, ticket_name, folder, channel_id, status, created_by, external_task_id)
+            VALUES (%s, %s, %s, %s, 'OPEN', %s, %s)
             ON CONFLICT (thread_id) DO UPDATE SET
                 ticket_name = EXCLUDED.ticket_name,
                 folder = EXCLUDED.folder,
@@ -279,8 +279,19 @@ def add_thread(thread_id: int, ticket_name: str, folder: str, channel_id: int, c
                 reviewed_by_id = NULL,
                 reviewed_by_username = NULL,
                 pr_url = NULL
-        """, (thread_id, ticket_name, folder, channel_id, created_by))
+                , external_task_id = EXCLUDED.external_task_id
+        """, (thread_id, ticket_name, folder, channel_id, created_by, external_task_id))
         conn.commit()
+
+def get_thread_by_external_task_id(external_task_id: str):
+    """Find the Discord thread linked to a CapStoneFlow task."""
+    if not external_task_id:
+        return None
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM threads WHERE external_task_id = %s", (external_task_id,))
+        row = cursor.fetchone()
+    return dict(row) if row else None
 
 def get_thread(thread_id: int):
     """Get a thread from the database (cached)."""
