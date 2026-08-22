@@ -176,7 +176,7 @@ async def create_capstone_ticket(payload: dict) -> dict:
         if not channel_id:
             raise ValueError("CAPSTONE_TICKET_CHANNEL_ID is not configured")
         channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-        if not hasattr(channel, "create_thread"):
+        if not isinstance(channel, discord.TextChannel):
             raise ValueError("CAPSTONE_TICKET_CHANNEL_ID must point to a text channel")
         configured_guild_id = os.getenv("CAPSTONE_GUILD_ID")
         actual_guild_id = str(getattr(getattr(channel, "guild", None), "id", ""))
@@ -192,7 +192,18 @@ async def create_capstone_ticket(payload: dict) -> dict:
         if task.get("acceptanceCriteria"):
             criteria = task["acceptanceCriteria"]
             criteria = criteria if isinstance(criteria, list) else [criteria]
-            embed.add_field(name="Acceptance Criteria", value="\n".join(f"• {str(item)}" for item in criteria)[:1024], inline=False)
+            formatted_criteria = []
+            for item in criteria:
+                if isinstance(item, dict):
+                    text = str(item.get("text") or item.get("title") or "").strip()
+                    marker = "✅" if item.get("completed") else "•"
+                else:
+                    text = str(item).strip()
+                    marker = "•"
+                if text:
+                    formatted_criteria.append(f"{marker} {text}")
+            if formatted_criteria:
+                embed.add_field(name="Acceptance Criteria", value="\n".join(formatted_criteria)[:1024], inline=False)
         embed.set_footer(text="CapStoneFlow • Use /claim in this thread to take ownership.")
         message = await thread.send(embed=embed)
         await asyncio.to_thread(add_thread, thread.id, title, folder, channel.id, "CapStoneFlow", task_id)

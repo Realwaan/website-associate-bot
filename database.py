@@ -376,6 +376,124 @@ def update_thread_status(
         conn.commit()
     # Bust the thread cache so next read reflects the new status
     cache_delete(f"thread:{thread_id}")
+    sync_linked_task_status(thread_id, status)
+
+
+def sync_linked_task_status(thread_id: int, status: str):
+    """Mirror Discord ticket lifecycle changes into a linked website task.
+
+    This is intentionally best-effort: Discord ticket commands must continue to
+    work even when the website tasks table is unavailable or the database has
+    not been upgraded yet.
+    """
+    status = status.upper()
+    website_status = {
+        "OPEN": "todo",
+        "CLAIMED": "in_progress",
+        "PENDING-REVIEW": "peer_review",
+        "REVIEWED": "adviser_review",
+        "CLOSED": "done",
+    }.get(status)
+    if not website_status:
+        return
+
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT external_task_id, claimed_by_username,
+                       resolved_by_username, reviewed_by_username
+                FROM threads
+                WHERE thread_id = %s
+            """, (thread_id,))
+            thread = cursor.fetchone()
+            if not thread or not thread["external_task_id"]:
+                return
+
+            cursor.execute(
+                "SELECT status FROM tasks WHERE id = %s",
+                (thread["external_task_id"],),
+            )
+            task = cursor.fetchone()
+            if not task or task["status"] == website_status:
+                return
+
+            now = datetime.utcnow().isoformat() + "Z"
+            event_type = {
+                "OPEN": "unclaimed",
+                "CLAIMED": "claimed",
+                "PENDING-REVIEW": "resolved",
+                "REVIEWED": "reviewed",
+                "CLOSED": "closed",
+            }[status]
+            actor = (
+                thread["reviewed_by_username"] or
+                thread["resolved_by_username"] or
+                thread["claimed_by_username"] or
+                "Discord"
+            )
+            event = json.dumps([{
+                "id": f"discord-{thread_id}-{int(time.time() * 1000)}",
+                "type": event_type,
+                "username": actor,
+                "timestamp": now,
+                "oldStatus": task["status"],
+                "newStatus": website_status,
+            }])
+            updates = [
+                "status = %s",
+                "updated_at = timezone('utc'::text, now())",
+                "ticket_events = COALESCE(ticket_events, '[]'::jsonb) || %s::jsonb",
+            ]
+            params = [website_status, event]
+
+            if status == "OPEN":
+                updates.extend(["claimed_at = NULL", "claimed_by_username = NULL"])
+            elif status == "CLAIMED":
+                updates.extend([
+                    "claimed_at = COALESCE(claimed_at, %s)",
+                    "claimed_by_username = %s",
+                    "resolved_at = NULL",
+                    "resolved_by_username = NULL",
+                ])
+                params.extend([now, thread["claimed_by_username"] or actor])
+            elif status == "PENDING-REVIEW":
+                updates.extend([
+                    "resolved_at = COALESCE(resolved_at, %s)",
+                    "resolved_by_username = %s",
+                ])
+                params.extend([now, thread["resolved_by_username"] or actor])
+            elif status == "REVIEWED":
+                reviewer = thread["reviewed_by_username"] or actor
+                updates.extend([
+                    "peer_reviewed_at = COALESCE(peer_reviewed_at, %s)",
+                    "peer_reviewed_by_username = %s",
+                    "reviewed_at = COALESCE(reviewed_at, %s)",
+                    "reviewed_by_username = %s",
+                ])
+                params.extend([now, reviewer, now, reviewer])
+            elif status == "CLOSED":
+                updates.extend([
+                    "closed_at = COALESCE(closed_at, %s)",
+                    "closed_by_username = COALESCE(closed_by_username, %s)",
+                ])
+                params.extend([now, actor])
+
+            params.append(thread["external_task_id"])
+            cursor.execute(
+                f"UPDATE tasks SET {', '.join(updates)} WHERE id = %s",
+                params,
+            )
+            conn.commit()
+            logger.info(
+                "Mirrored linked website task %s to status %s from Discord thread %s.",
+                thread["external_task_id"], website_status, thread_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Could not mirror Discord thread %s to its website task: %s",
+            thread_id, exc,
+        )
 
 
 # ===== User Role Management =====
