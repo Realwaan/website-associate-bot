@@ -394,11 +394,25 @@ class AdminCog(commands.Cog, name="Admin"):
                 )
                 return
 
-            deleted = await channel.purge(
-                limit=int(amount),
-                bulk=True,
-                reason=f"CapStoneFlow /clear by {interaction.user}",
-            )
+            try:
+                deleted = await channel.purge(
+                    limit=int(amount),
+                    bulk=True,
+                    reason=f"CapStoneFlow /clear by {interaction.user}",
+                )
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "❌ Discord denied message deletion. Check **Manage Messages** in this channel.",
+                    ephemeral=True,
+                )
+                return
+            except Exception:
+                logger.exception("Message purge failed during /clear in channel %s", channel.id)
+                await interaction.followup.send(
+                    "❌ I could not finish deleting messages in this channel.",
+                    ephemeral=True,
+                )
+                return
 
             closed = False
             database_warning = None
@@ -411,15 +425,22 @@ class AdminCog(commands.Cog, name="Admin"):
                     logger.warning("Could not load ticket %s before /clear: %s", channel.id, exc)
 
                 ticket_name = (thread_info or {}).get("ticket_name") or channel.name
-                await channel.edit(
-                    name=f"[CLOSED] {ticket_name}"[:100],
-                    archived=True,
-                    locked=True,
-                    reason=f"CapStoneFlow /clear by {interaction.user}",
-                )
-                closed = True
+                try:
+                    await channel.edit(
+                        name=f"[CLOSED] {ticket_name}"[:100],
+                        archived=True,
+                        locked=True,
+                        reason=f"CapStoneFlow /clear by {interaction.user}",
+                    )
+                    closed = True
+                except discord.Forbidden:
+                    database_warning = "Messages were cleared, but Discord denied closing the ticket thread."
+                    logger.warning("Could not archive/lock ticket %s after /clear: missing thread permission", channel.id)
+                except Exception:
+                    database_warning = "Messages were cleared, but the ticket thread could not be closed."
+                    logger.exception("Could not archive/lock ticket %s after /clear", channel.id)
 
-                if thread_info:
+                if thread_info and closed:
                     try:
                         await asyncio.to_thread(update_thread_status, channel.id, "CLOSED")
                     except Exception as exc:
@@ -431,7 +452,13 @@ class AdminCog(commands.Cog, name="Admin"):
                 summary += " The ticket thread was archived and locked."
             if database_warning:
                 summary += f" ⚠️ {database_warning}"
-            await interaction.followup.send(summary, ephemeral=True)
+            try:
+                await interaction.followup.send(summary, ephemeral=True)
+            except discord.HTTPException:
+                # The cleanup already completed; do not turn a successful purge
+                # into an application-command failure if the interaction webhook
+                # expires while Discord is processing the thread edit.
+                logger.warning("Could not send /clear completion response for channel %s", channel.id)
         except discord.Forbidden:
             await interaction.followup.send(
                 "❌ Discord denied the cleanup. Check **Manage Messages** and **Manage Threads** permissions.",
