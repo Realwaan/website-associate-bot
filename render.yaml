@@ -25,3 +25,5 @@ services:
         value: "15000"
       - key: DB_SSLMODE
         value: "require"
+      - key: SYNC_COMMANDS
+        value: "false"

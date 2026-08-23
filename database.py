@@ -259,18 +259,27 @@ def run_migrations():
     except Exception as e:
         logger.error("Migration run skipped: %s", e)
 
-def add_thread(thread_id: int, ticket_name: str, folder: str, channel_id: int, created_by: str | None = None, external_task_id: str | None = None):
+def add_thread(
+    thread_id: int,
+    ticket_name: str,
+    folder: str,
+    channel_id: int,
+    created_by: str | None = None,
+    external_task_id: str | None = None,
+    guild_id: int | None = None,
+):
     """Add a new thread to the database."""
     cache_delete(f"thread:{thread_id}")
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO threads (thread_id, ticket_name, folder, channel_id, status, created_by, external_task_id)
-            VALUES (%s, %s, %s, %s, 'OPEN', %s, %s)
+            INSERT INTO threads (thread_id, ticket_name, folder, channel_id, guild_id, status, created_by, external_task_id)
+            VALUES (%s, %s, %s, %s, %s, 'OPEN', %s, %s)
             ON CONFLICT (thread_id) DO UPDATE SET
                 ticket_name = EXCLUDED.ticket_name,
                 folder = EXCLUDED.folder,
                 channel_id = EXCLUDED.channel_id,
+                guild_id = EXCLUDED.guild_id,
                 status = 'OPEN',
                 created_by = EXCLUDED.created_by,
                 claimed_by_id = NULL,
@@ -281,7 +290,7 @@ def add_thread(thread_id: int, ticket_name: str, folder: str, channel_id: int, c
                 reviewed_by_username = NULL,
                 pr_url = NULL
                 , external_task_id = EXCLUDED.external_task_id
-        """, (thread_id, ticket_name, folder, channel_id, created_by, external_task_id))
+        """, (thread_id, ticket_name, folder, channel_id, guild_id, created_by, external_task_id))
         conn.commit()
 
 def get_thread_by_external_task_id(external_task_id: str):
@@ -293,6 +302,124 @@ def get_thread_by_external_task_id(external_task_id: str):
         cursor.execute("SELECT * FROM threads WHERE external_task_id = %s", (external_task_id,))
         row = cursor.fetchone()
     return dict(row) if row else None
+
+
+def begin_integration_delivery(
+    idempotency_key: str,
+    correlation_id: str,
+    operation: str,
+    external_task_id: str | None,
+    request_payload: dict,
+) -> dict:
+    """Claim an integration request, safely reusing an existing result on retry.
+
+    A stale processing row can be reclaimed after two minutes. This protects the
+    bridge from a Render restart between the Discord side effect and persistence.
+    """
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise ValueError("idempotency_key is required")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM capstone_integration_deliveries
+            WHERE idempotency_key = %s
+            """,
+            (key,),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            row = dict(existing)
+            if row.get("state") == "failed":
+                cursor.execute(
+                    """
+                    UPDATE capstone_integration_deliveries
+                    SET state = 'processing', attempts = attempts + 1,
+                        correlation_id = %s, request_json = %s::jsonb,
+                        error_text = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE idempotency_key = %s
+                    RETURNING *
+                    """,
+                    (correlation_id, json.dumps(request_payload), key),
+                )
+                row = dict(cursor.fetchone())
+                row["_claimed"] = True
+                conn.commit()
+                return row
+            if (
+                row.get("state") == "processing"
+                and row.get("updated_at")
+                and (datetime.utcnow() - row["updated_at"].replace(tzinfo=None)).total_seconds() > 120
+            ):
+                cursor.execute(
+                    """
+                    UPDATE capstone_integration_deliveries
+                    SET state = 'processing', attempts = attempts + 1,
+                        correlation_id = %s, request_json = %s::jsonb,
+                        error_text = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE idempotency_key = %s
+                    RETURNING *
+                    """,
+                    (correlation_id, json.dumps(request_payload), key),
+                )
+                row = dict(cursor.fetchone())
+                row["_claimed"] = True
+                conn.commit()
+            return row
+
+        cursor.execute(
+            """
+            INSERT INTO capstone_integration_deliveries
+                (idempotency_key, correlation_id, operation, external_task_id, request_json)
+            VALUES (%s, %s, %s, %s, %s::jsonb)
+            RETURNING *
+            """,
+            (
+                key,
+                correlation_id,
+                operation,
+                external_task_id,
+                json.dumps(request_payload),
+            ),
+        )
+        row = dict(cursor.fetchone())
+        row["_claimed"] = True
+        conn.commit()
+        return row
+
+
+def finish_integration_delivery(
+    idempotency_key: str,
+    *,
+    response_status: int,
+    response_payload: dict | None = None,
+    error_text: str | None = None,
+) -> None:
+    """Persist the terminal result for a bridge request."""
+    succeeded = 200 <= int(response_status) < 300
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE capstone_integration_deliveries
+            SET state = %s,
+                response_json = %s::jsonb,
+                response_status = %s,
+                error_text = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE idempotency_key = %s
+            """,
+            (
+                "succeeded" if succeeded else "failed",
+                json.dumps(response_payload or {}),
+                int(response_status),
+                (error_text or "")[:2000] or None,
+                str(idempotency_key),
+            ),
+        )
+        conn.commit()
 
 def get_thread(thread_id: int):
     """Get a thread from the database (cached)."""

@@ -71,7 +71,15 @@ def _rebuild_thread_record(
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
-        await interaction.response.defer(thinking=True)
+        try:
+            await interaction.response.defer(thinking=True)
+        except discord.HTTPException as e:
+            if e.status == 429:
+                logger.warning("Discord API 429 rate limit hit during safe_defer.")
+            else:
+                logger.warning(f"Failed to defer interaction: {e}")
+        except Exception as e:
+            logger.warning(f"Unexpected error in safe_defer: {e}")
 
 class AdminCog(commands.Cog, name="Admin"):
     """Handles ticket loading, maintenance, channel configuration, and user roles."""
@@ -715,6 +723,32 @@ class AdminCog(commands.Cog, name="Admin"):
                 "❌ Could not synchronize your role. Please try again.",
                 ephemeral=True,
             )
+
+    # 8. /sync-commands
+    @app_commands.command(name="sync-commands", description="Manually synchronize slash commands with Discord (PM only)")
+    async def sync_commands_command(self, interaction: discord.Interaction):
+        await safe_defer(interaction)
+        try:
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            if not user_roles["is_pm"]:
+                await interaction.followup.send("❌ Only Project Managers can sync commands.", ephemeral=True)
+                return
+
+            synced = await self.bot.tree.sync()
+            embed = discord.Embed(
+                title="⚡ Slash Commands Synchronized",
+                description=f"Successfully synchronized **{len(synced)}** application slash commands globally.",
+                color=0x10b981
+            )
+            await interaction.followup.send(embed=embed)
+        except discord.HTTPException as e:
+            if e.status == 429:
+                await interaction.followup.send("⚠️ Discord is currently rate-limiting command syncs (429). Please wait 15 minutes before retrying.", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
+        except Exception as e:
+            logger.exception("Error in /sync-commands: %s", e)
+            await interaction.followup.send(f"❌ Error syncing commands: {e}", ephemeral=True)
 
     # Daily Summary Task at 8:00 AM PHT (00:00 UTC)
     @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))

@@ -15,7 +15,15 @@ logger = logging.getLogger(__name__)
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
-        await interaction.response.defer(thinking=True)
+        try:
+            await interaction.response.defer(thinking=True)
+        except discord.HTTPException as e:
+            if e.status == 429:
+                logger.warning("Discord API 429 rate limit hit during safe_defer.")
+            else:
+                logger.warning(f"Failed to defer interaction: {e}")
+        except Exception as e:
+            logger.warning(f"Unexpected error in safe_defer: {e}")
 
 WORKFLOW_SPECS = {
     "design-sprint": {
