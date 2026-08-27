@@ -84,15 +84,19 @@ class ScannerCog(commands.Cog, name="Scanner"):
             with tempfile.TemporaryDirectory() as tmpdir:
                 await interaction.followup.send(f"⏳ Cloning `{repo_url}` and analyzing codebase...")
                 
-                clone_target = repo_url
+                clone_cmd = ["git", "clone", "--depth", "1"]
                 if GITHUB_TOKEN and "github.com" in repo_url:
-                    clean_repo = repo_url.replace("https://github.com/", "").replace("http://github.com/", "").replace(".git", "")
-                    clone_target = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{clean_repo}.git"
+                    # Pass the token via an http header instead of the URL so it
+                    # never appears in logs, stderr, or process listings.
+                    clone_cmd += ["-c", f"http.extraHeader=Authorization: Bearer {GITHUB_TOKEN}"]
+                    clone_cmd.append(repo_url)
+                else:
+                    clone_cmd.append(repo_url)
 
                 # Clone shallow
                 res = await asyncio.to_thread(
                     subprocess.run,
-                    ["git", "clone", "--depth", "1", clone_target, tmpdir],
+                    clone_cmd + [tmpdir],
                     capture_output=True,
                     text=True,
                 )
