@@ -61,7 +61,7 @@ Create a `.env` file at the project root based on `.env.example`:
 DISCORD_TOKEN=your_bot_token_here
 
 # Database URL (Supabase/PostgreSQL)
-DATABASE_URL=postgresql://user:pass@host:5432/dbname
+DATABASE_URL=postgresql://<user>:<password>@<host>:5432/<dbname>
 
 # GitHub Integration
 GITHUB_TOKEN=your_personal_access_token_here

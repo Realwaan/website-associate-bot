@@ -26,6 +26,24 @@ async def safe_defer(interaction: discord.Interaction):
         except Exception as e:
             logger.warning(f"Unexpected error in safe_defer: {e}")
 
+async def _safe_edit_thread_name(thread: discord.Thread, new_name: str, **kwargs) -> bool:
+    """Safely edit thread name and properties with Discord 429 rate-limit resilience."""
+    try:
+        await thread.edit(name=new_name[:100], **kwargs)
+        return True
+    except discord.HTTPException as exc:
+        if exc.status == 429:
+            logger.warning(
+                "Discord 429 rate limit hit while editing thread %s (%s). Proceeding with database update.",
+                thread.id, exc
+            )
+        else:
+            logger.warning("Discord API error editing thread %s: %s", thread.id, exc)
+        return False
+    except Exception as exc:
+        logger.warning("Unexpected error editing thread %s: %s", thread.id, exc)
+        return False
+
 class TicketsCog(commands.Cog, name="Tickets"):
     """Handles ticket status workflow and assignment commands."""
 
@@ -56,12 +74,11 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 await interaction.followup.send("❌ Only Developers or PMs can claim tickets.")
                 return
 
-            member = interaction.guild.get_member(interaction.user.id)
+            member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
             username = member.display_name if member else interaction.user.name
             ticket_name = thread_info['ticket_name']
-            new_name = f"[CLAIMED][{username}]{ticket_name}"
+            new_name = f"[CLAIMED] [{username}] {ticket_name}"
 
-            await thread.edit(name=new_name)
             await asyncio.to_thread(
                 update_thread_status,
                 thread.id,
@@ -69,6 +86,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 claimed_by_id=interaction.user.id,
                 claimed_by_username=username,
             )
+            renamed = await _safe_edit_thread_name(thread, new_name)
 
             embed = discord.Embed(
                 title="🎯 Ticket Claimed",
@@ -76,8 +94,11 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 color=0x10b981 # Emerald
             )
             embed.add_field(name="Old Status", value="`[OPEN]`", inline=True)
-            embed.add_field(name="New Status", value=f"`[CLAIMED][{username}]`", inline=True)
-            embed.set_footer(text="CapStoneFlow Discord Bot • Ticket Assigned")
+            embed.add_field(name="New Status", value=f"`[CLAIMED] [{username}]`", inline=True)
+            if not renamed:
+                embed.set_footer(text="CapStoneFlow • Assigned in database (Thread title rename throttled by Discord).")
+            else:
+                embed.set_footer(text="CapStoneFlow Discord Bot • Ticket Assigned")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /claim: {e}")
@@ -108,9 +129,8 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             ticket_name = thread_info['ticket_name']
-            new_name = f"[OPEN]{ticket_name}"
+            new_name = f"[OPEN] {ticket_name}"
 
-            await thread.edit(name=new_name)
             await asyncio.to_thread(
                 update_thread_status,
                 thread.id,
@@ -118,6 +138,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 claimed_by_id=None,
                 claimed_by_username=None,
             )
+            renamed = await _safe_edit_thread_name(thread, new_name)
 
             embed = discord.Embed(
                 title="Ticket Unclaimed",
@@ -125,6 +146,8 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 color=discord.Color.orange()
             )
             embed.add_field(name="New Status", value="`[OPEN]`", inline=True)
+            if not renamed:
+                embed.set_footer(text="CapStoneFlow • Status updated in database (Thread rename throttled by Discord).")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /unclaim: {e}")
@@ -155,12 +178,11 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 await interaction.followup.send("❌ Only the assigned developer or a PM can submit this ticket for review.")
                 return
 
-            member = interaction.guild.get_member(interaction.user.id)
+            member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
             username = member.display_name if member else interaction.user.name
             ticket_name = thread_info['ticket_name']
-            new_name = f"[Pending-Review][{username}]{ticket_name}"
+            new_name = f"[Pending-Review] [{username}] {ticket_name}"
 
-            await thread.edit(name=new_name)
             await asyncio.to_thread(
                 update_thread_status,
                 thread.id,
@@ -170,16 +192,20 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 pr_url=pr_url,
             )
             await asyncio.to_thread(increment_developer_resolved, interaction.user.id, username)
+            renamed = await _safe_edit_thread_name(thread, new_name)
 
             embed = discord.Embed(
                 title="🚀 Ticket Ready for Review",
                 description=f"**{username}** submitted this ticket for QA verification.",
                 color=0x3b82f6 # Blue
             )
-            embed.add_field(name="Status", value=f"`[Pending-Review][{username}]`", inline=True)
+            embed.add_field(name="Status", value=f"`[Pending-Review] [{username}]`", inline=True)
             if pr_url:
                 embed.add_field(name="PR / Commit Link", value=f"[View GitHub PR]({pr_url})", inline=False)
-            embed.set_footer(text="CapStoneFlow • Developer Score +1")
+            if not renamed:
+                embed.set_footer(text="CapStoneFlow • Developer Score +1 (Thread rename throttled by Discord)")
+            else:
+                embed.set_footer(text="CapStoneFlow • Developer Score +1")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /resolved: {e}")
@@ -208,9 +234,8 @@ class TicketsCog(commands.Cog, name="Tickets"):
             dev_id = thread_info['resolved_by_id']
             dev_username = thread_info['resolved_by_username'] or interaction.user.name
             ticket_name = thread_info['ticket_name']
-            new_name = f"[CLAIMED][{dev_username}]{ticket_name}"
+            new_name = f"[CLAIMED] [{dev_username}] {ticket_name}"
 
-            await thread.edit(name=new_name)
             await asyncio.to_thread(
                 update_thread_status,
                 thread.id,
@@ -221,13 +246,16 @@ class TicketsCog(commands.Cog, name="Tickets"):
             )
             if dev_id:
                 await asyncio.to_thread(decrement_developer_resolved, dev_id)
+            renamed = await _safe_edit_thread_name(thread, new_name)
 
             embed = discord.Embed(
                 title="Ticket Unresolved",
                 description=f"Ticket returned to CLAIMED state by {interaction.user.mention}.",
                 color=discord.Color.orange()
             )
-            embed.add_field(name="New Status", value=f"`[CLAIMED][{dev_username}]`", inline=True)
+            embed.add_field(name="New Status", value=f"`[CLAIMED] [{dev_username}]`", inline=True)
+            if not renamed:
+                embed.set_footer(text="CapStoneFlow • Developer Score -1 (Thread rename throttled by Discord)")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /unresolve: {e}")
@@ -258,12 +286,11 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 await interaction.followup.send("❌ You cannot review a ticket you resolved. Another QA member must verify it.")
                 return
 
-            member = interaction.guild.get_member(interaction.user.id)
+            member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
             qa_username = member.display_name if member else interaction.user.name
             ticket_name = thread_info['ticket_name']
-            new_name = f"[Reviewed][{qa_username}]{ticket_name}"
+            new_name = f"[Reviewed] [{qa_username}] {ticket_name}"
 
-            await thread.edit(name=new_name)
             await asyncio.to_thread(
                 update_thread_status,
                 thread.id,
@@ -272,14 +299,18 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 reviewed_by_username=qa_username,
             )
             await asyncio.to_thread(increment_qa_reviewed, interaction.user.id, qa_username)
+            renamed = await _safe_edit_thread_name(thread, new_name)
 
             embed = discord.Embed(
                 title="✅ Ticket Verified & Reviewed",
                 description=f"**{qa_username}** verified all acceptance criteria.",
                 color=0x22c55e # Success green
             )
-            embed.add_field(name="Status", value=f"`[Reviewed][{qa_username}]`", inline=True)
-            embed.set_footer(text="CapStoneFlow • QA Score +1")
+            embed.add_field(name="Status", value=f"`[Reviewed] [{qa_username}]`", inline=True)
+            if not renamed:
+                embed.set_footer(text="CapStoneFlow • QA Score +1 (Thread rename throttled by Discord)")
+            else:
+                embed.set_footer(text="CapStoneFlow • QA Score +1")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /reviewed: {e}")
@@ -305,12 +336,11 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 await interaction.followup.send("❌ Only the QA who reviewed this ticket or a PM can unreview it.")
                 return
 
-            qa_id = thread_info['reviewed_by_id']
-            dev_username = thread_info['resolved_by_username'] or 'Dev'
-            ticket_name = thread_info['ticket_name']
-            new_name = f"[Pending-Review][{dev_username}]{ticket_name}"
+            qa_id = thread_info.get('reviewed_by_id')
+            dev_username = thread_info.get('resolved_by_username') or 'Dev'
+            ticket_name = thread_info.get('ticket_name') or 'Ticket'
+            new_name = f"[Pending-Review] [{dev_username}] {ticket_name}"
 
-            await thread.edit(name=new_name)
             await asyncio.to_thread(
                 update_thread_status,
                 thread.id,
@@ -320,13 +350,16 @@ class TicketsCog(commands.Cog, name="Tickets"):
             )
             if qa_id:
                 await asyncio.to_thread(decrement_qa_reviewed, qa_id)
+            renamed = await _safe_edit_thread_name(thread, new_name)
 
             embed = discord.Embed(
                 title="Ticket Unreviewed",
                 description=f"Ticket reverted back to Pending-Review by {interaction.user.mention}.",
                 color=discord.Color.orange()
             )
-            embed.add_field(name="New Status", value=f"`[Pending-Review][{dev_username}]`", inline=True)
+            embed.add_field(name="New Status", value=f"`[Pending-Review] [{dev_username}]`", inline=True)
+            if not renamed:
+                embed.set_footer(text="CapStoneFlow • QA Score -1 (Thread rename throttled by Discord)")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /unreview: {e}")
@@ -353,34 +386,103 @@ class TicketsCog(commands.Cog, name="Tickets"):
 
             user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
             is_involved = (
-                interaction.user.id == thread_info['claimed_by_id'] or
-                interaction.user.id == thread_info['resolved_by_id'] or
-                interaction.user.id == thread_info['reviewed_by_id']
+                interaction.user.id == thread_info.get('claimed_by_id') or
+                interaction.user.id == thread_info.get('resolved_by_id') or
+                interaction.user.id == thread_info.get('reviewed_by_id')
             )
 
-            if not (user_roles['is_pm'] or is_involved):
+            if not (user_roles.get('is_pm') or is_involved):
                 await interaction.followup.send("❌ Only PMs or involved team members can close tickets.")
                 return
 
-            member = interaction.guild.get_member(interaction.user.id)
+            member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
             username = member.display_name if member else interaction.user.name
-            ticket_name = thread_info['ticket_name']
-            new_name = f"[CLOSED][{username}]{ticket_name}"
+            ticket_name = thread_info.get('ticket_name') or 'Ticket'
+            new_name = f"[CLOSED] [{username}] {ticket_name}"
 
-            await thread.edit(name=new_name)
             await asyncio.to_thread(update_thread_status, thread.id, "CLOSED")
+            renamed = await _safe_edit_thread_name(thread, new_name, archived=True, locked=True)
 
             embed = discord.Embed(
                 title="🔒 Ticket Closed",
                 description=f"Closed by {interaction.user.mention}.",
                 color=discord.Color.red()
             )
-            embed.add_field(name="Final Status", value=f"`[CLOSED][{username}]`", inline=True)
-            embed.set_footer(text="CapStoneFlow • Sprint Milestone Achieved")
+            embed.add_field(name="Final Status", value=f"`[CLOSED] [{username}]`", inline=True)
+            if not renamed:
+                embed.set_footer(text="CapStoneFlow • Sprint Milestone Achieved (Thread lock throttled by Discord)")
+            else:
+                embed.set_footer(text="CapStoneFlow • Sprint Milestone Achieved")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /closed: {e}")
             await interaction.followup.send(f"❌ Error closing ticket: {e}")
+
+    # 8. /ticket-info
+    @app_commands.command(name="ticket-info", description="View current status, assignees, and next steps for this ticket thread")
+    async def ticket_info(self, interaction: discord.Interaction):
+        await safe_defer(interaction)
+        try:
+            if not isinstance(interaction.channel, discord.Thread):
+                await interaction.followup.send("❌ This command must be used inside a ticket thread.")
+                return
+
+            thread = interaction.channel
+            thread_info = await asyncio.to_thread(get_thread, thread.id)
+            if not thread_info:
+                await interaction.followup.send("❌ This thread is not tracked in the database.")
+                return
+
+            status = thread_info.get("status", "OPEN")
+            ticket_name = thread_info.get("ticket_name", thread.name)
+            folder = thread_info.get("folder", "unknown")
+            created_by = thread_info.get("created_by", "System")
+            claimed_by = thread_info.get("claimed_by_username")
+            resolved_by = thread_info.get("resolved_by_username")
+            reviewed_by = thread_info.get("reviewed_by_username")
+            pr_url = thread_info.get("pr_url")
+            external_task_id = thread_info.get("external_task_id")
+
+            color_map = {
+                "OPEN": 0x38bdf8,
+                "CLAIMED": 0xf59e0b,
+                "PENDING-REVIEW": 0x3b82f6,
+                "REVIEWED": 0x10b981,
+                "CLOSED": 0x64748b,
+            }
+
+            embed = discord.Embed(
+                title=f"📋 Ticket: {ticket_name}",
+                description=f"Status: **`[{status}]`** • Folder: `tickets/{folder}/`",
+                color=color_map.get(status, 0x6366f1)
+            )
+
+            embed.add_field(name="📂 Folder", value=f"`{folder}`", inline=True)
+            embed.add_field(name="👤 Created By", value=f"`{created_by}`", inline=True)
+            embed.add_field(name="🎯 Claimed By", value=f"**{claimed_by}**" if claimed_by else "*Unassigned*", inline=True)
+
+            if resolved_by:
+                embed.add_field(name="🚀 Resolved By", value=f"**{resolved_by}**", inline=True)
+            if reviewed_by:
+                embed.add_field(name="✅ QA Verified By", value=f"**{reviewed_by}**", inline=True)
+            if pr_url:
+                embed.add_field(name="🔗 PR / Commit", value=f"[View on GitHub]({pr_url})", inline=False)
+            if external_task_id:
+                embed.add_field(name="🌐 CapStoneFlow Task", value=f"`{external_task_id}`", inline=True)
+
+            action_guides = {
+                "OPEN": "👉 **Next Step**: Developers run `/claim` in this thread to take ownership.",
+                "CLAIMED": f"👉 **Next Step**: {claimed_by or 'Developer'} works on fix, then runs `/resolved [pr_url]` to submit for QA.",
+                "PENDING-REVIEW": "👉 **Next Step**: QA Reviewers verify the fix and run `/reviewed` (or developer runs `/unresolve`).",
+                "REVIEWED": "👉 **Next Step**: PM or team member runs `/closed` to archive and complete ticket.",
+                "CLOSED": "🏁 **Completed**: This sprint ticket is closed.",
+            }
+            embed.add_field(name="📌 Next Action", value=action_guides.get(status, "Use workflow commands to progress."), inline=False)
+            embed.set_footer(text="CapStoneFlow • Live Ticket Record")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error in /ticket-info: {e}")
+            await interaction.followup.send(f"❌ Error fetching ticket info: {e}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TicketsCog(bot))

@@ -42,7 +42,8 @@ class AIProfile:
     extra_body: dict[str, Any] = field(default_factory=dict)
 
     def is_configured(self) -> bool:
-        return bool(self.api_key and self.model)
+        # Configured if model is set and either an API key or custom/local endpoint is provided
+        return bool(self.model and (self.api_key or self.base_url))
 
     def safe_status(self) -> dict[str, Any]:
         return {
@@ -111,18 +112,39 @@ class NvidiaAIClient:
     def _get_profile(self, profile_name: str) -> AIProfile:
         prefix = self.PROFILE_PREFIXES.get(profile_name, self.PROFILE_PREFIXES["answer"])
 
-        api_key  = os.getenv(f"{prefix}_API_KEY") or os.getenv("NVIDIA_API_KEY") or ""
-        model    = os.getenv(f"{prefix}_MODEL")   or os.getenv("NVIDIA_MODEL")
+        api_key = (
+            os.getenv(f"{prefix}_API_KEY")
+            or os.getenv("AI_API_KEY")
+            or os.getenv("LOCAL_LLM_API_KEY")
+            or os.getenv("NVIDIA_API_KEY")
+            or ""
+        )
+        model = (
+            os.getenv(f"{prefix}_MODEL")
+            or os.getenv("AI_MODEL")
+            or os.getenv("LOCAL_LLM_MODEL")
+            or os.getenv("NVIDIA_MODEL")
+        )
         base_url = (
             os.getenv(f"{prefix}_INVOKE_URL")
+            or os.getenv(f"{prefix}_BASE_URL")
+            or os.getenv("AI_INVOKE_URL")
+            or os.getenv("AI_BASE_URL")
+            or os.getenv("LOCAL_LLM_URL")
             or os.getenv("NVIDIA_INVOKE_URL")
             or self._DEFAULT_BASE_URL
         )
-        timeout  = int(
+        timeout = int(
             os.getenv(f"{prefix}_TIMEOUT_SECONDS")
+            or os.getenv("AI_TIMEOUT_SECONDS")
+            or os.getenv("LOCAL_LLM_TIMEOUT_SECONDS")
             or os.getenv("NVIDIA_TIMEOUT_SECONDS")
             or 60
         )
+
+        # Default model to gemma-4 if base_url is a local endpoint and model wasn't set
+        if not model and ("localhost" in base_url or "127.0.0.1" in base_url or "192.168" in base_url or "10." in base_url):
+            model = os.getenv("LOCAL_LLM_MODEL", "gemma-4")
 
         # Strip any accidental "Bearer " prefix stored in the env value
         token = api_key.strip()
@@ -149,9 +171,10 @@ class NvidiaAIClient:
         )
 
     def _make_client(self, profile: AIProfile) -> "OpenAI":
+        # The OpenAI SDK requires a non-empty api_key string even for local servers that don't authenticate
         return OpenAI(
             base_url=profile.base_url,
-            api_key=profile.api_key,
+            api_key=profile.api_key or "local-no-key",
             timeout=profile.timeout_seconds,
         )
 
@@ -216,12 +239,15 @@ class NvidiaAIClient:
         if not prof.is_configured():
             raise AIClientError(
                 f"Profile '{pname}' is not configured. "
-                "Check NVIDIA_API_KEY and NVIDIA_MODEL in .env."
+                "Check AI_MODEL, LOCAL_LLM_URL, or NVIDIA_API_KEY in .env."
             )
 
-        # nemotron-super defaults to thinking; /no_think forces content to be populated.
-        think_directive = "/think" if enable_thinking is True else "/no_think"
-        system_content = f"{think_directive}\n\n{system}" if system else think_directive
+        is_nemotron = "nemotron" in (prof.model or "").lower()
+        if is_nemotron:
+            think_directive = "/think" if enable_thinking is True else "/no_think"
+            system_content = f"{think_directive}\n\n{system}" if system else think_directive
+        else:
+            system_content = system or "You are an expert AI assistant."
         
         if isinstance(prompt, list):
             messages = [{"role": "system", "content": system_content}] + prompt
@@ -231,9 +257,9 @@ class NvidiaAIClient:
                 {"role": "user",   "content": prompt},
             ]
 
-        # reasoning_budget is only sent when explicitly enabling thinking
+        # reasoning_budget is only sent when explicitly enabling thinking for Nemotron models
         extra_body: dict[str, Any] = {}
-        if enable_thinking is True:
+        if enable_thinking is True and is_nemotron:
             extra_body = dict(self._THINKING_EXTRA_BODY)
 
         client = self._make_client(prof)

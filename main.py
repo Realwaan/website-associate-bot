@@ -15,12 +15,15 @@ from database import (
     update_thread_status,
     begin_integration_delivery,
     finish_integration_delivery,
+    get_setting,
+    set_setting,
 )
 from keep_alive import (
     keep_alive,
     set_capstone_ticket_handler,
     set_capstone_status_handler,
     set_capstone_ready_checker,
+    set_github_webhook_handler,
 )
 
 # Logging Setup
@@ -546,6 +549,104 @@ def capstone_status_handler(payload: dict):
 
 
 
+async def _process_github_push_payload(payload: dict) -> None:
+    """Extract and post GitHub commits arriving via webhook payload."""
+    try:
+        repo_data = payload.get("repository", {})
+        repo_name = repo_data.get("name")
+        owner_data = repo_data.get("owner", {})
+        repo_owner = owner_data.get("login") or owner_data.get("name")
+        ref = payload.get("ref", "")
+        branch = ref.split("/")[-1] if "/" in ref else "main"
+        commits = payload.get("commits", [])
+
+        if not repo_owner or not repo_name or not commits:
+            return
+
+        channel_id_str = await asyncio.to_thread(get_setting, "commit_channel_id")
+        if not channel_id_str:
+            channel_id_str = await asyncio.to_thread(get_setting, "reminders_channel_id")
+
+        target_channel = None
+        if channel_id_str and channel_id_str.isdigit():
+            target_channel = bot.get_channel(int(channel_id_str))
+            if not target_channel:
+                try:
+                    target_channel = await bot.fetch_channel(int(channel_id_str))
+                except Exception:
+                    target_channel = None
+
+        if not target_channel:
+            for guild in bot.guilds:
+                if guild.system_channel:
+                    target_channel = guild.system_channel
+                    break
+                for ch in guild.text_channels:
+                    target_channel = ch
+                    break
+                if target_channel:
+                    break
+
+        if not target_channel:
+            logger.warning("No channel found to post webhook commits to.")
+            return
+
+        async def mark_event_posted(key: str, ch_id: int) -> bool:
+            setting_key = f"event_posted:{ch_id}:{key}"
+            val = await asyncio.to_thread(get_setting, setting_key)
+            if val:
+                return False
+            await asyncio.to_thread(set_setting, setting_key, "1")
+            return True
+
+        from repo_updates import post_push_commits_from_payload
+        posted = await post_push_commits_from_payload(
+            target_channel=target_channel,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            branch=branch,
+            commits=commits,
+            mark_event_posted=mark_event_posted,
+        )
+        logger.info("Posted %s webhook commit(s) to #%s", posted, getattr(target_channel, "name", "channel"))
+    except Exception as exc:
+        logger.exception("Error processing GitHub push payload: %s", exc)
+
+
+def github_webhook_handler(raw_body: bytes, headers: dict) -> tuple[int, str]:
+    """Verify and dispatch incoming GitHub webhook requests."""
+    import json
+    from webhook_security import verify_github_signature
+
+    secret = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+    require_secret = os.getenv("WEBHOOK_REQUIRE_SECRET", "true").lower() == "true"
+    sig_header = headers.get("X-Hub-Signature-256") or headers.get("x-hub-signature-256")
+
+    if not verify_github_signature(
+        raw_body=raw_body,
+        signature_header=sig_header,
+        secret=secret,
+        require_secret=require_secret,
+    ):
+        return 401, "Invalid webhook signature"
+
+    event_type = headers.get("X-GitHub-Event") or headers.get("x-github-event")
+    if event_type == "ping":
+        return 200, "pong"
+
+    if event_type == "push":
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except Exception:
+            return 400, "Invalid JSON payload"
+
+        if bot.loop and not bot.loop.is_closed():
+            asyncio.run_coroutine_threadsafe(_process_github_push_payload(payload), bot.loop)
+        return 200, "Push event received and scheduled"
+
+    return 200, f"Event {event_type} ignored"
+
+
 def main():
     # 1. Start Keep-Alive web server immediately for Render health checks (/health)
     if os.getenv("KEEP_ALIVE_ENABLED", "true").lower() == "true" or os.getenv("RENDER") or os.getenv("PORT"):
@@ -553,6 +654,7 @@ def main():
             set_capstone_ticket_handler(capstone_ticket_handler)
             set_capstone_status_handler(capstone_status_handler)
             set_capstone_ready_checker(lambda: bot.is_ready())
+            set_github_webhook_handler(github_webhook_handler)
             keep_alive()
             logger.info("Keep-alive web server initialized.")
         except Exception as e:

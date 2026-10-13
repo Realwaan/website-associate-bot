@@ -16,17 +16,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 
-from scan_project import (
-    scan_directory,
-    group_issues,
-    generate_tickets,
-    DEFAULT_IGNORE_DIRS,
-    DEFAULT_FILE_EXTENSIONS,
-    DEFAULT_LARGE_FILE_THRESHOLD,
-)
+try:
+    from scripts.scan_project import (
+        scan_directory,
+        group_issues,
+        generate_tickets,
+        DEFAULT_IGNORE_DIRS,
+        DEFAULT_FILE_EXTENSIONS,
+        DEFAULT_LARGE_FILE_THRESHOLD,
+    )
+except ImportError:
+    from scan_project import (
+        scan_directory,
+        group_issues,
+        generate_tickets,
+        DEFAULT_IGNORE_DIRS,
+        DEFAULT_FILE_EXTENSIONS,
+        DEFAULT_LARGE_FILE_THRESHOLD,
+    )
 
 
 FEATURE_SIGNATURES: dict[str, tuple[str, ...]] = {
@@ -779,7 +789,7 @@ def _build_roadmap_markdown(
 ) -> str:
     """Create a markdown roadmap document."""
 
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     category_lines = "\n".join([f"- **{cat}**: {count}" for cat, count in top_categories]) or "- No issues found"
     dir_lines = "\n".join([f"- `{d}`: {count} scanned file(s)" for d, count in top_dirs]) or "- No directories scanned"

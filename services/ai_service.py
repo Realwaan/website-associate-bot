@@ -19,17 +19,34 @@ class AIService:
         self._init_openai_fallback()
 
     def _init_openai_fallback(self):
-        openai_key = os.getenv("OPENAI_API_KEY") or os.getenv("NVIDIA_API_KEY")
-        if openai_key:
+        openai_key = (
+            os.getenv("OPENAI_API_KEY")
+            or os.getenv("NVIDIA_API_KEY")
+            or os.getenv("AI_API_KEY")
+            or os.getenv("LOCAL_LLM_API_KEY")
+        )
+        base_url = (
+            os.getenv("LOCAL_LLM_URL")
+            or os.getenv("AI_BASE_URL")
+            or os.getenv("AI_INVOKE_URL")
+            or (os.getenv("NVIDIA_INVOKE_URL") or "https://integrate.api.nvidia.com/v1" if os.getenv("NVIDIA_API_KEY") else None)
+        )
+        # If running on local hardware (e.g. Future Forge Gemma 4 endpoint) without an API key
+        if not openai_key and base_url:
+            openai_key = "local-no-key"
+
+        if openai_key or base_url:
             try:
                 from openai import OpenAI
-                base_url = os.getenv("AI_BASE_URL", "https://integrate.api.nvidia.com/v1" if os.getenv("NVIDIA_API_KEY") else None)
-                if base_url:
-                    self._openai_client = OpenAI(api_key=openai_key, base_url=base_url)
-                else:
+                clean_url = base_url.rstrip("/") if base_url else None
+                if clean_url and clean_url.endswith("/chat/completions"):
+                    clean_url = clean_url[:-len("/chat/completions")]
+                if clean_url:
+                    self._openai_client = OpenAI(api_key=openai_key or "local-no-key", base_url=clean_url)
+                elif openai_key:
                     self._openai_client = OpenAI(api_key=openai_key)
             except Exception as e:
-                logger.warning(f"OpenAI fallback initialization failed: {e}")
+                logger.warning(f"AI local/OpenAI fallback initialization failed: {e}")
 
     def is_configured(self) -> bool:
         return bool(self.gemini_key or self._openai_client)
@@ -68,7 +85,10 @@ class AIService:
         # 2. Fallback: OpenAI / NVIDIA NIM
         if self._openai_client:
             try:
-                model = os.getenv("AI_MODEL", "gpt-4o-mini" if "api.openai.com" in getattr(self._openai_client, "base_url", "") else "meta/llama-3.3-70b-instruct")
+                client_url = str(getattr(self._openai_client, "base_url", ""))
+                is_local = any(loc in client_url for loc in ["localhost", "127.0.0.1", "192.168", "10."])
+                default_model = "gemma-4" if is_local else ("gpt-4o-mini" if "api.openai.com" in client_url else "meta/llama-3.3-70b-instruct")
+                model = os.getenv("LOCAL_LLM_MODEL") or os.getenv("AI_MODEL") or default_model
                 resp = self._openai_client.chat.completions.create(
                     model=model,
                     messages=[

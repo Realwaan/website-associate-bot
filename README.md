@@ -320,26 +320,26 @@ In Render logs, confirm:
 
 | Command | Description | Who Can Use |
 |---------|-------------|-------------|
-| `/set-role developer` | Assign yourself the Developer role | Anyone |
-| `/set-role qa` | Assign yourself the QA role | Anyone |
-| `/set-role pm` | Assign yourself the Project Manager role | Server admins only |
+| `/assign-role <dev\|qa\|pm> [member]` | Assign role to yourself or another team member | Anyone for dev/qa, Admins/PMs for PM |
+| `/set-role <developer\|qa\|pm> [member]` | Set role for yourself or a member (alias) | Anyone for dev/qa, Admins/PMs for PM |
 
-### Ticket Loading (PM Only)
+### Hackathon Planning & Ticket Management (PM / Admins)
 
 | Command | Description |
 |---------|-------------|
-| `/load-tickets <folder> <channel>` | Load markdown files from a folder into a channel as threads |
+| `/plan-mvp <idea> <folder> [auto_load] [area]` | Break down a raw hackathon idea into atomic tickets, binary criteria, and `PLAN.md` checklist with optional instant thread creation |
+| `/load-tickets <folder> <channel>` | Load markdown files from a folder into a channel as threads (includes rate-limit backoff) |
 | `/scan-pdf <pdf> [folder]` | Upload a website/design brief PDF and generate roadmap + tickets (ROADMAP.md attached) |
-| `/rebuild-db <folder> <channel>` | Rebuild database entries from existing threads (recovery tool) |
-| `/reset-loaded <folder> <channel>` | Clear loaded-ticket mappings so deleted tickets can be loaded again |
+| `/scan-roadmap <path_or_repo_url> <folder> [threshold] [generate_tickets]` | Scan local folder or HTTPS repo URL and generate 12-week roadmap markdown with suggested improvements (`ROADMAP.md` attached) |
+| `/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]` | Cloud-safe scan by cloning a repo URL and generating issue + feature tickets |
 | `/scan-project <path> <folder> [threshold]` | Scan a project directory for issues and auto-generate ticket files |
-| `/scan-roadmap <path_or_repo_url> <folder> [threshold] [generate_tickets]` | Scan local folder or HTTPS repo URL and generate roadmap markdown with suggested improvements (ROADMAP.md attached + Project Improvement Summary ticket) |
-| `/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]` | Cloud-safe scan by cloning a repo URL and generating issue + feature tickets (includes Project Improvement Summary ticket) |
+| `/rebuild-db <folder> <channel>` | Rebuild database entries from existing threads (recovery tool) |
+| `/reset-loaded <folder> <channel>` | Clear loaded-ticket mappings (alias for `/clear-folder-tickets`) |
 | `/set-commit-channel <channel>` | Set default channel for formal commit/merge bulletins |
 | `/update-project <repo_url> [branch] [limit] [feed_type] [channel]` | Post formal repository updates (commits, merged PRs, or both) with GitHub links and enable automatic notifications (webhook-first) |
 | `/auto-updates <enable\|disable\|status> [repo_url] [branch] [feed_type] [limit]` | Control automatic repository notifications (pause, resume, inspect config) |
-| `/health-details` | Show DB latency, auto-update/webhook status, and recent operational diagnostics |
-| `/ai-status` | Show current AI provider/model configuration (PM only) |
+| `/health-details` | Show DB latency, auto-update/webhook status, and operational diagnostics |
+| `/ai-status` | Show current AI provider/model configuration and fallback health |
 
 Automatic updates track a per-branch commit cursor and post each new commit title detected since the previous run. `/update-project` now also persists the destination channel for background polling.
 
@@ -351,6 +351,7 @@ Automatic updates track a per-branch commit cursor and post each new commit titl
 | `/unclaim` | Unclaim; resets to OPEN | — |
 | `/resolved <pr_url>` | Submit for QA review with PR link | +1 dev |
 | `/unresolve` | Revert to CLAIMED | -1 dev |
+| `/ticket-info` | In-thread live status, claimer, resolver, reviewer, PR, and acceptance criteria | — |
 
 ### QA Commands (Use Inside a Thread)
 
@@ -359,15 +360,17 @@ Automatic updates track a per-branch commit cursor and post each new commit titl
 | `/reviewed` | Approve a Pending-Review ticket | +1 QA |
 | `/unreview` | Revert to Pending-Review | -1 QA |
 
-### General Commands
+### General, AI & Analytics Commands
 
 | Command | Description |
 |---------|-------------|
+| `/sprint-stats [folder]` | Real-time hackathon burndown: ASCII progress bar, pipeline counts, and active modules |
+| `/ask-ai <question> [temperature]` | Technical architect consultation with rendered LaTeX equation diagrams |
 | `/closed` | Close a ticket (PM or involved Dev/QA) |
 | `/leaderboard <dev\|qa> [limit]` | Show leaderboard (default: dev, limit: 10) |
 | `/setreminderschannel <channel>` | Set channel for daily ticket summary (PM only) |
 | `/ticket-folders` | List all available ticket folders |
-| `/help` | Show in-Discord help with workflow and role info |
+| `/help` | Show in-Discord help with workflow and role info (alias for `/commands`) |
 
 ---
 

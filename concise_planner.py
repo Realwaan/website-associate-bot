@@ -151,15 +151,90 @@ def generate_concise_plan(
         "Follow all planning rules strictly. Return ONLY the JSON object."
     )
 
-    return ai_client.chat(
-        user_prompt,
-        system=_PLAN_SYSTEM_PROMPT,
-        temperature=0.4,
-        max_tokens=4096,
-        top_p=0.9,
-        enable_thinking=True,
-        profile=profile,
-    )
+    if ai_client is not None and hasattr(ai_client, "chat"):
+        try:
+            return ai_client.chat(
+                user_prompt,
+                system=_PLAN_SYSTEM_PROMPT,
+                temperature=0.4,
+                max_tokens=4096,
+                top_p=0.9,
+                enable_thinking=True,
+                profile=profile,
+            )
+        except Exception as exc:
+            logger.warning("ai_client.chat failed, falling back to ai_service: %s", exc)
+
+    try:
+        from services.ai_service import ai_service
+        resp = ai_service.generate_text(user_prompt, system_prompt=_PLAN_SYSTEM_PROMPT, temperature=0.4)
+        if resp and "{" in resp:
+            return resp
+    except Exception as exc:
+        logger.warning("ai_service.generate_text failed, using heuristic fallback: %s", exc)
+
+    # Heuristic fallback for offline hackathon environments
+    slug_base = re.sub(r"[^a-z0-9]+", "-", description.lower()).strip("-")[:30] or "mvp"
+    return json.dumps({
+        "project_summary": f"MVP implementation plan for: {description[:200]}",
+        "tickets": [
+            {
+                "area": "server",
+                "slug": f"{slug_base}-core-api",
+                "title": f"Implement Core Data Contract and Backend API ({slug_base})",
+                "priority": True,
+                "problem": "Backend data model and core service endpoints are not yet defined.",
+                "related_files": ["server/api/", "models/schema.py"],
+                "what_to_fix": [
+                    "Define core data model and schemas",
+                    "Implement primary CRUD / action endpoint",
+                    "Add response validation and error handling",
+                ],
+                "acceptance_criteria": [
+                    "API successfully handles primary request lifecycle",
+                    "Returns standard JSON response with 200/201 status",
+                ],
+                "cta": "Backend Developer: Claim this first — blocks user-facing views.",
+                "blocks": ["client-view"],
+            },
+            {
+                "area": "client",
+                "slug": f"{slug_base}-client-view",
+                "title": f"Build Primary Interactive User Interface ({slug_base})",
+                "priority": False,
+                "problem": "Users have no interactive interface to trigger the workflow.",
+                "related_files": ["client/components/", "client/pages/"],
+                "what_to_fix": [
+                    "Scaffold main interactive view with responsive layout",
+                    "Connect form inputs to backend API endpoint",
+                    "Handle loading, success, and error feedback states",
+                ],
+                "acceptance_criteria": [
+                    "UI renders without errors on mobile and desktop",
+                    "User can submit the form and view results in under 60 seconds",
+                ],
+                "cta": "Frontend Developer: Build view once core API contract is ready.",
+                "blocks": [],
+            },
+            {
+                "area": "utils",
+                "slug": f"{slug_base}-validation-tests",
+                "title": f"Add Automated Tests and Smoke Verification ({slug_base})",
+                "priority": False,
+                "problem": "No automated smoke tests exist to verify the MVP before presentation.",
+                "related_files": ["tests/test_mvp.py"],
+                "what_to_fix": [
+                    "Write integration test for happy path workflow",
+                    "Verify input validation on edge cases",
+                ],
+                "acceptance_criteria": [
+                    "All automated tests pass cleanly with 100% exit code 0",
+                ],
+                "cta": "QA / Developer: Verify MVP before live hackathon demo.",
+                "blocks": [],
+            },
+        ],
+    })
 
 
 # ---------------------------------------------------------------------------

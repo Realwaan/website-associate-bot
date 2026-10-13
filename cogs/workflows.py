@@ -26,6 +26,105 @@ async def safe_defer(interaction: discord.Interaction):
             logger.warning(f"Unexpected error in safe_defer: {e}")
 
 WORKFLOW_SPECS = {
+    "future-forge": {
+        "title": "Future Forge: 1-Day Hackathon Sprint (ALMA Gemma 4)",
+        "category": "Hackathon",
+        "duration": "1 Day / 8 Hours (10 AM - 6 PM)",
+        "color": 0x38bdf8,
+        "description": "8-hour high-velocity hackathon blueprint tailored for Future Forge Cebu: Local Gemma 4 Model Integration -> Core MVP -> UI Integration -> Code Audit -> Judge Pitch & Demo.",
+        "steps": [
+            {
+                "id": "forge-01-brief-and-contract",
+                "title": "Phase 1: Brief Scoping & Local Gemma 4 Model Contract",
+                "priority": "CRITICAL",
+                "problem": "Team must lock MVP scope and verify local Gemma 4 model endpoint connectivity in Hour 1.",
+                "what_to_fix": [
+                    "Extract core user problem statement from hackathon brief or proposal",
+                    "Verify connectivity to local hardware serving Gemma 4 (no API keys, zero cloud bill)",
+                    "Lock P0 data contracts and API schema (defer nice-to-haves to P2)",
+                    "Create tickets and assign initial responsibilities using /set-role"
+                ],
+                "acceptance_criteria": [
+                    "MVP feature boundary agreed with zero blockers",
+                    "Local Gemma 4 model connection verified via /ai-status and /ask-ai",
+                    "Core schema and API contract documented"
+                ],
+                "files": ["src/types/", "docs/HACKATHON_MVP.md"]
+            },
+            {
+                "id": "forge-02-core-backend",
+                "title": "Phase 2: Backend Logic & Local Model Pipeline",
+                "priority": "CRITICAL",
+                "problem": "Build the core functionality powered by local Gemma 4 without external cloud dependencies.",
+                "what_to_fix": [
+                    "Implement the primary business logic engine or agent pipeline",
+                    "Connect application to the local Gemma 4 inference server",
+                    "Add resilient error handling and response formatting",
+                    "Push commits and verify repo updates channel stream"
+                ],
+                "acceptance_criteria": [
+                    "Backend pipeline processes inputs and receives local Gemma 4 responses",
+                    "Zero external API keys used (100% on-premise execution)",
+                    "Code passes initial linting without fatal errors"
+                ],
+                "files": ["server/", "services/"]
+            },
+            {
+                "id": "forge-03-frontend-ui",
+                "title": "Phase 3: Interactive UI & Core User Journey",
+                "priority": "HIGH",
+                "problem": "Judges need a visually impressive, intuitive interface they can understand in under 60 seconds.",
+                "what_to_fix": [
+                    "Scaffold responsive dashboard/interface with modern typography and sleek aesthetic",
+                    "Connect frontend inputs to the local model backend service",
+                    "Implement clear loading states and real-time response displays",
+                    "Eliminate confusing jargon from user-facing copy"
+                ],
+                "acceptance_criteria": [
+                    "Interactive demo completes end-to-end user journey in under 60 seconds",
+                    "UI renders cleanly on both laptop and mobile viewport",
+                    "User gets instant feedback during local model inference"
+                ],
+                "files": ["src/components/", "src/pages/"]
+            },
+            {
+                "id": "forge-04-audit-and-qa",
+                "title": "Phase 4: Code Quality, Automated Tests & Audit",
+                "priority": "HIGH",
+                "problem": "Uncaught bugs or broken edge cases during judge evaluation will ruin an otherwise great demo.",
+                "what_to_fix": [
+                    "Run /scan-project to detect leftover TODOs, debug code, or hardcoded secrets",
+                    "Write automated smoke tests for the primary happy path",
+                    "Test graceful fallbacks for unexpected or malformed inputs",
+                    "Record sprint completion progress via /sprint-stats and /leaderboard"
+                ],
+                "acceptance_criteria": [
+                    "All automated unit/smoke tests exit with code 0",
+                    "Zero secrets or sensitive keys exposed in codebase",
+                    "Sprint stats reflect 100% completed MVP tickets"
+                ],
+                "files": ["tests/", "scripts/"]
+            },
+            {
+                "id": "forge-05-pitch-and-demo",
+                "title": "Phase 5: Judge Pitch Deck & Live Demo Playbook",
+                "priority": "CRITICAL",
+                "problem": "Align final presentation with Future Forge judges: William Heath (CAIO), Terenz Jomar Dela Cruz (CTO), Jared Barong (BYU).",
+                "what_to_fix": [
+                    "Prepare 3-minute pitch highlighting local model performance, zero cloud bill, and architectural elegance",
+                    "Rehearse 60-second live demo showing real local Gemma 4 inference on local hardware",
+                    "Highlight team velocity and engineering discipline using bot sprint stats",
+                    "Prepare answers for technical architecture questions (CAIO/CTO focus) and real-world impact (BYU coordinator focus)"
+                ],
+                "acceptance_criteria": [
+                    "Live demo runs without crashes or network delays",
+                    "Pitch deck emphasizes local privacy, zero API cost, and high utility",
+                    "Team roles and contribution stats verified via leaderboard"
+                ],
+                "files": ["docs/PITCH_DEMO_PLAYBOOK.md"]
+            }
+        ]
+    },
     "design-sprint": {
         "title": "5-Day Design Sprint",
         "category": "Design",
@@ -542,6 +641,7 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
         project_name="Name of the project or feature (e.g. USCCE Attendance)"
     )
     @app_commands.choices(workflow_type=[
+        app_commands.Choice(name="Future Forge 1-Day Sprint (ALMA Gemma 4)", value="future-forge"),
         app_commands.Choice(name="5-Day Design Sprint (Design)", value="design-sprint"),
         app_commands.Choice(name="Write a PRD / Product Spec (Product)", value="write-prd"),
         app_commands.Choice(name="Build a Design System (Design)", value="design-system"),
@@ -602,13 +702,23 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(md_content)
 
-                # Create Thread
+                # Create Thread with 429 backoff resilience
                 thread_name = f"[{step['priority']}][OPEN] {step['title']}"[:100]
-                thread = await interaction.channel.create_thread(
-                    name=thread_name,
-                    auto_archive_duration=1440,
-                    type=discord.ChannelType.public_thread
-                )
+                thread = None
+                for attempt in range(2):
+                    try:
+                        thread = await interaction.channel.create_thread(
+                            name=thread_name,
+                            auto_archive_duration=1440,
+                            type=discord.ChannelType.public_thread
+                        )
+                        break
+                    except discord.HTTPException as err:
+                        if err.status == 429 and attempt == 0:
+                            logger.warning("Discord 429 in /workflow thread creation; backing off 2s...")
+                            await asyncio.sleep(2.0)
+                        else:
+                            raise
 
                 # Post Initial Step Embed
                 step_embed = discord.Embed(
@@ -647,6 +757,8 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
                     interaction.channel_id,
                 )
                 created_threads.append(thread.mention)
+                # Sleep briefly to avoid tripping Discord rate limits
+                await asyncio.sleep(0.8)
 
             summary_embed = discord.Embed(
                 title="🎉 Workflow Generated & Synchronized!",

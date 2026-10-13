@@ -65,6 +65,38 @@ class TestAIChatThread(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(messages[3]['role'], 'user')
             self.assertEqual(messages[3]['content'], 'Question 2')
 
+    @patch('ai_client.OpenAI')
+    def test_chat_client_local_gemma_no_api_key(self, mock_openai):
+        """Verify that local endpoints with Gemma 4 work without requiring an API key."""
+        mock_completions = MagicMock()
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Gemma local response"
+        mock_response.choices = [mock_choice]
+        mock_completions.create.return_value = mock_response
+        mock_openai.return_value.chat.completions = mock_completions
+
+        with patch.dict('os.environ', {
+            'LOCAL_LLM_URL': 'http://localhost:11434/v1',
+            'LOCAL_LLM_MODEL': 'gemma-4',
+            'AI_ANSWER_API_KEY': '',
+            'NVIDIA_API_KEY': '',
+            'AI_ANSWER_MODEL': '',
+            'NVIDIA_MODEL': '',
+        }, clear=False):
+            res = self.client.chat("Explain architecture")
+            self.assertEqual(res, "Gemma local response")
+
+            # Verify that OpenAI client was created with local-no-key and custom URL
+            mock_openai.assert_called_with(
+                base_url='http://localhost:11434/v1',
+                api_key='local-no-key',
+                timeout=60,
+            )
+            call_kwargs = mock_completions.create.call_args[1]
+            messages = call_kwargs['messages']
+            self.assertNotIn('/no_think', messages[0]['content'])
+
     @patch('main.async_has_role')
     @patch('main.ai_client')
     @patch('main.bot')
