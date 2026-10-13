@@ -129,13 +129,26 @@ class AIService:
         resp = self.generate_text(prompt, system_prompt="You are a senior technical analyst. Respond ONLY in valid JSON.")
         try:
             cleaned = resp.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
             if cleaned.startswith("```"):
-                cleaned = cleaned[3:]
+                first_nl = cleaned.find("\n")
+                if first_nl != -1:
+                    cleaned = cleaned[first_nl + 1:]
+                else:
+                    cleaned = cleaned[3:]
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3]
-            return json.loads(cleaned.strip())
+            cleaned = cleaned.strip()
+
+            start = cleaned.find("{")
+            if start >= 0:
+                try:
+                    data, _ = json.JSONDecoder().raw_decode(cleaned, start)
+                    if isinstance(data, dict):
+                        return data
+                except Exception:
+                    pass
+
+            return json.loads(cleaned)
         except Exception:
             return {
                 "projectTitle": "Analyzed Project",

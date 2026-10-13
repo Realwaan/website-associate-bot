@@ -73,7 +73,9 @@ def _slugify(text: str, max_len: int = 60) -> str:
 
 def _safe_folder_name(value: str) -> str:
     cleaned = _slugify(value.replace(".pdf", ""))
-    return cleaned or "pdf-brief"
+    if not cleaned or cleaned == "item":
+        return "pdf-brief"
+    return cleaned
 
 
 def _strip_code_fences(text: str) -> str:
@@ -143,23 +145,29 @@ def _extract_text_with_ocr(pdf_path: str, page_count: int) -> str:
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
     doc = pdfium.PdfDocument(pdf_path)
-    max_pages = min(page_count, 40)
-    rendered_scale = 220 / 72.0
-    parts: list[str] = []
+    try:
+        max_pages = min(page_count, 40)
+        rendered_scale = 220 / 72.0
+        parts: list[str] = []
 
-    for index in range(max_pages):
+        for index in range(max_pages):
+            try:
+                page = doc[index]
+                bitmap = page.render(scale=rendered_scale)
+                image = bitmap.to_pil()
+                text = pytesseract.image_to_string(image) or ""
+            except Exception:
+                text = ""
+
+            if text.strip():
+                parts.append(text.strip())
+
+        return "\n\n".join(parts).strip()
+    finally:
         try:
-            page = doc[index]
-            bitmap = page.render(scale=rendered_scale)
-            image = bitmap.to_pil()
-            text = pytesseract.image_to_string(image) or ""
+            doc.close()
         except Exception:
-            text = ""
-
-        if text.strip():
-            parts.append(text.strip())
-
-    return "\n\n".join(parts).strip()
+            pass
 
 
 def extract_pdf_text(pdf_path: str) -> tuple[int, str, bool]:
@@ -172,20 +180,29 @@ def extract_pdf_text(pdf_path: str) -> tuple[int, str, bool]:
             "PDF support is unavailable. Install the `pypdf` package to enable `/scan-pdf`."
         ) from _PYPDF_IMPORT_ERROR
 
-    reader = PdfReader(pdf_path)
+    reader = None
     parts: list[str] = []
-
-    for page in reader.pages:
-        text = ""
-        try:
-            text = page.extract_text() or ""
-        except Exception:
+    page_count = 0
+    try:
+        reader = PdfReader(pdf_path)
+        for page in reader.pages:
             text = ""
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                text = ""
 
-        if text.strip():
-            parts.append(text.strip())
+            if text.strip():
+                parts.append(text.strip())
 
-    page_count = len(reader.pages)
+        page_count = len(reader.pages)
+    finally:
+        if reader is not None and hasattr(reader, "close"):
+            try:
+                reader.close()
+            except Exception:
+                pass
+
     extracted_text = "\n\n".join(parts).strip()
     used_ocr = False
 
@@ -251,6 +268,7 @@ def _build_prompt(pdf_name: str, extracted_text: str, page_count: int) -> str:
         "- Focus on a website build or redesign workflow, not codebase issues.\n"
         "- Make tickets actionable and scoped so each one can be loaded into a Discord thread.\n"
         "- Create 5 to 10 tickets covering branding, layout, responsive behavior, page sections, content structure, and any interactions implied by the PDF.\n"
+        "- In roadmap_markdown, provide a concise phased milestone plan (Phase 1, Phase 2, Phase 3, Phase 4) covering timeline, milestones, and deliverable goals.\n"
         "- Use the PDF details to infer logo, fonts, color palette, features, mockups, and wireframes.\n"
         "- If the PDF is image-heavy or ambiguous, record that in open_questions.\n"
         "- Keep acceptance criteria concrete and testable.\n\n"
@@ -384,31 +402,247 @@ def _render_ticket_markdown(ticket: dict[str, Any], pdf_name: str) -> str:
 """.strip() + "\n"
 
 
-def scan_pdf_brief(
-    pdf_path: str,
+def _render_roadmap_markdown(
+    data: dict[str, Any],
+    pdf_name: str,
+    page_count: int,
+    chars_extracted: int,
+    used_ocr: bool,
+    tickets: list[dict[str, Any]],
     output_folder: str,
-    tickets_dir: str,
-    ai_client: NvidiaAIClient,
+) -> str:
+    """Render a comprehensive, PM-ready ROADMAP.md document with full ticket cross-referencing."""
+    project_name = str(data.get("project_name") or Path(pdf_name).stem).strip() or Path(pdf_name).stem
+    summary = str(data.get("summary") or "").strip() or "No executive summary was provided."
+    design_system = data.get("design_system") if isinstance(data.get("design_system"), dict) else {}
+    pages = data.get("pages") if isinstance(data.get("pages"), list) else []
+    features = _normalize_list(data.get("features"))
+    wireframes = _normalize_list(data.get("wireframes"))
+    open_questions = _normalize_list(data.get("open_questions"))
+    ai_roadmap_raw = str(data.get("roadmap_markdown") or "").strip()
+
+    extraction_mode = "OCR fallback (Scanned/Image PDF)" if used_ocr else "Embedded vector text"
+
+    lines: list[str] = [
+        f"# {project_name} — Development Roadmap",
+        "",
+        f"> **Source Brief**: `{pdf_name}` ({page_count} pages • {chars_extracted:,} chars extracted via {extraction_mode})",
+        "",
+        "---",
+        "",
+        "## 1. Executive Summary & Vision",
+        "",
+        summary,
+        "",
+        "### Scope & Delivery Targets",
+        f"- **Target Pages Identified**: {len(pages)}",
+        f"- **Core Extracted Features**: {len(features)}",
+        f"- **Generated Execution Tickets**: {len(tickets)} under `tickets/{output_folder}/`",
+        "",
+        "---",
+        "",
+        "## 2. Design System Foundations",
+        "",
+    ]
+
+    logo = str(design_system.get("logo") or "Not specified").replace("|", "/")
+    colors_list = _normalize_list(design_system.get("color_palette"))
+    if not colors_list:
+        p_col = design_system.get("primary_color") or design_system.get("primaryColor")
+        s_col = design_system.get("secondary_color") or design_system.get("secondaryColor")
+        if p_col:
+            colors_list.append(f"Primary: {p_col}")
+        if s_col:
+            colors_list.append(f"Secondary: {s_col}")
+    colors = ", ".join(colors_list) or "Not specified"
+    colors = colors.replace("|", "/")
+
+    fonts = ", ".join(_normalize_list(design_system.get("fonts"))) or "Not specified"
+    fonts = fonts.replace("|", "/")
+    tone = str(design_system.get("visual_tone") or "Not specified").replace("|", "/")
+
+    lines.extend([
+        "| Foundation Element | Specification |",
+        "| :--- | :--- |",
+        f"| **Brand Identity / Logo** | {logo} |",
+        f"| **Color Palette** | {colors} |",
+        f"| **Typography** | {fonts} |",
+        f"| **Visual Tone** | {tone} |",
+        "",
+    ])
+
+    design_notes = _normalize_list(design_system.get("notes"))
+    if design_notes:
+        lines.append("**Design Notes:**")
+        lines.extend([f"- {note}" for note in design_notes])
+        lines.append("")
+
+    lines.extend([
+        "---",
+        "",
+        "## 3. Site Architecture & Target Pages",
+        "",
+    ])
+
+    if pages:
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            p_name = str(page.get("name") or "Page").strip()
+            p_purpose = str(page.get("purpose") or "Not specified").strip()
+            p_sections = ", ".join(_normalize_list(page.get("sections"))) or "General layout"
+            p_notes = ", ".join(_normalize_list(page.get("notes")))
+            note_str = f" • *Notes*: {p_notes}" if p_notes else ""
+            lines.append(f"- **{p_name}**: {p_purpose}")
+            lines.append(f"  - *Sections*: {p_sections}{note_str}")
+    else:
+        lines.append("- *(No specific page hierarchy extracted from brief)*")
+    lines.append("")
+
+    if features:
+        lines.append("### Core Features")
+        lines.extend([f"- {f}" for f in features])
+        lines.append("")
+
+    if wireframes:
+        lines.append("### Wireframe & Layout Specifications")
+        lines.extend([f"- {w}" for w in wireframes])
+        lines.append("")
+
+    lines.extend([
+        "---",
+        "",
+        "## 4. Phased Implementation Roadmap",
+        "",
+    ])
+
+    # If the AI model provided an explicit phased markdown roadmap, incorporate it seamlessly
+    if ai_roadmap_raw and any(k in ai_roadmap_raw.lower() for k in ("phase", "milestone", "sprint", "week")):
+        clean_ai = ai_roadmap_raw
+        if clean_ai.startswith("#"):
+            first_line, _, rest = clean_ai.partition("\n")
+            if "roadmap" in first_line.lower():
+                clean_ai = rest.strip()
+        lines.append(clean_ai)
+        lines.append("")
+    else:
+        lines.extend([
+            "### Phase 1: Brand Foundations & Architecture Setup",
+            "- Lock typography tokens, color palette, and asset exports.",
+            "- Initialize project repository, directory architecture, and design tokens.",
+            "- Scaffold baseline routing and shared navigation / footer layouts.",
+            "- **Quality Gate**: Tokens committed, CI build green, responsive navigation skeleton renders cleanly.",
+            "",
+            "### Phase 2: Page Scaffolding & Core UI Layouts",
+            "- Implement primary landing/home page sections and hero components.",
+            "- Build content templates for all primary pages specified in the brief.",
+            "- Ensure mobile-first responsive breakpoints and grid structure.",
+            "- **Quality Gate**: All target pages accessible; layout adheres to wireframe specifications without console errors.",
+            "",
+            "### Phase 3: Interactive Features & Functional Integration",
+            "- Build interactive components, form validations, and user flow actions.",
+            "- Integrate dynamic states, client interactions, or third-party embeds.",
+            "- Implement loading, error, and empty states across user pathways.",
+            "- **Quality Gate**: End-to-end interactive flows pass functional testing; error handling active.",
+            "",
+            "### Phase 4: Polish, Accessibility & Launch Readiness",
+            "- Audit contrast ratios, keyboard navigation, and WCAG accessibility standards.",
+            "- Optimize image assets, performance vitals, and metadata / SEO tags.",
+            "- Cross-browser and cross-device QA walkthrough against client brief.",
+            "- **Quality Gate**: QA sign-off across all ticket acceptance criteria.",
+            "",
+        ])
+
+    lines.extend([
+        "---",
+        "",
+        "## 5. Execution Ticket Index",
+        "",
+        "| # | Ticket Title | Priority | Ticket File | Deliverable Focus |",
+        "| :---: | :--- | :---: | :--- | :--- |",
+    ])
+
+    if tickets:
+        for idx, t in enumerate(tickets, start=1):
+            t_title = str(t.get("title", f"Task {idx}")).replace("|", "-").strip()
+            t_file = t.get("filename", f"pdf-{idx:02d}.md")
+            t_prio = str(t.get("priority", "medium")).lower()
+            if t_prio == "critical":
+                badge = "🔴 CRITICAL"
+            elif t_prio == "high":
+                badge = "🟡 PRIORITY"
+            else:
+                badge = "🟢 NORMAL"
+            t_prob = str(t.get("problem", "Brief deliverable")).replace("|", "-").replace("\n", " ").strip()
+            if len(t_prob) > 90:
+                t_prob = t_prob[:87] + "..."
+            lines.append(f"| {idx:02d} | [{t_title}]({t_file}) | {badge} | `{t_file}` | {t_prob} |")
+    else:
+        lines.append("| - | No tickets generated | - | - | - |")
+    lines.append("")
+
+    lines.extend([
+        "---",
+        "",
+        "## 6. Scope Boundaries & Open Questions",
+        "",
+    ])
+
+    if open_questions:
+        lines.extend([f"- [ ] **Clarification Needed**: {q}" for q in open_questions])
+    else:
+        lines.append("- [x] No unresolved ambiguities or blocking questions identified in brief.")
+    lines.append("")
+
+    lines.extend([
+        "---",
+        "",
+        "## 7. Execution Next Steps",
+        "",
+        "To publish these tickets into your Discord forum threads or tracking pipeline, run:",
+        "```text",
+        f"/load-tickets {output_folder}",
+        "```",
+        "",
+    ])
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def scan_pdf_brief(
+    pdf_file: str | Path | None = None,
+    output_folder: str = "pdf-brief",
+    tickets_dir: str = "tickets",
+    ai_client: NvidiaAIClient | None = None,
     ai_profile: str = "scan_docs",
+    *,
+    pdf_path: str | Path | None = None,
 ) -> PDFScanResult:
     """Analyze a design brief PDF and generate roadmap/ticket markdown files."""
 
-    pdf_file = Path(pdf_path)
-    if not pdf_file.exists() or not pdf_file.is_file():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    target = pdf_file if pdf_file is not None else pdf_path
+    if target is None:
+        raise ValueError("A PDF path or file must be provided.")
+
+    pdf_obj = Path(target)
+    if not pdf_obj.exists() or not pdf_obj.is_file():
+        raise FileNotFoundError(f"PDF not found: {target}")
+
+    if ai_client is None:
+        raise AIClientError("An AI client instance must be provided.")
 
     if not ai_client.is_configured(ai_profile):
         raise AIClientError(
             "NVIDIA AI is not configured for the scan-docs profile. Set the AI_SCAN_DOCS_* variables (or legacy NVIDIA_* fallback)."
         )
 
-    page_count, extracted_text, used_ocr = extract_pdf_text(str(pdf_file))
+    page_count, extracted_text, used_ocr = extract_pdf_text(str(pdf_obj))
     if not extracted_text.strip():
         raise AIClientError(
             "No extractable text was found in the PDF. If this is image-only, install OCR runtime (Tesseract) and set `TESSERACT_CMD` if needed."
         )
 
-    prompt = _build_prompt(pdf_file.name, extracted_text, page_count)
+    prompt = _build_prompt(pdf_obj.name, extracted_text, page_count)
     analysis_text = ai_client.chat(
         prompt,
         system="You are a JSON API. Output ONLY a single valid JSON object. No markdown, no explanation, no text outside the braces.",
@@ -424,40 +658,20 @@ def scan_pdf_brief(
     out_path = Path(tickets_dir) / out_folder
     out_path.mkdir(parents=True, exist_ok=True)
 
-    project_name = str(data.get("project_name") or pdf_file.stem).strip() or pdf_file.stem
+    project_name = str(data.get("project_name") or pdf_obj.stem).strip() or pdf_obj.stem
     summary = str(data.get("summary") or "").strip() or "No summary was generated."
     design_system = data.get("design_system") if isinstance(data.get("design_system"), dict) else {}
     pages = data.get("pages") if isinstance(data.get("pages"), list) else []
     features = _normalize_list(data.get("features"))
     wireframes = _normalize_list(data.get("wireframes"))
     open_questions = _normalize_list(data.get("open_questions"))
-    roadmap_markdown = str(data.get("roadmap_markdown") or "").strip()
-    if not roadmap_markdown:
-        roadmap_markdown = (
-            f"# {project_name} Roadmap\n\n"
-            "## Phase 1: Brand and Structure\n"
-            "- Confirm logo, palette, and font choices.\n"
-            "- Lock the core page list and wireframe hierarchy.\n\n"
-            "## Phase 2: Core Pages\n"
-            "- Build the homepage and primary marketing pages.\n"
-            "- Implement content sections and responsive layout.\n\n"
-            "## Phase 3: Refinement\n"
-            "- Polish interactions, accessibility, and final content.\n"
-        )
-    if not roadmap_markdown.lstrip().startswith("#"):
-        roadmap_markdown = f"# {project_name} Roadmap\n\n{roadmap_markdown}"
-
-    brief_markdown = _render_brief_markdown(data, pdf_file.name, page_count, len(extracted_text), used_ocr)
-    brief_file = out_path / "PDF_BRIEF.md"
-    roadmap_file = out_path / "ROADMAP.md"
-    brief_file.write_text(brief_markdown, encoding="utf-8")
-    roadmap_file.write_text(roadmap_markdown.rstrip() + "\n", encoding="utf-8")
 
     generated_ticket_files: list[str] = []
-    tickets = data.get("tickets") if isinstance(data.get("tickets"), list) else []
+    ticket_records: list[dict[str, Any]] = []
+    tickets_raw = data.get("tickets") if isinstance(data.get("tickets"), list) else []
     generated_names: set[str] = set()
 
-    for idx, ticket in enumerate(tickets, start=1):
+    for idx, ticket in enumerate(tickets_raw, start=1):
         if not isinstance(ticket, dict):
             continue
 
@@ -468,11 +682,35 @@ def scan_pdf_brief(
         generated_names.add(filename)
 
         ticket_file = out_path / filename
-        ticket_file.write_text(_render_ticket_markdown(ticket, pdf_file.name), encoding="utf-8")
+        ticket_file.write_text(_render_ticket_markdown(ticket, pdf_obj.name), encoding="utf-8")
         generated_ticket_files.append(str(ticket_file))
 
+        ticket_records.append({
+            "index": idx,
+            "title": title,
+            "filename": filename,
+            "priority": str(ticket.get("priority") or "medium"),
+            "problem": str(ticket.get("problem") or ""),
+        })
+
+    brief_markdown = _render_brief_markdown(data, pdf_obj.name, page_count, len(extracted_text), used_ocr)
+    roadmap_markdown = _render_roadmap_markdown(
+        data=data,
+        pdf_name=pdf_obj.name,
+        page_count=page_count,
+        chars_extracted=len(extracted_text),
+        used_ocr=used_ocr,
+        tickets=ticket_records,
+        output_folder=out_folder,
+    )
+
+    brief_file = out_path / "PDF_BRIEF.md"
+    roadmap_file = out_path / "ROADMAP.md"
+    brief_file.write_text(brief_markdown, encoding="utf-8")
+    roadmap_file.write_text(roadmap_markdown, encoding="utf-8")
+
     return PDFScanResult(
-        pdf_name=pdf_file.name,
+        pdf_name=pdf_obj.name,
         pages_scanned=page_count,
         chars_extracted=len(extracted_text),
         project_name=project_name,

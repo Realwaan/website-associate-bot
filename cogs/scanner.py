@@ -37,11 +37,22 @@ async def safe_defer(interaction: discord.Interaction):
 
 
 def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Extract PDF text away from Discord's event loop."""
-    from pypdf import PdfReader
+    """Extract PDF text away from Discord's event loop with safe resource cleanup."""
+    try:
+        from pypdf import PdfReader
 
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        try:
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
+        finally:
+            if hasattr(reader, "close"):
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"Error extracting PDF text: {e}")
+        return ""
 
 
 class ScannerCog(commands.Cog, name="Scanner"):
@@ -492,27 +503,68 @@ class ScannerCog(commands.Cog, name="Scanner"):
                 out_dir = Path(TICKETS_DIR) / out_folder
                 out_dir.mkdir(parents=True, exist_ok=True)
 
-                roadmap_content = f"# {analysis.get('projectTitle', out_folder)} Roadmap\n\n"
-                for p in analysis.get("phases", []):
-                    roadmap_content += f"## Phase {p.get('phaseNumber')}: {p.get('title')}\n"
-                    for d in p.get("deliverables", []):
-                        roadmap_content += f"- {d}\n"
-                    roadmap_content += "\n"
-
-                roadmap_file = out_dir / "ROADMAP.md"
-                roadmap_file.write_text(roadmap_content, encoding="utf-8")
-
-                ticket_count = 0
+                ticket_records = []
                 for idx, feat in enumerate(analysis.get("coreFeatures", []), 1):
                     slug = re.sub(r"[^a-z0-9]+", "-", feat.lower()).strip("-")[:40] or f"feature-{idx}"
+                    fn = f"pdf-{idx:02d}-{slug}.md"
                     ticket_md = (
                         f"# Implement {feat}\n\n"
                         f"## Problem\nImplement core feature extracted from brief: {feat}\n\n"
                         f"## What to Fix\n1. Scaffold {feat} architecture\n2. Add test verification\n\n"
                         f"## Acceptance Criteria\n- [ ] {feat} is fully functional\n- [ ] Automated tests pass\n"
                     )
-                    (out_dir / f"pdf-{idx:02d}-{slug}.md").write_text(ticket_md, encoding="utf-8")
-                    ticket_count += 1
+                    (out_dir / fn).write_text(ticket_md, encoding="utf-8")
+                    ticket_records.append((idx, feat, fn))
+
+                ticket_count = len(ticket_records)
+                title = analysis.get("projectTitle", out_folder)
+                ds = analysis.get("designSystem", {})
+                primary_c = ds.get("primaryColor", "#38bdf8")
+                secondary_c = ds.get("secondaryColor", "#818cf8")
+                fonts_c = ", ".join(ds.get("fonts", ["Inter"]))
+
+                roadmap_lines = [
+                    f"# {title} — Development Roadmap",
+                    "",
+                    f"> Scanned from `{pdf_attachment.filename}` via brief analyzer.",
+                    "",
+                    "## 1. Design System Foundations",
+                    "",
+                    "| Element | Specification |",
+                    "| :--- | :--- |",
+                    f"| **Primary Color** | `{primary_c}` |",
+                    f"| **Secondary Color** | `{secondary_c}` |",
+                    f"| **Typography** | {fonts_c} |",
+                    "",
+                    "## 2. Phased Delivery Roadmap",
+                    "",
+                ]
+
+                for p in analysis.get("phases", []):
+                    roadmap_lines.append(f"### Phase {p.get('phaseNumber', 1)}: {p.get('title', 'Milestone')}")
+                    for d in p.get("deliverables", []):
+                        roadmap_lines.append(f"- {d}")
+                    roadmap_lines.append("")
+
+                roadmap_lines.extend([
+                    "## 3. Execution Ticket Index",
+                    "",
+                    "| # | Ticket Title | Ticket File | Status |",
+                    "| :---: | :--- | :--- | :---: |",
+                ])
+                for idx, feat, fn in ticket_records:
+                    roadmap_lines.append(f"| {idx:02d} | [{feat}]({fn}) | `{fn}` | 🟡 Planned |")
+
+                roadmap_lines.extend([
+                    "",
+                    "## 4. Execution Next Steps",
+                    "",
+                    f"Run `/load-tickets {out_folder}` to publish these tickets to Discord threads.",
+                    "",
+                ])
+                roadmap_content = "\n".join(roadmap_lines)
+                roadmap_file = out_dir / "ROADMAP.md"
+                roadmap_file.write_text(roadmap_content, encoding="utf-8")
 
                 embed = discord.Embed(
                     title=f"📄 AI Brief Analysis: {analysis.get('projectTitle', pdf_attachment.filename)}",

@@ -142,6 +142,90 @@ class TestScannerCog(unittest.IsolatedAsyncioTestCase):
         self.assertIn("file", kwargs)
         self.assertEqual(kwargs["file"].filename, "equation.png")
 
+    @patch("discord.File")
+    @patch("pdf_brief_scanner.scan_pdf_brief")
+    async def test_scan_pdf_primary_path(self, mock_scan_brief, mock_file_cls):
+        """Tests /scan-pdf via the primary pdf_brief_scanner pipeline with attached ROADMAP.md."""
+        mock_file_instance = MagicMock()
+        mock_file_instance.filename = "ROADMAP.md"
+        mock_file_cls.return_value = mock_file_instance
+
+        mock_att = MagicMock(spec=discord.Attachment)
+        mock_att.filename = "client-brief.pdf"
+        mock_att.read = AsyncMock(return_value=b"%PDF-1.4 dummy")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_roadmap = Path(tmpdir) / "ROADMAP.md"
+            fake_roadmap.write_text("# Test Roadmap", encoding="utf-8")
+
+            mock_res = MagicMock()
+            mock_res.project_name = "Solaris Energy"
+            mock_res.pages_scanned = 6
+            mock_res.roadmap_file = str(fake_roadmap)
+            mock_res.generated_ticket_files = ["pdf-01.md", "pdf-02.md"]
+            mock_res.design_system = {"primary_color": "#10b981", "fonts": ["Inter"]}
+            mock_res.features = ["Calculator"]
+            mock_scan_brief.return_value = mock_res
+
+            await self.cog.scan_pdf.callback(
+                self.cog,
+                self.interaction,
+                pdf_attachment=mock_att,
+                folder="test-solaris",
+            )
+
+            self.interaction.followup.send.assert_awaited_once()
+            args, kwargs = self.interaction.followup.send.call_args
+            embed = kwargs["embed"]
+            self.assertIn("Solaris Energy", embed.title)
+            self.assertIn("Generated **2** tickets", embed.description)
+            self.assertEqual(kwargs["file"].filename, "ROADMAP.md")
+
+    @patch("discord.File")
+    @patch("pdf_brief_scanner.scan_pdf_brief", side_effect=RuntimeError("AI model timeout"))
+    @patch("cogs.scanner._extract_pdf_text", return_value="Brief content for Fallback Project")
+    @patch("services.ai_service.ai_service.analyze_pdf_brief")
+    async def test_scan_pdf_fallback_path(self, mock_analyze, mock_extract, mock_scan_brief, mock_file_cls):
+        """Tests /scan-pdf fallback when pdf_brief_scanner fails, ensuring structured ROADMAP.md."""
+        mock_file_instance = MagicMock()
+        mock_file_instance.filename = "ROADMAP.md"
+        mock_file_cls.return_value = mock_file_instance
+
+        mock_att = MagicMock(spec=discord.Attachment)
+        mock_att.filename = "fallback-brief.pdf"
+        mock_att.read = AsyncMock(return_value=b"%PDF-1.4 dummy")
+
+        mock_analyze.return_value = {
+            "projectTitle": "Fallback Portal",
+            "designSystem": {"primaryColor": "#6366f1", "secondaryColor": "#4f46e5", "fonts": ["Geist"]},
+            "coreFeatures": ["User Dashboard", "Notifications"],
+            "phases": [{"phaseNumber": 1, "title": "Scaffolding", "deliverables": ["Config setup"]}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("cogs.scanner.TICKETS_DIR", tmpdir):
+                await self.cog.scan_pdf.callback(
+                    self.cog,
+                    self.interaction,
+                    pdf_attachment=mock_att,
+                    folder="test-fallback",
+                )
+
+                self.interaction.followup.send.assert_awaited_once()
+                args, kwargs = self.interaction.followup.send.call_args
+                embed = kwargs["embed"]
+                self.assertIn("Fallback Portal", embed.title)
+                self.assertIn("Generated `ROADMAP.md` and **2** tickets", embed.description)
+                self.assertEqual(kwargs["file"].filename, "ROADMAP.md")
+
+                # Verify that the generated ROADMAP.md in fallback contains tickets index
+                out_roadmap = Path(tmpdir) / "test-fallback" / "ROADMAP.md"
+                self.assertTrue(out_roadmap.exists())
+                content = out_roadmap.read_text(encoding="utf-8")
+                self.assertIn("# Fallback Portal — Development Roadmap", content)
+                self.assertIn("## 3. Execution Ticket Index", content)
+                self.assertIn("pdf-01-user-dashboard.md", content)
+
 
 if __name__ == "__main__":
     unittest.main()
