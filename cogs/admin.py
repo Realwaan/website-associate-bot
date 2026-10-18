@@ -568,7 +568,10 @@ class AdminCog(commands.Cog, name="Admin"):
 
             ticket_name = thread_info['ticket_name']
             new_name = f"[OPEN] {ticket_name}"[:100]
-            await thread.edit(name=new_name)
+            try:
+                await asyncio.wait_for(thread.edit(name=new_name), timeout=2.0)
+            except Exception as edit_err:
+                logger.warning("Could not rename thread %s during reset: %s", thread.id, edit_err)
             await asyncio.to_thread(update_thread_status, thread.id, "OPEN")
 
             embed = discord.Embed(

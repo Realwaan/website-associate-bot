@@ -29,8 +29,22 @@ async def safe_defer(interaction: discord.Interaction):
 async def _safe_edit_thread_name(thread: discord.Thread, new_name: str, **kwargs) -> bool:
     """Safely edit thread name and properties with Discord 429 rate-limit resilience."""
     try:
-        await thread.edit(name=new_name[:100], **kwargs)
+        # Discord enforces a strict limit: maximum 2 thread renames every 10 minutes.
+        # discord.py's HTTP client automatically sleeps for the retry_after duration (up to 600s)
+        # on 429 unless bounded. A 2.0s timeout ensures the command responds immediately.
+        await asyncio.wait_for(thread.edit(name=new_name[:100], **kwargs), timeout=2.0)
         return True
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning(
+            "Discord thread rename timed out (>2.0s) on thread %s (Discord 10-minute rename limit active). Skipping rename to keep bot responsive.",
+            thread.id,
+        )
+        if kwargs:
+            try:
+                await asyncio.wait_for(thread.edit(**kwargs), timeout=2.0)
+            except Exception as e:
+                logger.warning("Could not apply thread properties without name on %s: %s", thread.id, e)
+        return False
     except discord.HTTPException as exc:
         if exc.status == 429:
             logger.warning(
@@ -401,7 +415,6 @@ class TicketsCog(commands.Cog, name="Tickets"):
             new_name = f"[CLOSED] [{username}] {ticket_name}"
 
             await asyncio.to_thread(update_thread_status, thread.id, "CLOSED")
-            renamed = await _safe_edit_thread_name(thread, new_name, archived=True, locked=True)
 
             embed = discord.Embed(
                 title="🔒 Ticket Closed",
@@ -409,14 +422,16 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 color=discord.Color.red()
             )
             embed.add_field(name="Final Status", value=f"`[CLOSED] [{username}]`", inline=True)
-            if not renamed:
-                embed.set_footer(text="CapStoneFlow • Sprint Milestone Achieved (Thread lock throttled by Discord)")
-            else:
-                embed.set_footer(text="CapStoneFlow • Sprint Milestone Achieved")
+            embed.set_footer(text="CapStoneFlow • Sprint Milestone Achieved")
             await interaction.followup.send(embed=embed)
+
+            await _safe_edit_thread_name(thread, new_name, archived=True, locked=True)
         except Exception as e:
             logger.error(f"Error in /closed: {e}")
-            await interaction.followup.send(f"❌ Error closing ticket: {e}")
+            try:
+                await interaction.followup.send(f"❌ Error closing ticket: {e}")
+            except Exception:
+                pass
 
     # 8. /ticket-info
     @app_commands.command(name="ticket-info", description="View current status, assignees, and next steps for this ticket thread")
