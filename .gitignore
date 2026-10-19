@@ -33,3 +33,6 @@ env/
 *.swp
 *.swo
 *~
+hackathon-starter/app/static/previews/*.png
+hackathon-starter/data/index/*
+!hackathon-starter/data/index/.gitkeep
