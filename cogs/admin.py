@@ -453,17 +453,31 @@ class AdminCog(commands.Cog, name="Admin"):
                     logger.warning("Could not load ticket %s before /clear: %s", channel.id, exc)
 
                 ticket_name = (thread_info or {}).get("ticket_name") or channel.name
+                target_name = f"[CLOSED] {ticket_name}"[:100]
+                edit_kwargs = {
+                    "archived": True,
+                    "locked": True,
+                    "reason": f"CapStoneFlow /clear by {interaction.user}",
+                }
+                if getattr(channel, "name", None) != target_name:
+                    edit_kwargs["name"] = target_name
+
                 try:
-                    await channel.edit(
-                        name=f"[CLOSED] {ticket_name}"[:100],
-                        archived=True,
-                        locked=True,
-                        reason=f"CapStoneFlow /clear by {interaction.user}",
-                    )
+                    await asyncio.wait_for(channel.edit(**edit_kwargs), timeout=2.0)
+                    closed = True
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.warning("Thread edit timed out (>2.0s) during /clear on %s", channel.id)
                     closed = True
                 except discord.Forbidden:
                     database_warning = "Messages were cleared, but Discord denied closing the ticket thread."
                     logger.warning("Could not archive/lock ticket %s after /clear: missing thread permission", channel.id)
+                except discord.HTTPException as exc:
+                    if exc.status in (429, 500, 502, 503, 504):
+                        logger.warning("Discord API %s during /clear thread edit on %s: %s", exc.status, channel.id, exc)
+                        closed = True
+                    else:
+                        database_warning = "Messages were cleared, but the ticket thread could not be closed."
+                        logger.exception("Could not archive/lock ticket %s after /clear: %s", channel.id, exc)
                 except Exception:
                     database_warning = "Messages were cleared, but the ticket thread could not be closed."
                     logger.exception("Could not archive/lock ticket %s after /clear", channel.id)
@@ -568,10 +582,18 @@ class AdminCog(commands.Cog, name="Admin"):
 
             ticket_name = thread_info['ticket_name']
             new_name = f"[OPEN] {ticket_name}"[:100]
-            try:
-                await asyncio.wait_for(thread.edit(name=new_name), timeout=2.0)
-            except Exception as edit_err:
-                logger.warning("Could not rename thread %s during reset: %s", thread.id, edit_err)
+            if getattr(thread, "name", None) != new_name:
+                try:
+                    await asyncio.wait_for(thread.edit(name=new_name), timeout=2.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.warning("Timeout renaming thread %s during reset", thread.id)
+                except discord.HTTPException as exc:
+                    if exc.status in (429, 500, 502, 503, 504):
+                        logger.warning("Discord API %s renaming thread %s during reset: %s", exc.status, thread.id, exc)
+                    else:
+                        logger.warning("Could not rename thread %s during reset: %s", thread.id, exc)
+                except Exception as edit_err:
+                    logger.warning("Could not rename thread %s during reset: %s", thread.id, edit_err)
             await asyncio.to_thread(update_thread_status, thread.id, "OPEN")
 
             embed = discord.Embed(

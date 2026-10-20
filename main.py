@@ -393,31 +393,52 @@ async def sync_capstone_ticket_status(payload: dict) -> dict:
     # 1. Guarantee database state persistence and linked task sync first
     await asyncio.to_thread(update_thread_status, thread.id, discord_status, **status_kwargs)
 
-    # 2. Safely perform Discord thread rename with rate-limit resilience
+    # 2. Safely perform Discord thread rename with rate-limit and 503 resilience
     ticket_name = str(thread_info.get("ticket_name") or thread.name)
     if ticket_name.startswith("[") and "] " in ticket_name:
         ticket_name = ticket_name.split("] ", 1)[1]
+
+    target_name = f"[{discord_status}] {ticket_name}"[:100]
     edit_kwargs = {
-        "name": f"[{discord_status}] {ticket_name}"[:100],
         "reason": f"CapStoneFlow website status update by {actor}",
     }
+    if getattr(thread, "name", None) != target_name:
+        edit_kwargs["name"] = target_name
+
     if discord_status == "CLOSED":
-        edit_kwargs.update({"archived": True, "locked": True})
+        if not getattr(thread, "archived", False) or not getattr(thread, "locked", False):
+            edit_kwargs.update({"archived": True, "locked": True})
     else:
-        edit_kwargs.update({"archived": False, "locked": False})
+        if getattr(thread, "archived", False) or getattr(thread, "locked", False):
+            edit_kwargs.update({"archived": False, "locked": False})
 
     rename_throttled = False
-    try:
-        await thread.edit(**edit_kwargs)
-    except discord.HTTPException as exc:
-        logger.warning(
-            "Discord thread edit throttled or rejected for thread %s: %s (status: %s)",
-            thread.id, exc, getattr(exc, "status", None)
-        )
-        rename_throttled = True
-    except Exception as exc:
-        logger.warning("Discord thread edit unexpected error for thread %s: %s", thread.id, exc)
-        rename_throttled = True
+    # If only 'reason' is present, no actual thread attributes need changing
+    fields_to_change = {k: v for k, v in edit_kwargs.items() if k != "reason"}
+    if fields_to_change:
+        try:
+            await asyncio.wait_for(thread.edit(**edit_kwargs), timeout=2.0)
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(
+                "Discord thread edit timed out (>2.0s) for thread %s (rate limit / 503 delay). Proceeding.",
+                thread.id,
+            )
+            rename_throttled = True
+        except discord.HTTPException as exc:
+            if exc.status in (429, 500, 502, 503, 504):
+                logger.warning(
+                    "Discord thread edit throttled or gateway error (%s) for thread %s: %s",
+                    exc.status, thread.id, exc
+                )
+            else:
+                logger.warning(
+                    "Discord thread edit API error for thread %s: %s",
+                    thread.id, exc
+                )
+            rename_throttled = True
+        except Exception as exc:
+            logger.warning("Discord thread edit unexpected error for thread %s: %s", thread.id, exc)
+            rename_throttled = True
 
     # 3. Post an in-thread notification embed for team awareness in Discord
     try:

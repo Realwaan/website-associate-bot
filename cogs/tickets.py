@@ -27,35 +27,58 @@ async def safe_defer(interaction: discord.Interaction):
             logger.warning(f"Unexpected error in safe_defer: {e}")
 
 async def _safe_edit_thread_name(thread: discord.Thread, new_name: str, **kwargs) -> bool:
-    """Safely edit thread name and properties with Discord 429 rate-limit resilience."""
+    """Safely edit thread name and properties with Discord 429/503 rate-limit and gateway resilience."""
+    target_name = (new_name or "")[:100]
+    current_name = getattr(thread, "name", None)
+
+    # 1. No-op short-circuit: if the thread name is already identical and no extra properties to edit,
+    # skip API call completely to preserve the 2 renames / 10 min rate limit and avoid 503 gateway errors.
+    if current_name == target_name and not kwargs:
+        return True
+
+    # Build edit arguments
+    edit_kwargs = dict(kwargs)
+    # Only send name if it actually changes, reducing risk of rename rate limits
+    if current_name != target_name:
+        edit_kwargs["name"] = target_name
+
+    # If the thread is archived and we're not explicitly requesting archive, unarchive first or along
+    if getattr(thread, "archived", False) and not edit_kwargs.get("archived", False):
+        edit_kwargs["archived"] = False
+
+    # If edit_kwargs is empty (nothing actually changed), return True
+    if not edit_kwargs:
+        return True
+
     try:
         # Discord enforces a strict limit: maximum 2 thread renames every 10 minutes.
-        # discord.py's HTTP client automatically sleeps for the retry_after duration (up to 600s)
-        # on 429 unless bounded. A 2.0s timeout ensures the command responds immediately.
-        await asyncio.wait_for(thread.edit(name=new_name[:100], **kwargs), timeout=2.0)
+        # discord.py's HTTP client automatically sleeps for retry_after (up to 600s) on 429
+        # or hangs on 503 gateway drops. A 2.0s timeout ensures the command responds immediately.
+        await asyncio.wait_for(thread.edit(**edit_kwargs), timeout=2.0)
         return True
     except (asyncio.TimeoutError, TimeoutError):
         logger.warning(
-            "Discord thread rename timed out (>2.0s) on thread %s (Discord 10-minute rename limit active). Skipping rename to keep bot responsive.",
-            thread.id,
+            "Discord thread edit timed out (>2.0s) on thread %s (Discord 10-minute rename limit or gateway delay active). Skipping rename to keep bot responsive.",
+            getattr(thread, "id", "unknown"),
         )
-        if kwargs:
+        if "name" in edit_kwargs and len(edit_kwargs) > 1:
+            fallback_kwargs = {k: v for k, v in edit_kwargs.items() if k != "name"}
             try:
-                await asyncio.wait_for(thread.edit(**kwargs), timeout=2.0)
+                await asyncio.wait_for(thread.edit(**fallback_kwargs), timeout=2.0)
             except Exception as e:
-                logger.warning("Could not apply thread properties without name on %s: %s", thread.id, e)
+                logger.warning("Could not apply thread properties without name on %s: %s", getattr(thread, "id", "unknown"), e)
         return False
     except discord.HTTPException as exc:
-        if exc.status == 429:
+        if exc.status in (429, 500, 502, 503, 504):
             logger.warning(
-                "Discord 429 rate limit hit while editing thread %s (%s). Proceeding with database update.",
-                thread.id, exc
+                "Discord API HTTP %s hit while editing thread %s (%s). Proceeding with database update.",
+                exc.status, getattr(thread, "id", "unknown"), exc
             )
         else:
-            logger.warning("Discord API error editing thread %s: %s", thread.id, exc)
+            logger.warning("Discord API error editing thread %s: %s", getattr(thread, "id", "unknown"), exc)
         return False
     except Exception as exc:
-        logger.warning("Unexpected error editing thread %s: %s", thread.id, exc)
+        logger.warning("Unexpected error editing thread %s: %s", getattr(thread, "id", "unknown"), exc)
         return False
 
 class TicketsCog(commands.Cog, name="Tickets"):

@@ -53,6 +53,33 @@ class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
         success = await _safe_edit_thread_name(self.thread, "[CLAIMED] [dev_user] Implement Auth Flow")
         self.assertFalse(success)
 
+    async def test_safe_edit_thread_name_handles_503(self):
+        """Verifies Discord 503 Service Unavailable returns False without raising exception."""
+        http_503 = discord.HTTPException(response=MagicMock(status=503), message="Service Unavailable")
+        http_503.status = 503
+        self.thread.edit.side_effect = http_503
+
+        success = await _safe_edit_thread_name(self.thread, "[CLAIMED] [dev_user] Implement Auth Flow")
+        self.assertFalse(success)
+
+    async def test_safe_edit_thread_name_noop_when_name_identical(self):
+        """Verifies when target thread name matches existing name, no API call is made."""
+        self.thread.name = "[OPEN] Implement Auth Flow"
+        success = await _safe_edit_thread_name(self.thread, "[OPEN] Implement Auth Flow")
+        self.assertTrue(success)
+        self.thread.edit.assert_not_called()
+
+    async def test_safe_edit_thread_name_unarchives_if_archived(self):
+        """Verifies unarchiving is automatically added if thread was archived and no explicit archive requested."""
+        self.thread.name = "[OPEN] Implement Auth Flow"
+        self.thread.archived = True
+        success = await _safe_edit_thread_name(self.thread, "[CLAIMED] [dev_user] Implement Auth Flow")
+        self.assertTrue(success)
+        self.thread.edit.assert_awaited_once_with(
+            name="[CLAIMED] [dev_user] Implement Auth Flow",
+            archived=False
+        )
+
     @patch("cogs.tickets.get_thread")
     @patch("cogs.tickets.get_user_roles")
     @patch("cogs.tickets.update_thread_status")
