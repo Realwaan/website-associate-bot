@@ -1,4 +1,4 @@
-# 10-phase4-crag-relevance-gatekeeper.md
+# 10-crag-relevance-gatekeeper.md
 
 **[CRITICAL]**
 

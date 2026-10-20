@@ -1,4 +1,4 @@
-# 07-phase3-lancedb-in-process-storage.md
+# 07-lancedb-in-process-storage.md
 
 **[PRIORITY]**
 

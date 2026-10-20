@@ -1,4 +1,4 @@
-# 17-phase6-failover-safety-and-offline-rehearsal.md
+# 17-failover-safety-offline-rehearsal.md
 
 **[CRITICAL]**
 

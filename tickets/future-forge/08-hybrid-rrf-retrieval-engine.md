@@ -1,4 +1,4 @@
-# 08-phase3-hybrid-rrf-retrieval-engine.md
+# 08-hybrid-rrf-retrieval-engine.md
 
 **[CRITICAL]**
 

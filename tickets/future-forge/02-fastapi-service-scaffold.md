@@ -1,4 +1,4 @@
-# 02-phase1-project-scaffold-and-fastapi-skeleton.md
+# 02-fastapi-service-scaffold.md
 
 **[PRIORITY]**
 

@@ -131,8 +131,19 @@ class AdminCog(commands.Cog, name="Admin"):
 
             target_dir = Path(TICKETS_DIR) / folder
             if not target_dir.exists():
-                await interaction.followup.send(f"❌ Folder `{TICKETS_DIR}/{folder}` does not exist.")
-                return
+                # Flexible lookup: match "phase-1" -> "phase1", "phase 1" -> "phase1", etc.
+                normalized = folder.lower().replace("-", "").replace(" ", "").replace("_", "")
+                matched_dir = None
+                for d in Path(TICKETS_DIR).iterdir():
+                    if d.is_dir() and d.name.lower().replace("-", "").replace(" ", "").replace("_", "") == normalized:
+                        matched_dir = d
+                        folder = d.name
+                        break
+                if matched_dir:
+                    target_dir = matched_dir
+                else:
+                    await interaction.followup.send(f"❌ Folder `{TICKETS_DIR}/{folder}` does not exist.")
+                    return
 
             md_files = list(target_dir.glob("*.md"))
             if not md_files:
@@ -233,6 +244,19 @@ class AdminCog(commands.Cog, name="Admin"):
             logger.error(f"Error in /load-tickets: {e}")
             await interaction.followup.send(f"❌ Error loading tickets: {e}")
 
+    @load_tickets.autocomplete("folder")
+    async def load_tickets_folder_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        folders = await asyncio.to_thread(get_available_folders)
+        return [
+            app_commands.Choice(name=f, value=f)
+            for f in folders
+            if current.lower() in f.lower()
+        ][:25]
+
     # 2. /rebuild-db
     @app_commands.command(
         name="rebuild-db",
@@ -260,11 +284,18 @@ class AdminCog(commands.Cog, name="Admin"):
 
             folder_path = Path(TICKETS_DIR) / folder
             if not folder_path.is_dir():
-                await interaction.followup.send(
-                    f"❌ Folder `{folder}` was not found in `{TICKETS_DIR}/`.",
-                    ephemeral=True,
-                )
-                return
+                normalized = folder.lower().replace("-", "").replace(" ", "").replace("_", "")
+                for d in Path(TICKETS_DIR).iterdir():
+                    if d.is_dir() and d.name.lower().replace("-", "").replace(" ", "").replace("_", "") == normalized:
+                        folder_path = d
+                        folder = d.name
+                        break
+                if not folder_path.is_dir():
+                    await interaction.followup.send(
+                        f"❌ Folder `{folder}` was not found in `{TICKETS_DIR}/`.",
+                        ephemeral=True,
+                    )
+                    return
 
             tickets = await asyncio.to_thread(load_tickets_from_folder, folder)
             name_to_filename = {}
@@ -322,6 +353,19 @@ class AdminCog(commands.Cog, name="Admin"):
                 "❌ Could not rebuild the ticket database. Check the folder, channel, and database connection.",
                 ephemeral=True,
             )
+
+    @rebuild_db.autocomplete("folder")
+    async def rebuild_db_folder_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        folders = await asyncio.to_thread(get_available_folders)
+        return [
+            app_commands.Choice(name=f, value=f)
+            for f in folders
+            if current.lower() in f.lower()
+        ][:25]
 
     # 3. /cleanup-tickets
     @app_commands.command(name="cleanup-tickets", description="Archive and clean up completed CLOSED tickets in this channel")

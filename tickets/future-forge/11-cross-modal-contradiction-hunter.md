@@ -1,4 +1,4 @@
-# 11-phase4-cross-modal-contradiction-hunter.md
+# 11-cross-modal-contradiction-hunter.md
 
 **[CRITICAL]**
 

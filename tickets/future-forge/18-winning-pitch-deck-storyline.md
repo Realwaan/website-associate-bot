@@ -1,4 +1,4 @@
-# 18-phase6-winning-pitch-deck-and-storyline.md
+# 18-winning-pitch-deck-storyline.md
 
 **[PRIORITY]**
 

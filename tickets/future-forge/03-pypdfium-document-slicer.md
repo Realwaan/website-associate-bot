@@ -1,4 +1,4 @@
-# 03-phase2-pypdfium-document-slicer.md
+# 03-pypdfium-document-slicer.md
 
 **[PRIORITY]**
 

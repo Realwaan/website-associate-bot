@@ -1,4 +1,4 @@
-# 06-phase2-three-tier-cross-modal-linker.md
+# 06-three-tier-cross-modal-linker.md
 
 **[CRITICAL]**
 

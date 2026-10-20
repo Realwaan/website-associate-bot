@@ -1,4 +1,4 @@
-# 12-phase4-adaptive-document-classifier.md
+# 12-adaptive-document-classifier.md
 
 **[PRIORITY]**
 

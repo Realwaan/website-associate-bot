@@ -1,4 +1,4 @@
-# 05-phase2-collision-bounded-halo-cropper.md
+# 05-collision-bounded-halo-cropper.md
 
 **[CRITICAL]**
 

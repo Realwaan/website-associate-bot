@@ -1,4 +1,4 @@
-# 04-phase2-ast-tree-builder.md
+# 04-ast-tree-builder.md
 
 **[CRITICAL]**
 

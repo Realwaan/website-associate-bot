@@ -1,4 +1,4 @@
-# 01-phase1-environment-and-model-smoke.md
+# 01-environment-model-smoke.md
 
 **[CRITICAL]**
 

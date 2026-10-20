@@ -1,4 +1,4 @@
-# 15-phase5-hallucination-radar-comparison.md
+# 15-hallucination-radar-comparison.md
 
 **[PRIORITY]**
 

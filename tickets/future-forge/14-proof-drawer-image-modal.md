@@ -1,4 +1,4 @@
-# 14-phase5-proof-drawer-and-image-modal.md
+# 14-proof-drawer-image-modal.md
 
 **[PRIORITY]**
 
