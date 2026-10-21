@@ -21,4 +21,4 @@ The team needs a unified, non-blocking asynchronous FastAPI service skeleton tha
 - `GET /health` returns HTTP 200 with `{ "status": "ok", "app": "AuditGuard RAG" }`.
 - Static directories are created automatically without manual folder creation steps.
 - Unit tests pass for base API scaffolding.
-- Server starts cleanly under Uvicorn without port binding errors.
+- Server starts cleanly under Uvicorn without port binding errors.\n

@@ -20,4 +20,4 @@ Standard RAG treats documents as flat bags of chunks, destroying the hierarchica
 - AST parses hierarchical markdown headers into a clean tree structure.
 - Every paragraph leaf node has a valid parent pointer and materialized path.
 - Subtree lookups execute in under 1 millisecond in memory.
-- 100% test coverage for node relationships and serialization.
+- 100% test coverage for node relationships and serialization.\n

@@ -23,4 +23,4 @@ Detecting compliance gaps (missing SLA penalties, lack of hardware MFA, absent d
 - Controls flagged as `GAP` automatically include pre-approved `remediation_clause`, `redline_diff`, and `action_plan`.
 - Unified diff cleanly highlights insertions with standard `+ ` markers.
 - Passing controls indicate compliant status without generating redundant diffs.
-- Automated tests verify playbook retrieval, diff generation, and scorecard calculations.
+- Automated tests verify playbook retrieval, diff generation, and scorecard calculations.\n

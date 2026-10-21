@@ -21,4 +21,4 @@ Standard PDF readers either extract flat text without layout awareness or choke 
 - PDF pages are extracted into clean Markdown in under 1.5 seconds for a 20-page document.
 - Zero open file locks remain on the PDF file after preview rendering.
 - WebP previews render sharply without browser distortion or missing headers.
-- Unit tests verify both small and large document preview pathways.
+- Unit tests verify both small and large document preview pathways.\n

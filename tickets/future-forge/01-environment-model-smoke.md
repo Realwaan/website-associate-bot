@@ -13,7 +13,7 @@ The ALMA Future Forge Hackathon requires integrating the official ALMA Gemma 4 L
 
 ## What to Fix
 1. Read `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY` from environment variables with sensible local fallbacks.
-2. Initialize the OpenAI client in `app/llm.py` with an explicit 8.0-second timeout to avoid hung connections on venue Wi-Fi.
+2. Initialize the OpenAI client in `app/llm.py` with an explicit 5.0-second timeout and 1 retry to avoid hung connections on venue Wi-Fi.
 3. Write a standalone smoke test function that sends a single test ping to the Gemma 4 server and returns the model response.
 4. Pre-warm and verify local FastEmbed ONNX embedding model weights (`BAAI/bge-small-en-v1.5`) to prevent runtime network downloads.
 5. Ensure `.env` is listed in `.gitignore` and `.env.example` is documented for all teammates.
@@ -22,4 +22,4 @@ The ALMA Future Forge Hackathon requires integrating the official ALMA Gemma 4 L
 - Smoke test script successfully queries the ALMA Gemma 4 endpoint and prints a valid response.
 - FastEmbed model runs entirely offline without downloading weights during query execution.
 - No secrets or API keys are committed to git history.
-- Missing or invalid API key triggers a clear diagnostic message rather than an unhandled traceback.
+- Missing or invalid API key triggers a clear diagnostic message rather than an unhandled traceback.\n
