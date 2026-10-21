@@ -1,4 +1,4 @@
-# 05-raptor-thematic-ast-summarizer.md
+# RAPTOR Thematic Section Summarizer for High-Level Queries
 
 **[PRIORITY]**
 

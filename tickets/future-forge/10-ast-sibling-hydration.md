@@ -1,4 +1,4 @@
-# 10-ast-sibling-hydration.md
+# AST Sibling Hydration for Multi-Modal Citations
 
 **[PRIORITY]**
 
