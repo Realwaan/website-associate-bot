@@ -9,6 +9,7 @@ The hackathon deployment requires connecting to the official Gemma 4 LLM server 
 - app/config.py - environment variable loader, GEMINI_API_KEY, and dynamic model getters
 - app/llm.py - Google GenAI and OpenAI-compatible client wrappers with 15s timeout protection
 - app/embeddings.py - FastEmbed ONNX local model initialization (BAAI/bge-small-en-v1.5)
+- requirements.txt - core dependencies (fastapi, uvicorn, fastembed, lancedb, google-genai, pypdfium2, etc.)
 - .env.example - clean template for hackathon deployment
 
 ## What to Fix
