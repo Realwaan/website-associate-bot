@@ -141,34 +141,44 @@ class CodeScanner:
         return results
 
     def generate_ticket_markdown(self, category: str, items: List[Dict[str, Any]], folder: str) -> str:
-        """Formats scan findings into the standard ticket specification format."""
-        files = list({item.get("file", "") for item in items if item.get("file")})
+        """Formats scan findings into the standard ticket specification format compatible with ticket_loader.py."""
+        files = sorted({item.get("file", "") for item in items if item.get("file")})
         title = f"Fix {category.replace('_', ' ').title()} in {folder}"
-        
-        md = f"# [TICKET] {title}\n\n"
-        md += "## Problem\n"
-        md += f"Automated scanner detected {len(items)} {category.replace('_', ' ')} issues across {len(files)} files.\n\n"
-        
-        md += "## What to Fix\n"
-        for item in items[:15]:
+        is_critical = category == "hardcoded_secrets"
+        is_priority = category in {"empty_catches", "todos"}
+
+        md = f"# {title}\n\n"
+        if is_critical:
+            md += "**[CRITICAL]**\n\n"
+        elif is_priority:
+            md += "**[PRIORITY]**\n\n"
+
+        md += "## Problem\n\n"
+        md += f"Automated scanner detected {len(items)} {category.replace('_', ' ')} issues across {len(files)} file(s).\n\n"
+
+        md += "## Potentially Related Files\n\n"
+        for f in files[:10]:
+            md += f"- `{f}`\n"
+        if not files:
+            md += "- *(to be determined)*\n"
+        md += "\n"
+
+        md += "## What to Fix\n\n"
+        for idx, item in enumerate(items[:15], 1):
             f = item.get("file", "")
             l = item.get("line", "")
             msg = item.get("comment") or item.get("snippet") or item.get("message") or f"{item.get('lines', 0)} lines"
             line_str = f":{l}" if l else ""
-            md += f"- `{f}{line_str}`: {msg}\n"
+            md += f"{idx}. `{f}{line_str}`: {msg}\n"
         if len(items) > 15:
-            md += f"- *...and {len(items) - 15} additional occurrences*\n"
+            md += f"{min(len(items), 16)}. Resolve the remaining {len(items) - 15} occurrence(s) across affected files.\n"
         md += "\n"
 
-        md += "## Acceptance Criteria\n"
-        md += f"- [ ] All {len(items)} occurrences in target files are resolved\n"
-        md += "- [ ] Code compiles and passes all automated tests\n"
-        md += "- [ ] No new debug statements or secrets introduced\n\n"
+        md += "## Acceptance Criteria\n\n"
+        md += f"- All {len(items)} occurrences in target files are resolved\n"
+        md += "- Code compiles and passes all automated tests\n"
+        md += "- No new debug statements or secrets introduced\n"
 
-        md += "## Related Files\n"
-        for f in files[:10]:
-            md += f"- `{f}`\n"
-        
         return md
 
 scanner_service = CodeScanner()

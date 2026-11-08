@@ -15,7 +15,8 @@ from database import (
     set_setting, get_setting, get_threads_by_status,
     set_user_role, get_user_roles, remove_thread_record,
     clear_loaded_tickets, update_thread_status, get_thread,
-    get_db,
+    get_db, mark_repo_event_posted, log_audit_event,
+    get_command_metrics_summary,
 )
 from ticket_loader import parse_ticket_file, get_available_folders, load_tickets_from_folder
 from config import TICKETS_DIR
@@ -70,6 +71,18 @@ def _rebuild_thread_record(
     update_thread_status(thread_id, status)
     if filename:
         mark_ticket_loaded(filename, folder, thread_id, channel_id)
+
+async def _safe_log_audit(event_type: str, interaction: discord.Interaction, details: dict | None = None):
+    """Best-effort audit log persistence without failing the user command."""
+    try:
+        user = getattr(interaction, "user", None)
+        actor_id = getattr(user, "id", None)
+        actor_id_int = actor_id if isinstance(actor_id, int) else None
+        actor_name = getattr(user, "name", None)
+        await asyncio.to_thread(log_audit_event, event_type, actor_id_int, actor_name, details or {})
+    except Exception:
+        pass
+
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
@@ -731,6 +744,7 @@ class AdminCog(commands.Cog, name="Admin"):
             )
             return
         await asyncio.to_thread(set_setting, "reminders_channel_id", str(channel.id))
+        await _safe_log_audit("set_reminders_channel", interaction, {"channel_id": channel.id})
         await interaction.followup.send(f"✅ Daily sprint reminders channel set to {channel.mention}.")
 
     # Helper: Apply role synchronization
@@ -855,6 +869,7 @@ class AdminCog(commands.Cog, name="Admin"):
             )
             return
 
+        await _safe_log_audit("set_user_role", interaction, {"target_id": target_member.id, "role": role})
         await interaction.followup.send(
             f"🎉 **{target_member.display_name}** has been assigned the **{role_label}** role in Discord and CapStoneFlow.",
         )
@@ -939,6 +954,7 @@ class AdminCog(commands.Cog, name="Admin"):
             )
             return
         await asyncio.to_thread(set_setting, "commit_channel_id", str(channel.id))
+        await _safe_log_audit("set_commit_channel", interaction, {"channel_id": channel.id})
         await interaction.followup.send(f"✅ Repository commit and merge bulletins channel set to {channel.mention}.")
 
     # 10. /update-project
@@ -991,12 +1007,15 @@ class AdminCog(commands.Cog, name="Admin"):
             github_token = os.getenv("GITHUB_TOKEN")
 
             async def _mark_event(key: str, ch_id: int) -> bool:
-                s_key = f"event_posted:{ch_id}:{key}"
-                existing = await asyncio.to_thread(get_setting, s_key)
-                if existing:
-                    return False
-                await asyncio.to_thread(set_setting, s_key, "1")
-                return True
+                try:
+                    return await asyncio.to_thread(mark_repo_event_posted, key, ch_id)
+                except Exception:
+                    s_key = f"event_posted:{ch_id}:{key}"
+                    existing = await asyncio.to_thread(get_setting, s_key)
+                    if existing:
+                        return False
+                    await asyncio.to_thread(set_setting, s_key, "1")
+                    return True
 
             from repo_updates import post_project_updates
             ok, msg, commits_count, prs_count = await post_project_updates(
@@ -1067,9 +1086,11 @@ class AdminCog(commands.Cog, name="Admin"):
                 await asyncio.to_thread(set_setting, "auto_updates_branch", branch)
             if feed_type:
                 await asyncio.to_thread(set_setting, "auto_updates_feed_type", feed_type)
+            await _safe_log_audit("auto_updates_enable", interaction, {"repo_url": repo_url, "branch": branch, "feed_type": feed_type})
             await interaction.followup.send("✅ Automatic repository updates enabled.")
         elif action == "disable":
             await asyncio.to_thread(set_setting, "auto_updates_enabled", "false")
+            await _safe_log_audit("auto_updates_disable", interaction, {})
             await interaction.followup.send("⏸️ Automatic repository updates paused.")
         else:
             enabled = (await asyncio.to_thread(get_setting, "auto_updates_enabled")) or "true"
@@ -1180,7 +1201,7 @@ class AdminCog(commands.Cog, name="Admin"):
             model_name = os.getenv("NVIDIA_MODEL") or os.getenv("AI_ANSWER_MODEL") or "meta/llama-3.1-70b-instruct"
         elif gemini_key:
             provider_label = "Google Gemini"
-            model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         else:
             provider_label = "Offline Heuristic Fallback"
             model_name = "Built-in 3-Ticket Engine"

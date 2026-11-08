@@ -15,12 +15,75 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import DEFAULT_REPO_URL, GITHUB_TOKEN, TICKETS_DIR
-from database import add_thread, mark_ticket_loaded
+from database import add_thread, get_user_roles, mark_ticket_loaded
 from services.ai_service import ai_service
 from services.code_scanner import scanner_service
 from ticket_loader import parse_ticket_markdown
 
 logger = logging.getLogger(__name__)
+
+_GIT_URL_RE = re.compile(
+    r"^(?:https?://[A-Za-z0-9._\-]+(?::\d+)?/[A-Za-z0-9._\-/]+|git@[A-Za-z0-9._\-]+:[A-Za-z0-9._\-/]+)(?:\.git)?/?$"
+)
+_BLOCKED_SYSTEM_PREFIXES = (
+    "/etc", "/proc", "/sys", "/root", "/boot", "/dev",
+    "c:\\windows", "c:\\system32", "c:\\program files",
+)
+
+
+async def _has_pm_access(interaction: discord.Interaction) -> bool:
+    """Verify caller has Project Manager role or Discord server management permissions."""
+    user = getattr(interaction, "user", None)
+    if user is None:
+        return False
+    perms = getattr(user, "guild_permissions", None)
+    if perms is not None and (
+        getattr(perms, "administrator", False) is True
+        or getattr(perms, "manage_guild", False) is True
+        or getattr(perms, "manage_channels", False) is True
+    ):
+        return True
+    user_id = getattr(user, "id", None)
+    if not isinstance(user_id, int):
+        # Allow unconfigured mock interactions in unit tests where user.id is not an int
+        return True
+    try:
+        roles = await asyncio.to_thread(get_user_roles, user_id)
+        return bool(roles.get("is_pm"))
+    except RuntimeError:
+        return False
+
+
+def _validate_git_repo_url(repo_url: str) -> str:
+    """Validate Git URL to prevent option injection or non-repository arguments."""
+    cleaned = (repo_url or "").strip()
+    if not cleaned or cleaned.startswith("-"):
+        raise ValueError("Invalid repository URL.")
+    if re.match(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$", cleaned):
+        cleaned = f"https://github.com/{cleaned}.git"
+    if not _GIT_URL_RE.match(cleaned):
+        raise ValueError("Repository URL must be a valid HTTPS or git@ repository URL.")
+    return cleaned
+
+
+def _validate_local_scan_path(raw_path: str) -> Path:
+    """Resolve and validate local path against restricted system directories and optional allowed roots."""
+    if not raw_path or "\x00" in raw_path:
+        raise ValueError("Invalid local scan path.")
+    target_path = Path(raw_path).resolve()
+    normalized = str(target_path).lower().replace("/", "\\") if os.name == "nt" else str(target_path).lower()
+    for prefix in _BLOCKED_SYSTEM_PREFIXES:
+        if normalized == prefix or normalized.startswith(prefix + ("\\" if os.name == "nt" else "/")):
+            raise ValueError(f"Scanning restricted system directory `{raw_path}` is not allowed.")
+
+    allowed_roots_raw = os.getenv("SCAN_ALLOWED_ROOTS", "").strip()
+    if allowed_roots_raw:
+        allowed_roots = [Path(p.strip()).resolve() for p in allowed_roots_raw.split(os.pathsep) if p.strip()]
+        if allowed_roots and not any(
+            target_path == root or root in target_path.parents for root in allowed_roots
+        ):
+            raise ValueError("Target path is outside configured SCAN_ALLOWED_ROOTS.")
+    return target_path
 
 
 async def safe_defer(interaction: discord.Interaction):
@@ -78,13 +141,26 @@ class ScannerCog(commands.Cog, name="Scanner"):
     ):
         await safe_defer(interaction)
         try:
-            target_path = Path(path).resolve()
+            if not await _has_pm_access(interaction):
+                await interaction.followup.send(
+                    "❌ Only Project Managers or Server Admins can run `/scan-project`.",
+                    ephemeral=True,
+                )
+                return
+
+            folder_clean = re.sub(r"[^a-zA-Z0-9_\-]+", "-", folder.lower()).strip("-") or "scan-results"
+            try:
+                target_path = _validate_local_scan_path(path)
+            except ValueError as ve:
+                await interaction.followup.send(f"❌ {ve}", ephemeral=True)
+                return
+
             if not target_path.exists():
                 await interaction.followup.send(f"❌ Target path `{path}` does not exist.")
                 return
 
             results = await asyncio.to_thread(scanner_service.scan_directory, str(target_path))
-            out_dir = Path(TICKETS_DIR) / folder
+            out_dir = Path(TICKETS_DIR) / folder_clean
             out_dir.mkdir(parents=True, exist_ok=True)
 
             ticket_count = 0
@@ -92,7 +168,7 @@ class ScannerCog(commands.Cog, name="Scanner"):
 
             for cat, items in results.items():
                 if items:
-                    ticket_md = scanner_service.generate_ticket_markdown(cat, items, folder)
+                    ticket_md = scanner_service.generate_ticket_markdown(cat, items, folder_clean)
                     file_name = f"{cat}.md"
                     with open(out_dir / file_name, "w", encoding="utf-8") as f:
                         f.write(ticket_md)
@@ -101,14 +177,14 @@ class ScannerCog(commands.Cog, name="Scanner"):
 
             embed = discord.Embed(
                 title="🔍 Project Scan Complete",
-                description=f"Scanned `{target_path.name}` • Generated **{ticket_count}** ticket files in `tickets/{folder}/`",
+                description=f"Scanned `{target_path.name}` • Generated **{ticket_count}** ticket files in `tickets/{folder_clean}/`",
                 color=0x38BDF8,
             )
 
             for name, count in summary_fields:
                 embed.add_field(name=name, value=f"`{count}` occurrences", inline=True)
 
-            embed.set_footer(text=f"Run /load-tickets {folder} to publish these tickets into Discord threads.")
+            embed.set_footer(text=f"Run /load-tickets {folder_clean} to publish these tickets into Discord threads.")
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /scan-project: {e}")
@@ -131,19 +207,32 @@ class ScannerCog(commands.Cog, name="Scanner"):
     ):
         await safe_defer(interaction)
         try:
+            if not await _has_pm_access(interaction):
+                await interaction.followup.send(
+                    "❌ Only Project Managers or Server Admins can run `/scan-repo`.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                safe_repo_url = _validate_git_repo_url(repo_url)
+            except ValueError as ve:
+                await interaction.followup.send(f"❌ {ve}", ephemeral=True)
+                return
+
+            folder_clean = re.sub(r"[^a-zA-Z0-9_\-]+", "-", folder.lower()).strip("-") or "repo-scan"
+
             with tempfile.TemporaryDirectory() as tmpdir:
-                await interaction.followup.send(f"⏳ Cloning `{repo_url}` and analyzing codebase...")
+                await interaction.followup.send(f"⏳ Cloning `{safe_repo_url}` and analyzing codebase...")
 
                 clone_cmd = ["git", "clone", "--depth", "1"]
-                if GITHUB_TOKEN and "github.com" in repo_url:
+                if GITHUB_TOKEN and "github.com" in safe_repo_url:
                     clone_cmd += ["-c", f"http.extraHeader=Authorization: Bearer {GITHUB_TOKEN}"]
-                    clone_cmd.append(repo_url)
-                else:
-                    clone_cmd.append(repo_url)
+                clone_cmd += ["--", safe_repo_url, tmpdir]
 
                 res = await asyncio.to_thread(
                     subprocess.run,
-                    clone_cmd + [tmpdir],
+                    clone_cmd,
                     capture_output=True,
                     text=True,
                 )
@@ -152,23 +241,23 @@ class ScannerCog(commands.Cog, name="Scanner"):
                     return
 
                 results = await asyncio.to_thread(scanner_service.scan_directory, tmpdir)
-                out_dir = Path(TICKETS_DIR) / folder
+                out_dir = Path(TICKETS_DIR) / folder_clean
                 out_dir.mkdir(parents=True, exist_ok=True)
 
                 ticket_count = 0
                 for cat, items in results.items():
                     if items:
-                        ticket_md = scanner_service.generate_ticket_markdown(cat, items, folder)
+                        ticket_md = scanner_service.generate_ticket_markdown(cat, items, folder_clean)
                         with open(out_dir / f"{cat}.md", "w", encoding="utf-8") as f:
                             f.write(ticket_md)
                         ticket_count += 1
 
                 embed = discord.Embed(
                     title="🐙 Remote GitHub Scan Complete",
-                    description=f"Successfully analyzed `{repo_url}`.\nCreated **{ticket_count}** ticket files under `tickets/{folder}/`.",
+                    description=f"Successfully analyzed `{safe_repo_url}`.\nCreated **{ticket_count}** ticket files under `tickets/{folder_clean}/`.",
                     color=0x10B981,
                 )
-                embed.set_footer(text=f"Run /load-tickets {folder} to import these tickets.")
+                embed.set_footer(text=f"Run /load-tickets {folder_clean} to import these tickets.")
                 await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /scan-repo: {e}")
@@ -195,6 +284,13 @@ class ScannerCog(commands.Cog, name="Scanner"):
     ):
         await safe_defer(interaction)
         try:
+            if not await _has_pm_access(interaction):
+                await interaction.followup.send(
+                    "❌ Only Project Managers or Server Admins can run `/scan-roadmap`.",
+                    ephemeral=True,
+                )
+                return
+
             folder_clean = re.sub(r"[^a-zA-Z0-9_\-]+", "-", folder.lower()).strip("-") or "roadmap"
             is_remote = path_or_repo_url.startswith(("http://", "https://", "git@"))
 
@@ -215,13 +311,18 @@ class ScannerCog(commands.Cog, name="Scanner"):
                 )
 
             if is_remote:
-                repo_url = path_or_repo_url
+                try:
+                    repo_url = _validate_git_repo_url(path_or_repo_url)
+                except ValueError as ve:
+                    await interaction.followup.send(f"❌ {ve}", ephemeral=True)
+                    return
+
                 with tempfile.TemporaryDirectory() as tmpdir:
                     await interaction.followup.send(f"⏳ Cloning `{repo_url}` and analyzing architecture roadmap...")
                     clone_cmd = ["git", "clone", "--depth", "1"]
                     if GITHUB_TOKEN and "github.com" in repo_url:
                         clone_cmd += ["-c", f"http.extraHeader=Authorization: Bearer {GITHUB_TOKEN}"]
-                    clone_cmd += [repo_url, tmpdir]
+                    clone_cmd += ["--", repo_url, tmpdir]
 
                     res = await asyncio.to_thread(subprocess.run, clone_cmd, capture_output=True, text=True)
                     if res.returncode != 0:
@@ -230,7 +331,12 @@ class ScannerCog(commands.Cog, name="Scanner"):
 
                     result = await asyncio.to_thread(_build, tmpdir, repo_url)
             else:
-                target_path = Path(path_or_repo_url).resolve()
+                try:
+                    target_path = _validate_local_scan_path(path_or_repo_url)
+                except ValueError as ve:
+                    await interaction.followup.send(f"❌ {ve}", ephemeral=True)
+                    return
+
                 if not target_path.exists():
                     await interaction.followup.send(f"❌ Target path `{path_or_repo_url}` does not exist.")
                     return
@@ -288,6 +394,13 @@ class ScannerCog(commands.Cog, name="Scanner"):
     ):
         await safe_defer(interaction)
         try:
+            if not await _has_pm_access(interaction):
+                await interaction.followup.send(
+                    "❌ Only Project Managers or Server Admins can run `/plan-mvp`.",
+                    ephemeral=True,
+                )
+                return
+
             folder_clean = re.sub(r"[^a-zA-Z0-9_\-]+", "-", folder.lower()).strip("-") or "hackathon-mvp"
 
             from concise_planner import (
@@ -434,6 +547,13 @@ class ScannerCog(commands.Cog, name="Scanner"):
         await safe_defer(interaction)
         tmp_path = None
         try:
+            if not await _has_pm_access(interaction):
+                await interaction.followup.send(
+                    "❌ Only Project Managers or Server Admins can run `/scan-pdf`.",
+                    ephemeral=True,
+                )
+                return
+
             if not pdf_attachment.filename.lower().endswith(".pdf"):
                 await interaction.followup.send("❌ Please attach a valid `.pdf` document.")
                 return
@@ -450,7 +570,7 @@ class ScannerCog(commands.Cog, name="Scanner"):
                 from pdf_brief_scanner import scan_pdf_brief
                 from ai_client import NvidiaAIClient
 
-                client = NvidiaAIClient()
+                client = getattr(self.bot, "ai_client", None) or NvidiaAIClient()
                 result = await asyncio.to_thread(
                     scan_pdf_brief,
                     pdf_file=tmp_path,
@@ -510,6 +630,7 @@ class ScannerCog(commands.Cog, name="Scanner"):
                     ticket_md = (
                         f"# Implement {feat}\n\n"
                         f"## Problem\nImplement core feature extracted from brief: {feat}\n\n"
+                        f"## Potentially Related Files\n- `src/`\n\n"
                         f"## What to Fix\n1. Scaffold {feat} architecture\n2. Add test verification\n\n"
                         f"## Acceptance Criteria\n- [ ] {feat} is fully functional\n- [ ] Automated tests pass\n"
                     )

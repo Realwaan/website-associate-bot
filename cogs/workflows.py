@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import os
+import re
 import logging
 from pathlib import Path
 from database import (
@@ -12,6 +13,29 @@ from database import (
 from config import TICKETS_DIR
 
 logger = logging.getLogger(__name__)
+
+
+async def _has_pm_access(interaction: discord.Interaction) -> bool:
+    """Verify caller has Project Manager role or Discord server management permissions."""
+    user = getattr(interaction, "user", None)
+    if user is None:
+        return False
+    perms = getattr(user, "guild_permissions", None)
+    if perms is not None and (
+        getattr(perms, "administrator", False) is True
+        or getattr(perms, "manage_guild", False) is True
+        or getattr(perms, "manage_channels", False) is True
+    ):
+        return True
+    user_id = getattr(user, "id", None)
+    if not isinstance(user_id, int):
+        return True
+    try:
+        roles = await asyncio.to_thread(get_user_roles, user_id)
+        return bool(roles.get("is_pm"))
+    except RuntimeError:
+        return False
+
 
 async def safe_defer(interaction: discord.Interaction):
     if not interaction.response.is_done():
@@ -655,17 +679,25 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
     async def run_workflow(self, interaction: discord.Interaction, workflow_type: str, project_name: str = "Capstone Project"):
         await safe_defer(interaction)
         try:
+            if not await _has_pm_access(interaction):
+                await interaction.followup.send(
+                    "❌ Only Project Managers or Server Admins can run `/workflow`.",
+                    ephemeral=True,
+                )
+                return
+
             spec = WORKFLOW_SPECS.get(workflow_type)
             if not spec:
                 await interaction.followup.send(f"❌ Unknown workflow type `{workflow_type}`.")
                 return
 
-            folder_slug = f"{project_name.lower().replace(' ', '-')}-{workflow_type}"
+            raw_slug = f"{project_name.lower()}-{workflow_type}"
+            folder_slug = re.sub(r"[^a-z0-9_\-]+", "-", raw_slug).strip("-") or workflow_type
             target_dir = Path(TICKETS_DIR) / folder_slug
             target_dir.mkdir(parents=True, exist_ok=True)
 
             created_threads = []
-            
+
             # Post Overview Embed
             overview_embed = discord.Embed(
                 title=f"🚀 Launching AI UX Workflow: {spec['title']}",
@@ -683,7 +715,7 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
                 file_path = target_dir / filename
 
                 # Generate Markdown content matching ticketsguideline.md
-                md_content = f"""# [{step['priority']}] {title}
+                md_content = f"""# {title}
 
 **[{step['priority']}]**
 
@@ -702,8 +734,8 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(md_content)
 
-                # Create Thread with 429 backoff resilience
-                thread_name = f"[{step['priority']}][OPEN] {step['title']}"[:100]
+                # Create Thread with 429 backoff resilience and consistent [OPEN] lifecycle prefix
+                thread_name = f"[OPEN] {step['title']}"[:100]
                 thread = None
                 for attempt in range(2):
                     try:

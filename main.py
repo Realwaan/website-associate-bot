@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import io
+import re
 import time
 import discord
 from discord.ext import commands
@@ -17,6 +18,10 @@ from database import (
     finish_integration_delivery,
     get_setting,
     set_setting,
+    mark_repo_event_posted,
+    register_webhook_delivery,
+    enqueue_webhook_dead_letter,
+    log_command_metric,
 )
 from keep_alive import (
     keep_alive,
@@ -38,6 +43,17 @@ intents = discord.Intents.default()
 intents.message_content = os.getenv("INTENTS_MESSAGE_CONTENT", "false").lower() == "true"
 intents.members = os.getenv("INTENTS_MEMBERS", "false").lower() == "true"
 
+# Exports and helper methods preserved for backward compatibility and test suites
+from math_renderer import has_latex, render_equations_to_single_png
+from database import async_has_role
+from ai_client import NvidiaAIClient
+
+try:
+    ai_client = NvidiaAIClient()
+except Exception:
+    ai_client = None
+
+
 class AssociateBot(commands.Bot):
     """Modular Discord bot for CapStoneFlow support tickets and codebase scanning."""
 
@@ -47,6 +63,7 @@ class AssociateBot(commands.Bot):
             intents=intents,
             help_command=None
         )
+        self.ai_client = ai_client
 
     async def setup_hook(self):
         """Loads all modular extensions from cogs/ directory."""
@@ -110,6 +127,15 @@ class AssociateBot(commands.Bot):
         else:
             logger.info("Skipping automatic slash command sync on startup to prevent Discord 429 rate limits. Use /sync-commands or set SYNC_COMMANDS=true to force sync.")
 
+    async def on_app_command_completion(self, interaction: discord.Interaction, command: discord.app_commands.Command):
+        """Record command execution telemetry asynchronously."""
+        try:
+            actor_id = getattr(getattr(interaction, "user", None), "id", None)
+            actor_id_int = actor_id if isinstance(actor_id, int) else None
+            await asyncio.to_thread(log_command_metric, command.name, actor_id_int, True, 0, None)
+        except Exception:
+            pass
+
     async def on_app_command_error(self, interaction: discord.Interaction, error: Exception):
         """Log uncaught slash-command errors and always give the user feedback."""
         original = getattr(error, "original", error)
@@ -118,6 +144,14 @@ class AssociateBot(commands.Bot):
             original,
             exc_info=(type(original), original, getattr(original, "__traceback__", None)),
         )
+
+        try:
+            cmd_name = getattr(getattr(interaction, "command", None), "name", "unknown")
+            actor_id = getattr(getattr(interaction, "user", None), "id", None)
+            actor_id_int = actor_id if isinstance(actor_id, int) else None
+            await asyncio.to_thread(log_command_metric, cmd_name, actor_id_int, False, 0, str(original)[:500])
+        except Exception:
+            pass
 
         if isinstance(original, discord.HTTPException) and original.status == 429:
             logger.warning("⚠️ Discord rate limit (429) active; skipping user response to prevent compounding rate limits.")
@@ -154,15 +188,6 @@ class AssociateBot(commands.Bot):
     async def on_message(self, message: discord.Message):
         await on_message(message)
 
-# Exports and helper methods preserved for backward compatibility and test suites
-from math_renderer import has_latex, render_equations_to_single_png
-from database import async_has_role
-from ai_client import NvidiaAIClient
-
-try:
-    ai_client = NvidiaAIClient()
-except Exception:
-    ai_client = None
 
 bot = AssociateBot()
 _capstone_task_locks: dict[str, asyncio.Lock] = {}
@@ -175,6 +200,14 @@ WEBSITE_TO_DISCORD_STATUS = {
     "adviser_review": "REVIEWED",
     "done": "CLOSED",
 }
+
+
+def _strip_leading_bracket_prefixes(title: str) -> str:
+    """Strip any leading [STATUS], [PRIORITY], or [username] bracket tags from a thread title."""
+    cleaned = (title or "").strip()
+    while cleaned.startswith("[") and "]" in cleaned:
+        cleaned = cleaned.split("]", 1)[1].strip()
+    return cleaned or (title or "").strip()
 
 
 def _integration_metadata(payload: dict) -> tuple[str, str]:
@@ -275,8 +308,9 @@ async def create_capstone_ticket(payload: dict) -> dict:
             raise ValueError("CAPSTONE_TICKET_CHANNEL_ID is not in CAPSTONE_GUILD_ID")
 
         folder = str(task.get("folder") or task.get("phase") or "capstoneflow")[:100]
-        thread = await channel.create_thread(name=f"[OPEN] {title}"[:100], auto_archive_duration=1440, type=discord.ChannelType.public_thread)
-        embed = discord.Embed(title=f"📋 Ticket: {title}", description=str(task.get("problemStatement") or task.get("description") or "No problem description provided.")[:4000], color=0x38bdf8)
+        clean_title = _strip_leading_bracket_prefixes(title)
+        thread = await channel.create_thread(name=f"[OPEN] {clean_title}"[:100], auto_archive_duration=1440, type=discord.ChannelType.public_thread)
+        embed = discord.Embed(title=f"📋 Ticket: {clean_title}", description=str(task.get("problemStatement") or task.get("description") or "No problem description provided.")[:4000], color=0x38bdf8)
         for label, key in (("Priority", "priority"), ("Phase", "phase"), ("Folder", "folder")):
             if task.get(key):
                 embed.add_field(name=label, value=f"`{str(task[key])[:1024]}`", inline=True)
@@ -302,7 +336,7 @@ async def create_capstone_ticket(payload: dict) -> dict:
             await asyncio.to_thread(
                 add_thread,
                 thread.id,
-                title,
+                clean_title,
                 folder,
                 channel.id,
                 "CapStoneFlow",
@@ -394,9 +428,8 @@ async def sync_capstone_ticket_status(payload: dict) -> dict:
     await asyncio.to_thread(update_thread_status, thread.id, discord_status, **status_kwargs)
 
     # 2. Safely perform Discord thread rename with rate-limit and 503 resilience
-    ticket_name = str(thread_info.get("ticket_name") or thread.name)
-    if ticket_name.startswith("[") and "] " in ticket_name:
-        ticket_name = ticket_name.split("] ", 1)[1]
+    raw_ticket_name = str(thread_info.get("ticket_name") or thread.name)
+    ticket_name = _strip_leading_bracket_prefixes(raw_ticket_name)
 
     target_name = f"[{discord_status}] {ticket_name}"[:100]
     edit_kwargs = {
@@ -474,7 +507,6 @@ async def sync_capstone_ticket_status(payload: dict) -> dict:
 
 
 def _strip_latex_equations(text: str) -> str:
-    import re
     # Strip display $$...$$ equations
     cleaned = re.sub(r'\$\$.*?\$\$', '', text, flags=re.DOTALL)
     # Strip inline $...$ equations
@@ -483,7 +515,6 @@ def _strip_latex_equations(text: str) -> str:
 
 
 def _format_math_content(text: str) -> str:
-    import re
     return re.sub(r'\$\$(.*?)\$\$', r'```latex\n\1\n```', text, flags=re.DOTALL)
 
 
@@ -568,9 +599,7 @@ def capstone_status_handler(payload: dict):
         return 500, {"ok": False, "message": "Ticket status update failed"}
 
 
-
-
-async def _process_github_push_payload(payload: dict) -> None:
+async def _process_github_push_payload(payload: dict, delivery_id: str | None = None) -> None:
     """Extract and post GitHub commits arriving via webhook payload."""
     try:
         repo_data = payload.get("repository", {})
@@ -584,12 +613,20 @@ async def _process_github_push_payload(payload: dict) -> None:
         if not repo_owner or not repo_name or not commits:
             return
 
+        try:
+            auto_enabled = await asyncio.to_thread(get_setting, "auto_updates_enabled")
+            if str(auto_enabled or "").strip().lower() == "false":
+                logger.info("Skipping GitHub webhook push for %s/%s because auto_updates_enabled is false.", repo_owner, repo_name)
+                return
+        except Exception:
+            pass
+
         channel_id_str = await asyncio.to_thread(get_setting, "commit_channel_id")
         if not channel_id_str:
             channel_id_str = await asyncio.to_thread(get_setting, "reminders_channel_id")
 
         target_channel = None
-        if channel_id_str and channel_id_str.isdigit():
+        if channel_id_str and str(channel_id_str).isdigit():
             target_channel = bot.get_channel(int(channel_id_str))
             if not target_channel:
                 try:
@@ -613,12 +650,15 @@ async def _process_github_push_payload(payload: dict) -> None:
             return
 
         async def mark_event_posted(key: str, ch_id: int) -> bool:
-            setting_key = f"event_posted:{ch_id}:{key}"
-            val = await asyncio.to_thread(get_setting, setting_key)
-            if val:
-                return False
-            await asyncio.to_thread(set_setting, setting_key, "1")
-            return True
+            try:
+                return await asyncio.to_thread(mark_repo_event_posted, key, ch_id)
+            except Exception:
+                setting_key = f"event_posted:{ch_id}:{key}"
+                val = await asyncio.to_thread(get_setting, setting_key)
+                if val:
+                    return False
+                await asyncio.to_thread(set_setting, setting_key, "1")
+                return True
 
         from repo_updates import post_push_commits_from_payload
         posted = await post_push_commits_from_payload(
@@ -632,6 +672,16 @@ async def _process_github_push_payload(payload: dict) -> None:
         logger.info("Posted %s webhook commit(s) to #%s", posted, getattr(target_channel, "name", "channel"))
     except Exception as exc:
         logger.exception("Error processing GitHub push payload: %s", exc)
+        try:
+            await asyncio.to_thread(
+                enqueue_webhook_dead_letter,
+                delivery_id or f"push-{int(time.time())}",
+                "push",
+                payload if isinstance(payload, dict) else {},
+                str(exc),
+            )
+        except Exception:
+            pass
 
 
 def github_webhook_handler(raw_body: bytes, headers: dict) -> tuple[int, str]:
@@ -651,7 +701,18 @@ def github_webhook_handler(raw_body: bytes, headers: dict) -> tuple[int, str]:
     ):
         return 401, "Invalid webhook signature"
 
-    event_type = headers.get("X-GitHub-Event") or headers.get("x-github-event")
+    event_type = headers.get("X-GitHub-Event") or headers.get("x-github-event") or "unknown"
+    delivery_id = (headers.get("X-GitHub-Delivery") or headers.get("x-github-delivery") or "").strip()
+
+    if delivery_id:
+        try:
+            is_first_delivery = register_webhook_delivery(delivery_id, event_type)
+            if not is_first_delivery:
+                return 200, "Duplicate webhook delivery ignored"
+        except Exception:
+            # Proceed if DB is not active (e.g., standalone or unit test mode)
+            pass
+
     if event_type == "ping":
         return 200, "pong"
 
@@ -662,7 +723,7 @@ def github_webhook_handler(raw_body: bytes, headers: dict) -> tuple[int, str]:
             return 400, "Invalid JSON payload"
 
         if bot.loop and not bot.loop.is_closed():
-            asyncio.run_coroutine_threadsafe(_process_github_push_payload(payload), bot.loop)
+            asyncio.run_coroutine_threadsafe(_process_github_push_payload(payload, delivery_id or None), bot.loop)
         return 200, "Push event received and scheduled"
 
     return 200, f"Event {event_type} ignored"

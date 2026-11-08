@@ -9,6 +9,7 @@ A Discord bot that turns markdown files into trackable support tickets with role
 - Enforces role-based permissions so Developers, QAs, and Project Managers each have clear responsibilities.
 - Maintains separate leaderboards for Developers (resolved count) and QAs (reviewed count).
 - Scans external project directories for common code issues (TODOs, debug statements, hardcoded secrets, etc.) and auto-generates ticket files.
+- Synchronizes tasks two-way with the **CapStoneFlow** web platform over authenticated, idempotent HTTP bridge endpoints and PostgreSQL/Supabase.
 - Sends a daily ticket summary to a configured channel at 8:00 AM PH Time.
 
 ---
@@ -28,7 +29,7 @@ Three roles, one per user at a time:
 |------|---------------------|-----------------|
 | **Developer** | `Developer` | Claim, resolve, unclaim, unresolve tickets |
 | **QA** | `QA` | Review, unreview tickets |
-| **Project Manager** | `Project Manager` | All of the above, plus load tickets, rebuild database, scan projects, set reminders channel |
+| **Project Manager** | `Project Manager` | All of the above, plus load tickets, rebuild database, scan projects, run workflows, set reminders channel |
 
 PM role requires server admin to assign. Developer and QA can be self-assigned.
 
@@ -91,6 +92,15 @@ Automatic repository updates support webhook-first delivery:
 
 If webhook secret is configured, repo updates default to webhook mode; polling remains available for fallback setups.
 
+### CapStoneFlow Web Bridge API
+The embedded threaded WSGI server (`keep_alive.py`) exposes authenticated HTTP endpoints for two-way synchronization with the CapStoneFlow web platform:
+- `GET /health` → Liveness probe (`200 ok`)
+- `GET /ready` → Readiness probe checking active Discord gateway session
+- `POST /api/capstone/tickets` → Creates or reuses a linked Discord ticket thread for a web task
+- `POST /api/capstone/tickets/status` → Mirrors web task status transitions (`backlog`/`todo`/`in_progress`/`peer_review`/`adviser_review`/`done`) onto the linked Discord thread
+
+All `/api/capstone/*` endpoints require `X-Capstone-API-Key`, `X-Idempotency-Key`, and `X-Correlation-ID` headers.
+
 ### Leaderboards
 Separate scoreboards for Developers and QAs. Scores update automatically when tickets move through the pipeline and decrement correctly on undo.
 
@@ -148,12 +158,12 @@ PM loads tickets          Developer works           QA verifies            PM cl
 ```
 
 1. **PM loads tickets:** `/load-tickets <folder> <channel>` creates `[OPEN]` threads from markdown files.
-2. **Developer claims:** `/claim` inside a thread → `[CLAIMED][username]ticket-name`.
+2. **Developer claims:** `/claim` inside a thread → `[CLAIMED] [username] ticket-name`.
     - Immediately create a git branch using the bot's suggested branch name.
-    - Full guide: [CLAIM_BRANCH_WORKFLOW.md](CLAIM_BRANCH_WORKFLOW.md)
-3. **Developer submits:** `/resolved <pr_url>` inside a thread → `[Pending-Review][username]ticket-name`. Adds to dev leaderboard.
-4. **QA reviews:** `/reviewed` inside a thread → `[Reviewed][username]ticket-name`. Adds to QA leaderboard.
-5. **PM or involved user closes:** `/closed` inside a thread → `[CLOSED][username]ticket-name`.
+    - Full guide: [docs/CLAIM_BRANCH_WORKFLOW.md](docs/CLAIM_BRANCH_WORKFLOW.md)
+3. **Developer submits:** `/resolved <pr_url>` inside a thread → `[Pending-Review] [username] ticket-name`. Adds to dev leaderboard.
+4. **QA reviews:** `/reviewed` inside a thread → `[Reviewed] [username] ticket-name`. Adds to QA leaderboard.
+5. **PM or involved user closes:** `/closed` inside a thread → `[CLOSED] [username] ticket-name`.
 
 ---
 
@@ -291,9 +301,10 @@ Notes:
 
 ### 4. Health Endpoint for Render and Uptime
 
-The bot now exposes:
+The bot exposes:
 - `/` → basic alive message
 - `/health` → returns `ok`
+- `/ready` → returns JSON readiness status of the Discord gateway connection
 
 Render health checks use `/health` via `render.yaml`.
 
@@ -320,28 +331,34 @@ In Render logs, confirm:
 
 | Command | Description | Who Can Use |
 |---------|-------------|-------------|
-| `/assign-role <dev\|qa\|pm> [member]` | Assign role to yourself or another team member | Anyone for dev/qa, Admins/PMs for PM |
-| `/set-role <developer\|qa\|pm> [member]` | Set role for yourself or a member (alias) | Anyone for dev/qa, Admins/PMs for PM |
+| `/assign-role <dev\|qa\|pm>` | Assign role to yourself | Anyone for dev/qa, Admins/PMs for PM |
+| `/set-role <dev\|qa\|pm> [member]` | Set role for yourself or another team member | Anyone for dev/qa, Admins/PMs for PM |
 
-### Hackathon Planning & Ticket Management (PM / Admins)
+### Hackathon Planning, Workflows & Ticket Management (PM / Admins)
 
 | Command | Description |
 |---------|-------------|
-| `/plan-mvp <idea> <folder> [auto_load] [area]` | Break down a raw hackathon idea into atomic tickets, binary criteria, and `PLAN.md` checklist with optional instant thread creation |
-| `/load-tickets <folder> <channel>` | Load markdown files from a folder into a channel as threads (includes rate-limit backoff) |
-| `/scan-pdf <pdf> [folder]` | Upload a website/design brief PDF and generate roadmap + tickets (ROADMAP.md attached) |
-| `/scan-roadmap <path_or_repo_url> <folder> [threshold] [generate_tickets]` | Scan local folder or HTTPS repo URL and generate 12-week roadmap markdown with suggested improvements (`ROADMAP.md` attached) |
-| `/scan-repo <repo_url> [folder] [branch] [threshold] [generate_tickets]` | Cloud-safe scan by cloning a repo URL and generating issue + feature tickets |
-| `/scan-project <path> <folder> [threshold]` | Scan a project directory for issues and auto-generate ticket files |
+| `/plan-mvp <idea> [folder] [context] [auto_load]` | Break down a raw hackathon idea into atomic tickets, binary criteria, and `PLAN.md` checklist with optional instant thread creation |
+| `/workflow <workflow_type> [project_name]` | Generate a chained multi-step workflow ticket series (`future-forge`, `design-sprint`, `write-prd`, etc.) and create Discord threads |
+| `/workflow-list` | Browse the catalog of AI UX Playground multi-step design, product, and engineering workflows |
+| `/load-tickets <folder> [channel]` | Load markdown files from a folder into a channel as threads (includes rate-limit backoff) |
+| `/scan-pdf <pdf_attachment> [folder]` | Upload a website/design brief PDF and generate roadmap + tickets (`ROADMAP.md` attached) |
+| `/scan-roadmap <path_or_repo_url> [folder] [threshold] [generate_tickets]` | Scan local folder or HTTPS repo URL and generate 12-week roadmap markdown with suggested improvements (`ROADMAP.md` attached) |
+| `/scan-repo [repo_url] [folder]` | Cloud-safe scan by cloning a repo URL and generating issue tickets |
+| `/scan-project <path> [folder]` | Scan a local project directory for issues and auto-generate ticket files |
 | `/rebuild-db <folder> <channel>` | Rebuild database entries from existing threads (recovery tool) |
-| `/reset-loaded <folder> <channel>` | Clear loaded-ticket mappings (alias for `/clear-folder-tickets`) |
+| `/reset-loaded <folder> [channel]` | Clear loaded-ticket mappings (alias for `/clear-folder-tickets`) |
+| `/cleanup-tickets <action>` | Archive closed Discord threads or purge closed records from the database |
+| `/clear [amount]` | Purge recent messages in a channel/thread and close the ticket thread if run inside one |
+| `/reset-ticket` | Reset the current ticket thread back to `[OPEN]` state |
+| `/sync-commands` | Manually synchronize application slash commands with Discord |
 | `/set-commit-channel <channel>` | Set default channel for formal commit/merge bulletins |
-| `/update-project <repo_url> [branch] [limit] [feed_type] [channel]` | Post formal repository updates (commits, merged PRs, or both) with GitHub links and enable automatic notifications (webhook-first) |
-| `/auto-updates <enable\|disable\|status> [repo_url] [branch] [feed_type] [limit]` | Control automatic repository notifications (pause, resume, inspect config) |
+| `/update-project <repo_url> [branch] [limit] [feed_type] [channel]` | Post formal repository updates (commits, merged PRs, or both) with GitHub links and enable automatic notifications |
+| `/auto-updates <enable\|disable\|status> [repo_url] [branch] [feed_type]` | Control automatic repository notifications (pause, resume, inspect config) |
 | `/health-details` | Show DB latency, auto-update/webhook status, and operational diagnostics |
 | `/ai-status` | Show current AI provider/model configuration and fallback health |
 
-Automatic updates track a per-branch commit cursor and post each new commit title detected since the previous run. `/update-project` now also persists the destination channel for background polling.
+Automatic updates track a per-branch commit cursor and post each new commit title detected since the previous run. `/update-project` also persists the destination channel for background polling and webhooks.
 
 ### Developer Commands (Use Inside a Thread)
 
@@ -349,28 +366,28 @@ Automatic updates track a per-branch commit cursor and post each new commit titl
 |---------|-------------|-------------|
 | `/claim` | Claim a ticket to work on | — |
 | `/unclaim` | Unclaim; resets to OPEN | — |
-| `/resolved <pr_url>` | Submit for QA review with PR link | +1 dev |
+| `/resolved [pr_url]` | Submit for QA review with optional PR link | +1 dev |
 | `/unresolve` | Revert to CLAIMED | -1 dev |
-| `/ticket-info` | In-thread live status, claimer, resolver, reviewer, PR, and acceptance criteria | — |
+| `/ticket-info` | In-thread live status, claimer, resolver, reviewer, PR, and next steps | — |
 
 ### QA Commands (Use Inside a Thread)
 
 | Command | Description | Leaderboard |
 |---------|-------------|-------------|
-| `/reviewed` | Approve a Pending-Review ticket | +1 QA |
+| `/reviewed` | Approve a Pending-Review ticket (peer-review enforced) | +1 QA |
 | `/unreview` | Revert to Pending-Review | -1 QA |
 
 ### General, AI & Analytics Commands
 
 | Command | Description |
 |---------|-------------|
-| `/sprint-stats [folder]` | Real-time hackathon burndown: ASCII progress bar, pipeline counts, and active modules |
-| `/ask-ai <question> [temperature]` | Technical architect consultation with rendered LaTeX equation diagrams |
+| `/sprint-stats` | Real-time hackathon burndown: ASCII progress bar, pipeline counts, and active modules |
+| `/ask-ai <question>` | Technical architect consultation with rendered LaTeX equation diagrams |
 | `/closed` | Close a ticket (PM or involved Dev/QA) |
-| `/leaderboard <dev\|qa> [limit]` | Show leaderboard (default: dev, limit: 10) |
+| `/leaderboard [both\|dev\|qa] [limit]` | Show contribution leaderboard (default: both, limit: 10) |
 | `/setreminderschannel <channel>` | Set channel for daily ticket summary (PM only) |
 | `/ticket-folders` | List all available ticket folders |
-| `/help` | Show in-Discord help with workflow and role info (alias for `/commands`) |
+| `/help` / `/commands` | Show in-Discord help with available commands |
 
 ---
 
@@ -437,23 +454,25 @@ The project scanner's behavior is controlled in `config.py`:
 
 ## Database
 
-The bot uses SQLite (`tickets.db`) with migration-based schema management:
+The bot uses **PostgreSQL** (via `psycopg2` `ThreadedConnectionPool`, optimized for Supabase Session Pooler) with automatic SQL migration management (`migrations/001`–`007`):
 
 | Table | Purpose |
 |-------|---------|
-| `threads` | Maps Discord threads to ticket info with full status history |
+| `threads` | Maps Discord threads to ticket info, status history, and linked `external_task_id` |
 | `user_roles` | Stores Developer / QA / PM role assignments |
 | `leaderboard` | Separate dev resolved and QA reviewed counters |
 | `loaded_tickets` | Tracks which tickets have been loaded to prevent duplicates |
-| `settings` | Key-value store for bot configuration (e.g., reminders channel) |
+| `settings` | Key-value store for bot configuration (e.g., reminders & commit channels) |
 | `command_metrics` | Slash-command telemetry (success/failure + duration) |
 | `audit_logs` | Audit trail for administrative configuration changes |
 | `repo_update_configs` | Per-guild repository auto-update configuration (repo, branch, mode, channel, enabled) |
 | `posted_repo_events` | Idempotency keys for posted commit/PR events |
-| `github_webhook_receipts` | Webhook delivery IDs for replay protection |
+| `github_webhook_receipts` | Webhook delivery IDs (`X-GitHub-Delivery`) for replay protection |
+| `webhook_dead_letters` | Failed webhook payload queue with exponential backoff retries |
+| `capstone_integration_deliveries` | Idempotency and response store for CapStoneFlow bridge requests |
 | `migrations` | Tracks which SQL migrations have been applied |
 
-The database and all tables are created automatically on first run via `migrations/001_initial_schema.sql`.
+All pending migrations in `migrations/*.sql` are applied automatically on startup via `init_db()`.
 
 ---
 
@@ -461,27 +480,34 @@ The database and all tables are created automatically on first run via `migratio
 
 ```
 website-associate-bot/
-├── main.py                    # Bot commands and event handlers
+├── main.py                    # Bot entrypoint, CapStoneFlow bridge, and webhook dispatch
+├── keep_alive.py              # Threaded WSGI HTTP server (/health, /ready, /webhook/github, /api/capstone/*)
 ├── config.py                  # Environment variables and scanner settings
-├── database.py                # SQLite operations and migrations
-├── ticket_loader.py           # Markdown file parser
-├── requirements.txt           # Python dependencies
-├── Dockerfile                 # Docker build (uses uv for fast installs)
-├── .env.example               # Safe environment template (committable)
-├── .env                       # Local secrets (not committed)
-├── .gitignore                 # Git ignore patterns
-├── ticketsguideline.md        # Ticket writing guide
-├── tickets.db                 # SQLite database (auto-created)
-├── migrations/
-│   └── 001_initial_schema.sql # Database schema
+├── database.py                # PostgreSQL connection pool, CRUD, and migration runner
+├── cache.py                   # Thread-safe in-memory TTL cache for roles and threads
+├── ticket_loader.py           # Markdown ticket parser
+├── concise_planner.py         # AI-powered MVP planner (/plan-mvp)
+├── pdf_brief_scanner.py       # PDF brief text/OCR extractor and roadmap generator (/scan-pdf)
+├── repo_updates.py            # GitHub commit & merged PR bulletin fetcher
+├── ai_client.py               # NVIDIA NIM / OpenAI-compatible AI client with profiles
+├── math_renderer.py           # LaTeX equation-to-PNG renderer
+├── cogs/
+│   ├── admin.py               # Ticket loading, DB rebuild, role assignment, repo updates, diagnostics
+│   ├── leaderboard.py         # Developer/QA leaderboards and /sprint-stats burndown
+│   ├── scanner.py             # /scan-project, /scan-repo, /scan-roadmap, /plan-mvp, /scan-pdf, /ask-ai
+│   ├── tickets.py             # In-thread lifecycle (/claim, /resolved, /reviewed, /closed, /ticket-info)
+│   └── workflows.py           # Multi-step AI UX Playground workflow generator (/workflow)
+├── services/
+│   ├── ai_service.py          # Unified Gemini Free Tier + OpenAI/NVIDIA/Local fallback service
+│   └── code_scanner.py        # Static analysis scanner service
+├── migrations/                # Sequential PostgreSQL schema migrations (001–007)
 ├── scripts/
-│   ├── scan_project.py        # Code scanner and ticket generator
-│   └── migrate_db.py          # Standalone migration runner
-└── tickets/                   # Ticket markdown files by folder
-    ├── intramurals2026/
-    ├── borneo/
-    ├── my-scan/
-    └── SideQuest/
+│   ├── scan_project.py        # Standalone code scanner and ticket generator
+│   ├── roadmap_builder.py     # 12-week roadmap analyzer
+│   ├── migrate_db.py          # Standalone migration runner
+│   └── check_secrets.py       # Pre-commit secret detector
+├── tests/                     # Unit & integration test suite (pytest)
+└── tickets/                   # Ticket markdown files organized by folder
 ```
 
 ---
@@ -491,7 +517,7 @@ website-associate-bot/
 **Bot does not respond to commands:**
 - Verify `DISCORD_TOKEN` is set correctly in `.env`.
 - Check that the bot has `applications.commands` scope and the required permissions.
-- Run `/ticket-folders` to confirm the bot is online.
+- Run `/ticket-folders` to confirm the bot is online, or run `/sync-commands` (as PM) if new slash commands have not appeared yet.
 
 **PM commands say "Only Project Managers can...":**
 - The PM role requires a server admin to run `/set-role pm`. Regular members cannot self-assign it.

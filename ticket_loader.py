@@ -8,7 +8,6 @@ from config import TICKETS_DIR
 logger = logging.getLogger(__name__)
 
 
-
 def parse_ticket_markdown(file_path: str) -> dict:
     """
     Parse a ticket markdown file and extract all sections.
@@ -37,42 +36,43 @@ def parse_ticket_markdown(file_path: str) -> dict:
     # Extract Title (H1)
     title_match = re.search(r'^# (.+)$', content, re.MULTILINE)
     if title_match:
-        ticket["title"] = title_match.group(1).strip()
+        raw_title = title_match.group(1).strip()
+        # Strip optional leading [TICKET] or [PRIORITY]/[CRITICAL]/[HIGH]/[MEDIUM]/[LOW] tag in title
+        clean_title = re.sub(r'^\[(?:TICKET|PRIORITY|CRITICAL|HIGH|MEDIUM|LOW)\]\s*', '', raw_title, flags=re.IGNORECASE).strip()
+        ticket["title"] = clean_title or raw_title
     
     # Extract Priority metadata
-    priority_match = re.search(r'\*\*\[(PRIORITY|CRITICAL)\]\*\*', content)
+    priority_match = re.search(r'\*\*\[(PRIORITY|CRITICAL|HIGH|MEDIUM|LOW)\]\*\*', content, re.IGNORECASE)
     if priority_match:
-        ticket["priority"] = priority_match.group(1)
+        ticket["priority"] = priority_match.group(1).upper()
     
     # Extract Problem section
     problem_match = re.search(r'## Problem\s*\n(.*?)(?=##|\Z)', content, re.DOTALL)
     if problem_match:
         ticket["problem"] = problem_match.group(1).strip()
     
-    # Extract Potentially Related Files section
-    related_files_match = re.search(r'## Potentially Related Files\s*\n(.*?)(?=##|\Z)', content, re.DOTALL)
+    # Extract Potentially Related Files (or Related Files) section
+    related_files_match = re.search(r'## (?:Potentially )?Related Files\s*\n(.*?)(?=##|\Z)', content, re.DOTALL)
     if related_files_match:
         related_files_text = related_files_match.group(1)
-        # Extract bullet points with file references
-        file_items = re.findall(r'- (.*?)(?:\n|$)', related_files_text)
+        file_items = re.findall(r'^[\-\*]\s+(.+?)(?:\n|$)', related_files_text, re.MULTILINE)
         ticket["related_files"] = [item.strip() for item in file_items if item.strip()]
     
-    # Extract What to Fix section (numbered list)
+    # Extract What to Fix section (numbered list or bullet list fallback)
     what_to_fix_match = re.search(r'## What to Fix\s*\n(.*?)(?=##|\Z)', content, re.DOTALL)
     if what_to_fix_match:
         what_to_fix_text = what_to_fix_match.group(1)
-        # Extract numbered items
         fix_items = re.findall(r'^\d+\.\s+(.+?)(?:\n|$)', what_to_fix_text, re.MULTILINE)
+        if not fix_items:
+            fix_items = re.findall(r'^[\-\*]\s+(.+?)(?:\n|$)', what_to_fix_text, re.MULTILINE)
         ticket["what_to_fix"] = [item.strip() for item in fix_items if item.strip()]
     
-    # Extract Acceptance Criteria section (bullet list or narrative)
+    # Extract Acceptance Criteria section (bullet list or numbered list)
     acceptance_match = re.search(r'## Acceptance Criteria\s*\n(.*?)(?=##|\Z)', content, re.DOTALL)
     if acceptance_match:
         acceptance_text = acceptance_match.group(1)
-        # Extract both bullet points and numbered items
-        criteria_items = re.findall(r'^[\-\*]\s+(.+?)(?:\n|$)', acceptance_text, re.MULTILINE)
+        criteria_items = re.findall(r'^[\-\*]\s+(?:\[[ xX]\]\s+)?(.+?)(?:\n|$)', acceptance_text, re.MULTILINE)
         if not criteria_items:
-            # Try numbered format
             criteria_items = re.findall(r'^\d+\.\s+(.+?)(?:\n|$)', acceptance_text, re.MULTILINE)
         ticket["acceptance_criteria"] = [item.strip() for item in criteria_items if item.strip()]
     
@@ -108,9 +108,7 @@ def load_tickets_from_folder(folder_name: str) -> list:
             ticket["folder"] = folder_name
             tickets.append(ticket)
         except Exception as e:
-            # Log parsing error but continue with other files
             logger.warning(f"Failed to parse {file.stem}: {e}")
-            # Add basic ticket info even if parsing failed
             tickets.append({
                 "name": file.stem,
                 "path": str(file),

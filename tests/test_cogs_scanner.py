@@ -5,7 +5,11 @@ from pathlib import Path
 import tempfile
 import discord
 import scripts.roadmap_builder
-from cogs.scanner import ScannerCog
+from cogs.scanner import (
+    ScannerCog,
+    _validate_git_repo_url,
+    _validate_local_scan_path,
+)
 
 
 class TestScannerCog(unittest.IsolatedAsyncioTestCase):
@@ -43,6 +47,35 @@ class TestScannerCog(unittest.IsolatedAsyncioTestCase):
             embed = kwargs["embed"]
             self.assertIn("Project Scan Complete", embed.title)
             self.assertIn("Generated **1** ticket files", embed.description)
+
+    @patch("cogs.scanner.get_user_roles", return_value={"is_pm": False, "is_dev": True})
+    async def test_scan_project_denies_non_pm(self, mock_roles):
+        """Non-PM and non-admin users are denied access to /scan-project."""
+        self.interaction.user.id = 424242
+        self.interaction.user.guild_permissions = None
+        await self.cog.scan_project.callback(self.cog, self.interaction, path=".", folder="test-scan")
+        self.interaction.followup.send.assert_awaited_once()
+        args, kwargs = self.interaction.followup.send.call_args
+        self.assertIn("only project managers or server admins", args[0].lower())
+        self.assertTrue(kwargs.get("ephemeral"))
+
+    def test_validate_git_repo_url_security(self):
+        """Rejects git flag injection and accepts valid repository URLs."""
+        with self.assertRaises(ValueError):
+            _validate_git_repo_url("--upload-pack=touch /tmp/pwn")
+
+        url2 = _validate_git_repo_url("owner/repo-name")
+        self.assertEqual(url2, "https://github.com/owner/repo-name.git")
+
+        url3 = _validate_git_repo_url("https://github.com/org/project.git")
+        self.assertEqual(url3, "https://github.com/org/project.git")
+
+    def test_validate_local_scan_path_security(self):
+        """Blocks sensitive system paths while allowing valid temporary directories."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            resolved = _validate_local_scan_path(tmpdir)
+            self.assertIsInstance(resolved, Path)
+            self.assertTrue(resolved.exists())
 
     @patch("discord.File")
     @patch("scripts.roadmap_builder.build_project_roadmap")
@@ -121,7 +154,6 @@ class TestScannerCog(unittest.IsolatedAsyncioTestCase):
             embed = kwargs["embed"]
             self.assertIn("MVP Sprint Plan", embed.title)
             self.assertIn("Landing Page Hero", embed.fields[2].value)
-            self.assertEqual(kwargs["file"].filename, "PLAN.md")
             self.assertEqual(kwargs["file"].filename, "PLAN.md")
 
     @patch("services.ai_service.ai_service.generate_text")

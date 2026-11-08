@@ -1,17 +1,38 @@
-"""Unit tests for GitHub webhook handler in main.py."""
+"""Unit tests for GitHub webhook handler and bracket normalization in main.py."""
 import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
 import json
-from main import github_webhook_handler, _process_github_push_payload
+from main import (
+    github_webhook_handler,
+    _process_github_push_payload,
+    _strip_leading_bracket_prefixes,
+)
 
 
 class TestMainWebhook(unittest.IsolatedAsyncioTestCase):
+    def test_strip_leading_bracket_prefixes(self):
+        """Strips single or stacked bracket tags cleanly."""
+        self.assertEqual(_strip_leading_bracket_prefixes("[OPEN] Build Auth"), "Build Auth")
+        self.assertEqual(_strip_leading_bracket_prefixes("[CRITICAL][OPEN] Build Auth"), "Build Auth")
+        self.assertEqual(_strip_leading_bracket_prefixes("[PRIORITY] [IN PROGRESS] Fix API"), "Fix API")
+
     def test_webhook_invalid_signature(self):
         """Webhooks with bad signatures return 401 Unauthorized."""
         with patch("webhook_security.verify_github_signature", return_value=False):
             code, msg = github_webhook_handler(b'{"action": "test"}', {"X-Hub-Signature-256": "bad"})
             self.assertEqual(code, 401)
             self.assertEqual(msg, "Invalid webhook signature")
+
+    def test_webhook_duplicate_delivery_ignored(self):
+        """Duplicate X-GitHub-Delivery IDs are rejected safely as 200 duplicate ignored."""
+        with patch("webhook_security.verify_github_signature", return_value=True), \
+             patch("main.register_webhook_delivery", return_value=False):
+            code, msg = github_webhook_handler(
+                b'{}',
+                {"X-GitHub-Event": "push", "X-GitHub-Delivery": "dup-delivery-123"},
+            )
+            self.assertEqual(code, 200)
+            self.assertIn("Duplicate", msg)
 
     def test_webhook_ping_event(self):
         """GitHub ping event returns 200 pong."""

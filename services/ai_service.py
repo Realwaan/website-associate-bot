@@ -8,7 +8,9 @@ from config import GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
 
 class AIService:
     """Handles AI text generation and document reasoning with zero-cost Gemini support."""
@@ -52,11 +54,12 @@ class AIService:
         return bool(self.gemini_key or self._openai_client)
 
     def generate_text(self, prompt: str, system_prompt: str = "You are an expert software architect and technical project manager.", temperature: float = 0.4) -> str:
-        """Generates text using Google Gemini 1.5 Flash (Free), falling back to OpenAI/NVIDIA."""
-        # 1. Primary: Google Gemini 1.5 Flash Free Tier
+        """Generates text using Google Gemini Free Tier, falling back to OpenAI/NVIDIA."""
+        # 1. Primary: Google Gemini Free Tier
         if self.gemini_key and not self.gemini_key.startswith("your-"):
+            gemini_model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
             try:
-                url = f"{GEMINI_API_URL}?key={self.gemini_key}"
+                url = f"{GEMINI_API_BASE}/{gemini_model}:generateContent?key={self.gemini_key}"
                 payload = {
                     "contents": [
                         {
