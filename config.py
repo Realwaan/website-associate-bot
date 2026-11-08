@@ -10,7 +10,7 @@ capstone_env = Path(__file__).resolve().parent.parent / "Capstone" / ".env"
 if capstone_env.exists():
     load_dotenv(dotenv_path=capstone_env, override=False)
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+DISCORD_TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip().strip('"\'') or None
 
 if not DISCORD_TOKEN:
     warnings.warn(
@@ -21,7 +21,7 @@ if not DISCORD_TOKEN:
 
 # Bot configuration
 COMMAND_PREFIX = "/"
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip().strip('"\'') or None
 if not DATABASE_URL:
     print("Warning: DATABASE_URL not found in environment variables. Database operations may fail.")
 TICKETS_DIR = "tickets"
