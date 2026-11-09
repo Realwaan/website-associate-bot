@@ -27,3 +27,7 @@ services:
         value: "require"
       - key: SYNC_COMMANDS
         value: "false"
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: WEBHOOK_REQUIRE_SECRET
+        value: "false"
