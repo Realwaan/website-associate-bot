@@ -584,6 +584,24 @@ class AdminCog(commands.Cog, name="Admin"):
         await safe_defer(interaction)
         try:
             commands = sorted(self.bot.tree.get_commands(), key=lambda command: command.name)
+            # Auto-sync if a PM runs /commands and this bot account hasn't synced its latest command tree yet
+            try:
+                import hashlib
+                user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
+                if user_roles.get("is_pm"):
+                    cmd_specs = sorted(
+                        f"{c.name}:{c.description}:{sorted(getattr(c, '_params', {}).keys())}"
+                        for c in commands
+                    )
+                    current_sig = hashlib.sha256("|".join(cmd_specs).encode("utf-8")).hexdigest()[:16]
+                    bot_app_id = str(getattr(self.bot, "application_id", None) or getattr(getattr(self.bot, "user", None), "id", None) or "default")
+                    sig_key = f"synced_commands_signature:{bot_app_id}"
+                    stored_sig = await asyncio.to_thread(get_setting, sig_key)
+                    if stored_sig != current_sig:
+                        await self.bot.tree.sync()
+                        await asyncio.to_thread(set_setting, sig_key, current_sig)
+            except Exception as sync_err:
+                logger.warning("Auto-sync check in /commands skipped: %s", sync_err)
             lines = [
                 f"`/{command.name}` — {command.description or 'No description available.'}"
                 for command in commands
@@ -1238,10 +1256,27 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.followup.send("❌ Only Project Managers can sync commands.", ephemeral=True)
                 return
 
+            import hashlib
+            cmd_specs = sorted(
+                f"{c.name}:{c.description}:{sorted(getattr(c, '_params', {}).keys())}"
+                for c in self.bot.tree.get_commands()
+            )
+            current_sig = hashlib.sha256("|".join(cmd_specs).encode("utf-8")).hexdigest()[:16]
+
+            bot_app_id = str(getattr(self.bot, "application_id", None) or getattr(getattr(self.bot, "user", None), "id", None) or "default")
+            sig_key = f"synced_commands_signature:{bot_app_id}"
             synced = await self.bot.tree.sync()
+            try:
+                await asyncio.to_thread(set_setting, sig_key, current_sig)
+            except Exception:
+                pass
+
             embed = discord.Embed(
                 title="⚡ Slash Commands Synchronized",
-                description=f"Successfully synchronized **{len(synced)}** application slash commands globally.",
+                description=(
+                    f"Successfully synchronized **{len(synced)}** application slash commands globally.\n"
+                    f"Signature: `{current_sig}`"
+                ),
                 color=0x10b981
             )
             await interaction.followup.send(embed=embed)

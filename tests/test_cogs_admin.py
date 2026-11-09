@@ -158,5 +158,20 @@ class TestAdminCog(unittest.IsolatedAsyncioTestCase):
         self.assertIn("AI Engine Status", embed.title)
 
 
+    @patch("cogs.admin.set_setting")
+    @patch("cogs.admin.get_user_roles")
+    async def test_sync_commands_persists_signature(self, mock_get_roles, mock_set_setting):
+        """PM running /sync-commands syncs tree and persists signature."""
+        mock_get_roles.return_value = {"is_pm": True}
+        self.bot.tree.get_commands.return_value = []
+        self.bot.tree.sync = AsyncMock(return_value=[MagicMock(), MagicMock()])
+
+        await self.cog.sync_commands_command.callback(self.cog, self.interaction)
+
+        self.bot.tree.sync.assert_awaited_once()
+        mock_set_setting.assert_called_once()
+        self.interaction.followup.send.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()

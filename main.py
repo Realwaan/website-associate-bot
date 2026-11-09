@@ -1,5 +1,6 @@
 """CapStoneFlow Discord Associate Bot - Modernized Modular Entrypoint."""
 import asyncio
+import hashlib
 import logging
 import os
 import io
@@ -94,11 +95,27 @@ class AssociateBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to load Cog {cog}: {e}")
 
-        # 3. Global command sync logic
-        # Discord heavily rate-limits global slash command syncing (200 syncs per day, plus Cloudflare 429 IP bans).
-        # We only auto-sync if SYNC_COMMANDS is explicitly enabled.
-        sync_enabled = os.getenv("SYNC_COMMANDS", "false").lower() in ("true", "1", "yes")
-        if sync_enabled:
+        # 3. Smart global command sync logic
+        # Automatically sync when the command tree signature changes or when SYNC_COMMANDS=true.
+        # Persisting the signature in settings avoids redundant syncs on restart (preventing 429 rate limits)
+        # while ensuring newly added commands are always registered with Discord.
+        cmd_specs = sorted(
+            f"{c.name}:{c.description}:{sorted(getattr(c, '_params', {}).keys())}"
+            for c in self.tree.get_commands()
+        )
+        current_sig = hashlib.sha256("|".join(cmd_specs).encode("utf-8")).hexdigest()[:16]
+        bot_app_id = str(getattr(self, "application_id", None) or getattr(getattr(self, "user", None), "id", None) or "default")
+        sig_key = f"synced_commands_signature:{bot_app_id}"
+        stored_sig = None
+        try:
+            stored_sig = await asyncio.to_thread(get_setting, sig_key)
+        except Exception:
+            pass
+
+        force_sync = os.getenv("SYNC_COMMANDS", "false").lower() in ("true", "1", "yes")
+        sig_changed = bool(cmd_specs) and (stored_sig != current_sig)
+
+        if force_sync or sig_changed:
             try:
                 guild_id_raw = os.getenv("CAPSTONE_GUILD_ID", "").strip()
                 if guild_id_raw:
@@ -116,7 +133,16 @@ class AssociateBot(commands.Bot):
                         logger.warning("Ignoring invalid CAPSTONE_GUILD_ID=%r", guild_id_raw)
 
                 synced = await self.tree.sync()
-                logger.info("Synced %s global application slash commands.", len(synced))
+                logger.info(
+                    "Synced %s global application slash commands for app %s (signature=%s).",
+                    len(synced),
+                    bot_app_id,
+                    current_sig,
+                )
+                try:
+                    await asyncio.to_thread(set_setting, sig_key, current_sig)
+                except Exception:
+                    pass
             except discord.HTTPException as e:
                 if e.status == 429:
                     logger.warning("⚠️ Discord global rate limit (429) encountered during startup command sync. Startup will continue without re-syncing.")
@@ -125,7 +151,11 @@ class AssociateBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to sync slash commands: {e}")
         else:
-            logger.info("Skipping automatic slash command sync on startup to prevent Discord 429 rate limits. Use /sync-commands or set SYNC_COMMANDS=true to force sync.")
+            logger.info(
+                "Slash commands already up-to-date (signature=%s, count=%s). Use /sync-commands or set SYNC_COMMANDS=true to force sync.",
+                current_sig,
+                len(cmd_specs),
+            )
 
     async def on_app_command_completion(self, interaction: discord.Interaction, command: discord.app_commands.Command):
         """Record command execution telemetry asynchronously."""
