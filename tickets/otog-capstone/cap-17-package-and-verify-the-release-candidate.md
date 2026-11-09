@@ -1,10 +1,18 @@
 # CAP-17 - Package and verify the release candidate
 
-**Dates:** Dec 2-4. **Owner:** C, with D. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-15 and CAP-16 before release sign-off.
+**Ticket ID:** CAP-17
+**Start Date:** 2026-12-02
+**Due Date:** 2026-12-04
+**Timezone:** Asia/Manila
+**Owner Suggestion:** C with D
+**Dependencies:** CAP-15, CAP-16
+**Scope:** Required for presentation build
+
+**Dates:** Dec 2-4. **Owner:** C, with D. **Estimate:** 2 days. **Priority:** Must.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: package and verify the release candidate. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+A developer-machine build is not sufficient for laboratory presentation. Package and validate an offline-capable release on the actual presentation laptop with recoverable demo data.
 
 ## Potentially Related Files
 

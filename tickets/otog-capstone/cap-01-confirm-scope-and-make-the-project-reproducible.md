@@ -1,12 +1,20 @@
 # CAP-01 - Confirm scope and make the project reproducible
 
+**Ticket ID:** CAP-01
+**Start Date:** 2026-11-09
+**Due Date:** 2026-11-10
+**Timezone:** Asia/Manila
+**Owner Suggestion:** C (team kickoff)
+**Dependencies:** None
+**Scope:** Required for presentation build
+
 **[PRIORITY]**
 
-**Dates:** Nov 9-10. **Owner:** C, with all contributors. **Estimate:** 1 day. **Priority:** Must. **Dependencies:** none. **Backlog:** EW-01.
+**Dates:** Nov 9-10. **Owner:** C, with all contributors. **Estimate:** 1 day. **Priority:** Must. **Backlog:** EW-01.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: confirm scope and make the project reproducible. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+The current checkout contains a Swing login prototype, but no reproducible build configuration or verified integration of teammate modules. Establish one shared baseline before implementing features twice.
 
 ## Potentially Related Files
 

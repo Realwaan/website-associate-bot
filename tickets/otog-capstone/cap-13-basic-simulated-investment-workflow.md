@@ -1,10 +1,18 @@
 # CAP-13 - Basic simulated investment workflow
 
-**Dates:** Nov 26-27. **Owner:** E. **Estimate:** 2 days. **Priority:** Planned, subject to Nov 20 scope gate. **Dependencies:** CAP-02, CAP-04. **Backlog:** EW-15 reduced scope.
+**Ticket ID:** CAP-13
+**Start Date:** 2026-11-26
+**Due Date:** 2026-11-27
+**Timezone:** Asia/Manila
+**Owner Suggestion:** E
+**Dependencies:** CAP-02, CAP-04
+**Scope:** Conditional: retain only if required/feasible at November 20 scope gate
+
+**Dates:** Nov 26-27. **Owner:** E. **Estimate:** 2 days. **Priority:** Planned, subject to Nov 20 scope gate. **Backlog:** EW-15 reduced scope.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: basic simulated investment workflow. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+InvestMoney is diagrammed, but no implementation was found. Deliver a single simulated product with atomic purchase/redemption and persisted holdings if retained at the November 20 scope gate.
 
 ## Potentially Related Files
 

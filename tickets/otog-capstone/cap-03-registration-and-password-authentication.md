@@ -1,12 +1,20 @@
 # CAP-03 - Registration and password authentication
 
+**Ticket ID:** CAP-03
+**Start Date:** 2026-11-11
+**Due Date:** 2026-11-13
+**Timezone:** Asia/Manila
+**Owner Suggestion:** A
+**Dependencies:** CAP-01, CAP-02
+**Scope:** Required for presentation build
+
 **[PRIORITY]**
 
-**Dates:** Nov 11-13. **Owner:** A. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-01; CAP-02 before integration. **Backlog:** EW-03.
+**Dates:** Nov 11-13. **Owner:** A. **Estimate:** 2 days. **Priority:** Must. **Backlog:** EW-03.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: registration and password authentication. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+UserLogin currently compares input with hardcoded admin/password credentials. Implement per-user registration and password authentication before exposing private wallet screens.
 
 ## Potentially Related Files
 

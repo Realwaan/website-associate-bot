@@ -1,10 +1,18 @@
 # CAP-14 - Integration checkpoint and feature freeze
 
-**Dates:** Nov 23-27; freeze Nov 29. **Owner:** B, with C. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-06-11; CAP-12-13 if retained.
+**Ticket ID:** CAP-14
+**Start Date:** 2026-11-23
+**Due Date:** 2026-11-29
+**Timezone:** Asia/Manila
+**Owner Suggestion:** B with C
+**Dependencies:** CAP-06, CAP-07, CAP-08, CAP-09, CAP-10, CAP-11; CAP-12 and CAP-13 only if retained
+**Scope:** Required for presentation build
+
+**Dates:** Nov 23-27; freeze Nov 29. **Owner:** B, with C. **Estimate:** 2 days. **Priority:** Must.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: integration checkpoint and feature freeze. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+Separately working modules are insufficient for the capstone. Verify one shared build with consistent balances, histories, permissions, and reproducible demo data before the feature freeze.
 
 ## Potentially Related Files
 

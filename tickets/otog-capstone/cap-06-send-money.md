@@ -1,10 +1,18 @@
 # CAP-06 - Send money
 
-**Dates:** Nov 16-19. **Owner:** B. **Estimate:** 3 days. **Priority:** Must. **Dependencies:** CAP-02; CAP-04-05 before completion. **Backlog:** EW-07.
+**Ticket ID:** CAP-06
+**Start Date:** 2026-11-16
+**Due Date:** 2026-11-19
+**Timezone:** Asia/Manila
+**Owner Suggestion:** B
+**Dependencies:** CAP-02, CAP-04, CAP-05
+**Scope:** Required for presentation build
+
+**Dates:** Nov 16-19. **Owner:** B. **Estimate:** 3 days. **Priority:** Must. **Backlog:** EW-07.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: send money. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+SendMoney appears in the class diagram but no source implementation was found. Deliver one complete sender-to-recipient flow that cannot partially debit or double-send.
 
 ## Potentially Related Files
 

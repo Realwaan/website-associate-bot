@@ -1,5 +1,6 @@
 """Codebase Scanner Service for detecting code quality issues and generating structured ticket files."""
 import os
+from services.scan_safety import redact_source
 import re
 from pathlib import Path
 from typing import Dict, List, Any
@@ -22,8 +23,8 @@ SECRET_PATTERNS = [
 ]
 
 DEBUG_PATTERNS = [
-    re.compile(r'\bconsole\.(?:log|debug|warn|error|trace)\s*\('),
-    re.compile(r'\bprint\s*\('),
+    re.compile(r'\bconsole\.(?:debug|trace)\s*\('),
+    re.compile(r'''\bprint\s*\(\s*["'](?:debug|test|temp)''', re.I),
     re.compile(r'\bdebugger\b'),
 ]
 
@@ -98,7 +99,7 @@ class CodeScanner:
                                 results["hardcoded_secrets"].append({
                                     "file": rel_path,
                                     "line": idx,
-                                    "snippet": line.strip()[:60]
+                                    "snippet": redact_source(line.strip())[:60]
                                 })
                                 break
 
@@ -109,7 +110,7 @@ class CodeScanner:
                                 results["debug_statements"].append({
                                     "file": rel_path,
                                     "line": idx,
-                                    "snippet": line.strip()[:60]
+                                    "snippet": redact_source(line.strip())[:60]
                                 })
                                 break
 
@@ -121,7 +122,7 @@ class CodeScanner:
                                 results["todos"].append({
                                     "file": rel_path,
                                     "line": idx,
-                                    "comment": m.group(1).strip() or line.strip()
+                                    "comment": (redact_source(line.strip()) if redact_source(line.strip()) != line.strip() else m.group(1).strip() or line.strip())
                                 })
                                 break
 
@@ -132,10 +133,12 @@ class CodeScanner:
                                 results["skipped_tests"].append({
                                     "file": rel_path,
                                     "line": idx,
-                                    "snippet": line.strip()[:60]
+                                    "snippet": redact_source(line.strip())[:60]
                                 })
                                 break
-            except Exception:
+            except (OSError, UnicodeError) as exc:
+                import logging
+                logging.getLogger(__name__).warning("Skipped unreadable source file %s (%s)", rel_path, type(exc).__name__)
                 continue
 
         return results
@@ -154,7 +157,7 @@ class CodeScanner:
             md += "**[PRIORITY]**\n\n"
 
         md += "## Problem\n\n"
-        md += f"Automated scanner detected {len(items)} {category.replace('_', ' ')} issues across {len(files)} file(s).\n\n"
+        md += f"Automated scanner flagged {len(items)} potential {category.replace('_', ' ')} issues across {len(files)} file(s).\n\n"
 
         md += "## Potentially Related Files\n\n"
         for f in files[:10]:
@@ -168,6 +171,7 @@ class CodeScanner:
             f = item.get("file", "")
             l = item.get("line", "")
             msg = item.get("comment") or item.get("snippet") or item.get("message") or f"{item.get('lines', 0)} lines"
+            msg = redact_source(msg)
             line_str = f":{l}" if l else ""
             md += f"{idx}. `{f}{line_str}`: {msg}\n"
         if len(items) > 15:

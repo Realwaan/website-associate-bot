@@ -1,12 +1,20 @@
 # CAP-02 - Persist the wallet domain and transaction rules
 
+**Ticket ID:** CAP-02
+**Start Date:** 2026-11-10
+**Due Date:** 2026-11-13
+**Timezone:** Asia/Manila
+**Owner Suggestion:** B
+**Dependencies:** CAP-01
+**Scope:** Required for presentation build
+
 **[PRIORITY]**
 
-**Dates:** Nov 10-13. **Owner:** B. **Estimate:** 3 days. **Priority:** Must. **Dependencies:** CAP-01. **Backlog:** EW-02.
+**Dates:** Nov 10-13. **Owner:** B. **Estimate:** 3 days. **Priority:** Must. **Backlog:** EW-02.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: persist the wallet domain and transaction rules. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+The diagram defines users, wallets, and transactions, but the checkout has no persistent implementations. Account data and money movement need a transactional source of truth before payment screens can be trusted.
 
 ## Potentially Related Files
 

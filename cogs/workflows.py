@@ -12,6 +12,8 @@ from database import (
 )
 from config import TICKETS_DIR
 
+from services.authorization import get_user_roles
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,9 +31,9 @@ async def _has_pm_access(interaction: discord.Interaction) -> bool:
         return True
     user_id = getattr(user, "id", None)
     if not isinstance(user_id, int):
-        return True
+        return False
     try:
-        roles = await asyncio.to_thread(get_user_roles, user_id)
+        roles = await asyncio.to_thread(get_user_roles, user_id, user)
         return bool(roles.get("is_pm"))
     except RuntimeError:
         return False

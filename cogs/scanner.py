@@ -19,6 +19,9 @@ from database import add_thread, get_user_roles, mark_ticket_loaded
 from services.ai_service import ai_service
 from services.code_scanner import scanner_service
 from ticket_loader import parse_ticket_markdown
+from services.scan_safety import validate_repo_url, clone_repository
+
+from services.authorization import get_user_roles
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +48,9 @@ async def _has_pm_access(interaction: discord.Interaction) -> bool:
         return True
     user_id = getattr(user, "id", None)
     if not isinstance(user_id, int):
-        # Allow unconfigured mock interactions in unit tests where user.id is not an int
-        return True
+        return False
     try:
-        roles = await asyncio.to_thread(get_user_roles, user_id)
+        roles = await asyncio.to_thread(get_user_roles, user_id, user)
         return bool(roles.get("is_pm"))
     except RuntimeError:
         return False
@@ -56,14 +58,7 @@ async def _has_pm_access(interaction: discord.Interaction) -> bool:
 
 def _validate_git_repo_url(repo_url: str) -> str:
     """Validate Git URL to prevent option injection or non-repository arguments."""
-    cleaned = (repo_url or "").strip()
-    if not cleaned or cleaned.startswith("-"):
-        raise ValueError("Invalid repository URL.")
-    if re.match(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$", cleaned):
-        cleaned = f"https://github.com/{cleaned}.git"
-    if not _GIT_URL_RE.match(cleaned):
-        raise ValueError("Repository URL must be a valid HTTPS or git@ repository URL.")
-    return cleaned
+    return validate_repo_url(repo_url)
 
 
 def _validate_local_scan_path(raw_path: str) -> Path:
@@ -225,19 +220,9 @@ class ScannerCog(commands.Cog, name="Scanner"):
             with tempfile.TemporaryDirectory() as tmpdir:
                 await interaction.followup.send(f"⏳ Cloning `{safe_repo_url}` and analyzing codebase...")
 
-                clone_cmd = ["git", "clone", "--depth", "1"]
-                if GITHUB_TOKEN and "github.com" in safe_repo_url:
-                    clone_cmd += ["-c", f"http.extraHeader=Authorization: Bearer {GITHUB_TOKEN}"]
-                clone_cmd += ["--", safe_repo_url, tmpdir]
-
-                res = await asyncio.to_thread(
-                    subprocess.run,
-                    clone_cmd,
-                    capture_output=True,
-                    text=True,
-                )
+                res = await asyncio.to_thread(clone_repository, safe_repo_url, tmpdir, GITHUB_TOKEN)
                 if res.returncode != 0:
-                    await interaction.followup.send(f"❌ Failed to clone repository: {res.stderr[:200]}")
+                    await interaction.followup.send(f"❌ Failed to clone repository: Check repository access or retry; clone details are withheld to protect credentials.")
                     return
 
                 results = await asyncio.to_thread(scanner_service.scan_directory, tmpdir)
@@ -319,14 +304,9 @@ class ScannerCog(commands.Cog, name="Scanner"):
 
                 with tempfile.TemporaryDirectory() as tmpdir:
                     await interaction.followup.send(f"⏳ Cloning `{repo_url}` and analyzing architecture roadmap...")
-                    clone_cmd = ["git", "clone", "--depth", "1"]
-                    if GITHUB_TOKEN and "github.com" in repo_url:
-                        clone_cmd += ["-c", f"http.extraHeader=Authorization: Bearer {GITHUB_TOKEN}"]
-                    clone_cmd += ["--", repo_url, tmpdir]
-
-                    res = await asyncio.to_thread(subprocess.run, clone_cmd, capture_output=True, text=True)
+                    res = await asyncio.to_thread(clone_repository, repo_url, tmpdir, GITHUB_TOKEN)
                     if res.returncode != 0:
-                        await interaction.followup.send(f"❌ Failed to clone repository: {res.stderr[:200]}")
+                        await interaction.followup.send(f"❌ Failed to clone repository: Check repository access or retry; clone details are withheld to protect credentials.")
                         return
 
                     result = await asyncio.to_thread(_build, tmpdir, repo_url)

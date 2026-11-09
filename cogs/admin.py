@@ -11,16 +11,19 @@ from pathlib import Path
 from datetime import time, timezone
 from typing import Optional
 from database import (
-    add_thread, is_ticket_loaded, mark_ticket_loaded,
+    add_thread, is_ticket_loaded, mark_ticket_loaded, reserve_ticket_import, record_import_thread,
     set_setting, get_setting, get_threads_by_status,
     set_user_role, get_user_roles, remove_thread_record,
-    clear_loaded_tickets, update_thread_status, get_thread,
+    clear_loaded_tickets, update_thread_status, get_thread, get_loaded_tickets,
     get_db, mark_repo_event_posted, log_audit_event,
     get_command_metrics_summary,
 )
-from ticket_loader import parse_ticket_file, get_available_folders, load_tickets_from_folder
+from ticket_loader import parse_ticket_file, get_available_folders, load_tickets_from_folder, resolve_ticket_folder, ticket_files, validate_ticket
 from config import TICKETS_DIR
 from math_renderer import has_latex
+
+from services.authorization import get_user_roles
+from services.ticket_presentation import ticket_embed, ticket_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +129,7 @@ class AdminCog(commands.Cog, name="Admin"):
     ):
         await safe_defer(interaction)
         try:
-            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             if not user_roles["is_pm"]:
                 await interaction.followup.send(
                     "❌ Only Project Managers can load tickets.",
@@ -142,91 +145,50 @@ class AdminCog(commands.Cog, name="Admin"):
                 )
                 return
 
-            target_dir = Path(TICKETS_DIR) / folder
-            if not target_dir.exists():
-                # Flexible lookup: match "phase-1" -> "phase1", "phase 1" -> "phase1", etc.
-                normalized = folder.lower().replace("-", "").replace(" ", "").replace("_", "")
-                matched_dir = None
-                for d in Path(TICKETS_DIR).iterdir():
-                    if d.is_dir() and d.name.lower().replace("-", "").replace(" ", "").replace("_", "") == normalized:
-                        matched_dir = d
-                        folder = d.name
-                        break
-                if matched_dir:
-                    target_dir = matched_dir
-                else:
-                    await interaction.followup.send(f"❌ Folder `{TICKETS_DIR}/{folder}` does not exist.")
-                    return
-
-            md_files = list(target_dir.glob("*.md"))
+            resolve_ticket_folder(folder, TICKETS_DIR)
+            md_files = ticket_files(folder, TICKETS_DIR)
+            # Validate the entire batch before creating any Discord threads.
+            for path in md_files:
+                validate_ticket(parse_ticket_file(str(path)))
             if not md_files:
                 await interaction.followup.send(f"⚠️ No `.md` files found in `{TICKETS_DIR}/{folder}`.")
                 return
 
             loaded_count = 0
             skipped_count = 0
+            pending_count = 0
 
             for filepath in md_files:
                 filename = filepath.name
-                if await asyncio.to_thread(is_ticket_loaded, filename, folder):
+                if await asyncio.to_thread(is_ticket_loaded, filename, folder, target_channel.id):
                     skipped_count += 1
                     continue
 
                 ticket_data = parse_ticket_file(str(filepath))
                 title = ticket_data.get("title") or filepath.stem
-                priority = ticket_data.get("priority")
                 # Keep the lifecycle prefix as OPEN so /claim and /rebuild-db
                 # can recognize every imported ticket. Priority is shown in
                 # the embed instead of replacing the workflow status.
                 thread_name = f"[OPEN] {title}"[:100]
 
-                # Create thread in the selected target channel with 429 backoff resilience
-                thread = None
-                for attempt in range(2):
-                    try:
-                        thread = await target_channel.create_thread(
-                            name=thread_name,
-                            auto_archive_duration=1440,
-                            type=discord.ChannelType.public_thread
-                        )
-                        break
-                    except discord.HTTPException as err:
-                        if err.status == 429 and attempt == 0:
-                            logger.warning("Discord 429 during thread creation; backing off 2.0s...")
-                            await asyncio.sleep(2.0)
-                        else:
-                            raise
+                reservation = await asyncio.to_thread(reserve_ticket_import, filename, folder, target_channel.id)
+                if reservation['state'] == 'complete':
+                    skipped_count += 1
+                    continue
+                if not reservation['created']:
+                    pending_count += 1
+                    await interaction.followup.send(
+                        f"Import of `{filename}` is pending or uncertain. Check existing threads and run "
+                        "`/rebuild-db` for this folder/channel before retrying. No duplicate thread was created.")
+                    continue
+                # Reserve before creating. A timeout is ambiguous: never automatically create again.
+                thread = await target_channel.create_thread(
+                    name=thread_name, auto_archive_duration=1440, type=discord.ChannelType.public_thread)
+                await asyncio.to_thread(record_import_thread, filename, folder, target_channel.id, thread.id)
 
-                # Format description & lists
-                problem = ticket_data.get("problem") or "No problem description provided."
-                
-                embed = discord.Embed(
-                    title=f"📋 Ticket: {title}",
-                    description=problem[:2000],
-                    color=0xef4444 if priority == "CRITICAL" else (0xf59e0b if priority == "PRIORITY" else 0x38bdf8)
-                )
-
-                if priority:
-                    embed.add_field(name="🚨 Priority", value=f"`{priority}`", inline=True)
-                embed.add_field(name="📂 Folder", value=f"`{folder}`", inline=True)
-
-                if ticket_data.get("what_to_fix"):
-                    items = ticket_data["what_to_fix"]
-                    fix_text = "\n".join(f"**{i+1}.** {item}" for i, item in enumerate(items)) if isinstance(items, list) else str(items)
-                    embed.add_field(name="🛠️ What to Fix", value=fix_text[:1024], inline=False)
-
-                if ticket_data.get("acceptance_criteria"):
-                    items = ticket_data["acceptance_criteria"]
-                    criteria_text = "\n".join(f"▫️ {item}" for i, item in enumerate(items)) if isinstance(items, list) else str(items)
-                    embed.add_field(name="✅ Acceptance Criteria", value=criteria_text[:1024], inline=False)
-
-                if ticket_data.get("related_files"):
-                    items = ticket_data["related_files"]
-                    files_text = "\n".join(f"📄 `{item}`" for item in items) if isinstance(items, list) else str(items)
-                    embed.add_field(name="📁 Related Files", value=files_text[:1024], inline=False)
-
-                embed.set_footer(text="Type /claim in this thread to take ownership.")
-                await thread.send(embed=embed)
+                await thread.send(embed=ticket_embed(ticket_data, folder),
+                                  file=ticket_attachment(ticket_data),
+                                  allowed_mentions=discord.AllowedMentions.none())
 
                 await asyncio.to_thread(
                     add_thread,
@@ -243,19 +205,62 @@ class AdminCog(commands.Cog, name="Admin"):
                     thread.id,
                     target_channel.id,
                 )
+                await asyncio.to_thread(record_import_thread, filename, folder, target_channel.id, thread.id, True)
                 loaded_count += 1
                 # Sleep briefly to respect Discord burst rate limits for thread creation
                 await asyncio.sleep(0.8)
 
             embed = discord.Embed(
                 title="📦 Ticket Batch Import Complete",
-                description=f"✅ Created **{loaded_count}** new ticket threads in {target_channel.mention}.\n⏩ Skipped **{skipped_count}** previously loaded tickets.",
+                description=f"✅ Created **{loaded_count}** new ticket threads in {target_channel.mention}.\n⏩ Skipped **{skipped_count}** previously loaded tickets.\nPending reconciliation: **{pending_count}**.",
                 color=0x10b981
             )
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in /load-tickets: {e}")
             await interaction.followup.send(f"❌ Error loading tickets: {e}")
+
+    @app_commands.command(name="refresh-tickets", description="Update existing imported tickets from corrected Markdown without creating threads")
+    async def refresh_tickets(self, interaction: discord.Interaction, folder: str,
+                              channel: Optional[discord.TextChannel] = None):
+        await safe_defer(interaction)
+        if not get_user_roles(interaction.user.id, interaction.user)['is_pm']:
+            await interaction.followup.send("Only Project Managers can refresh tickets.", ephemeral=True)
+            return
+        target = channel or interaction.channel
+        if not isinstance(target, discord.TextChannel):
+            await interaction.followup.send("Choose a text channel.", ephemeral=True)
+            return
+        try:
+            files = ticket_files(folder, TICKETS_DIR)
+            tickets = {p.name: validate_ticket(parse_ticket_file(str(p))) for p in files}
+            records = await asyncio.to_thread(get_loaded_tickets, folder)
+            updated = 0
+            for record in records:
+                if record['channel_id'] != target.id or record['ticket_filename'] not in tickets:
+                    continue
+                data = tickets[record['ticket_filename']]
+                thread = self.bot.get_channel(record['thread_id']) or await self.bot.fetch_channel(record['thread_id'])
+                if not isinstance(thread, discord.Thread) or thread.parent_id != target.id:
+                    continue
+                # Edit the original bot ticket message; do not change claims or workflow state.
+                message = None
+                async for candidate in thread.history(limit=30, oldest_first=True):
+                    if candidate.author.id == self.bot.user.id and candidate.embeds:
+                        title = candidate.embeds[0].title or ''
+                        if 'Ticket:' in title and data['title'] in title:
+                            message = candidate
+                            break
+                if message is None:
+                    continue
+                await message.edit(embed=ticket_embed(data, folder),
+                                   attachments=[ticket_attachment(data)],
+                                   allowed_mentions=discord.AllowedMentions.none())
+                updated += 1
+            await interaction.followup.send(f"Updated {updated} existing ticket messages. Assignees and statuses were preserved. No new threads created.")
+        except Exception:
+            logger.exception("Ticket refresh failed")
+            await interaction.followup.send("Refresh stopped. Check channel permissions and logs, then retry; existing ticket states are unchanged.")
 
     @load_tickets.autocomplete("folder")
     async def load_tickets_folder_autocomplete(
@@ -287,7 +292,7 @@ class AdminCog(commands.Cog, name="Admin"):
     ):
         await safe_defer(interaction)
         try:
-            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             if not user_roles["is_pm"]:
                 await interaction.followup.send(
                     "❌ Only Project Managers can rebuild the ticket database.",
@@ -390,7 +395,7 @@ class AdminCog(commands.Cog, name="Admin"):
     async def cleanup_tickets(self, interaction: discord.Interaction, action: str):
         await safe_defer(interaction)
         try:
-            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             if not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only Project Managers can run ticket cleanup.")
                 return
@@ -441,7 +446,7 @@ class AdminCog(commands.Cog, name="Admin"):
     ):
         await safe_defer(interaction)
         try:
-            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             if not user_roles["is_pm"]:
                 await interaction.followup.send(
                     "❌ Only Project Managers can clear messages or close ticket threads.",
@@ -626,7 +631,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.followup.send("❌ This command must be run inside a ticket thread.")
                 return
 
-            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             if not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only Project Managers can reset ticket states.")
                 return
@@ -677,7 +682,7 @@ class AdminCog(commands.Cog, name="Admin"):
     ):
         await safe_defer(interaction)
         try:
-            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             if not user_roles['is_pm']:
                 await interaction.followup.send("❌ Only Project Managers can clear folder import caches.", ephemeral=True)
                 return
@@ -736,7 +741,7 @@ class AdminCog(commands.Cog, name="Admin"):
     @app_commands.command(name="setreminderschannel", description="Set channel for daily 8:00 AM PHT ticket summaries (PM only)")
     async def set_reminders_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await safe_defer(interaction)
-        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
         if not user_roles["is_pm"]:
             await interaction.followup.send(
                 "❌ Only Project Managers can change the reminders channel.",
@@ -780,7 +785,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
         # If assigning for another user, require PM or manage_roles/administrator
         if target_member.id != interaction.user.id:
-            caller_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            caller_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             caller_has_perm = (
                 caller_roles.get("is_pm")
                 or interaction.user.guild_permissions.administrator
@@ -946,7 +951,7 @@ class AdminCog(commands.Cog, name="Admin"):
     @app_commands.describe(channel="Channel to receive commit and merged PR bulletins")
     async def set_commit_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await safe_defer(interaction)
-        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
         if not user_roles["is_pm"]:
             await interaction.followup.send(
                 "❌ Only Project Managers can set the commit bulletin channel.",
@@ -982,7 +987,7 @@ class AdminCog(commands.Cog, name="Admin"):
     ):
         await safe_defer(interaction)
         try:
-            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             if not user_roles["is_pm"]:
                 await interaction.followup.send("❌ Only Project Managers can run /update-project.", ephemeral=True)
                 return
@@ -1073,7 +1078,7 @@ class AdminCog(commands.Cog, name="Admin"):
         feed_type: Optional[str] = "both",
     ):
         await safe_defer(interaction)
-        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
         if not user_roles["is_pm"]:
             await interaction.followup.send("❌ Only Project Managers can configure automatic updates.", ephemeral=True)
             return
@@ -1182,7 +1187,7 @@ class AdminCog(commands.Cog, name="Admin"):
     @app_commands.command(name="ai-status", description="Show current AI provider, model, and reasoning engine status (PM only)")
     async def ai_status(self, interaction: discord.Interaction):
         await safe_defer(interaction)
-        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+        user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
         if not user_roles["is_pm"]:
             await interaction.followup.send("❌ Only Project Managers can view AI status.", ephemeral=True)
             return
@@ -1228,7 +1233,7 @@ class AdminCog(commands.Cog, name="Admin"):
     async def sync_commands_command(self, interaction: discord.Interaction):
         await safe_defer(interaction)
         try:
-            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id)
+            user_roles = await asyncio.to_thread(get_user_roles, interaction.user.id, interaction.user)
             if not user_roles["is_pm"]:
                 await interaction.followup.send("❌ Only Project Managers can sync commands.", ephemeral=True)
                 return

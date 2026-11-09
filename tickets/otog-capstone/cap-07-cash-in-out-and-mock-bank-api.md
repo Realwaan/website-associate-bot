@@ -1,10 +1,18 @@
 # CAP-07 - Cash in/out and mock Bank API
 
-**Dates:** Nov 16-20. **Owner:** D. **Estimate:** 4 days. **Priority:** Must. **Dependencies:** CAP-02; CAP-04-05 before completion. **Backlog:** EW-08.
+**Ticket ID:** CAP-07
+**Start Date:** 2026-11-16
+**Due Date:** 2026-11-20
+**Timezone:** Asia/Manila
+**Owner Suggestion:** D
+**Dependencies:** CAP-02, CAP-04, CAP-05
+**Scope:** Required for presentation build
+
+**Dates:** Nov 16-20. **Owner:** D. **Estimate:** 4 days. **Priority:** Must. **Backlog:** EW-08.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: cash in/out and mock bank api. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+CashInOut appears in the diagram but no funding adapter or settlement implementation was found. Demonstrate cash in/out with a deterministic mock Bank API, including failed and uncertain outcomes.
 
 ## Potentially Related Files
 

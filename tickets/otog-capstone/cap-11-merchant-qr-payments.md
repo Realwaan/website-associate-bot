@@ -1,10 +1,18 @@
 # CAP-11 - Merchant QR payments
 
-**Dates:** Nov 19-25. **Owner:** E. **Estimate:** 4 days. **Priority:** Must. **Dependencies:** CAP-06, CAP-09; CAP-08 for activity integration. **Backlog:** EW-10.
+**Ticket ID:** CAP-11
+**Start Date:** 2026-11-19
+**Due Date:** 2026-11-25
+**Timezone:** Asia/Manila
+**Owner Suggestion:** E
+**Dependencies:** CAP-06, CAP-09
+**Scope:** Required for presentation build
+
+**Dates:** Nov 19-25. **Owner:** E. **Estimate:** 4 days. **Priority:** Must. **Backlog:** EW-10.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: merchant qr payments. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+The Merchant actor and QR payment use case are not represented by working code. Deliver a project-specific QR image import flow with recipient confirmation and a merchant receipt view.
 
 ## Potentially Related Files
 

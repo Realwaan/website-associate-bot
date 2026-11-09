@@ -21,6 +21,8 @@ class TestScannerCog(unittest.IsolatedAsyncioTestCase):
         self.interaction.response.is_done.return_value = False
         self.interaction.response.defer = AsyncMock()
         self.interaction.followup.send = AsyncMock()
+        self.interaction.user.id = 1001
+        self.interaction.user.guild_permissions.administrator = True
 
     def tearDown(self):
         import shutil

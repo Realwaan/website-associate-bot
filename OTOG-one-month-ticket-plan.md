@@ -107,7 +107,7 @@ All tickets start as **To do**. Use board columns: To do, In progress, Review, D
 - Ordinary users cannot invoke admin operations or inspect another user's history; prohibit direct balance editing.
 
 ### CAP-10 - Pay bills
-**Dates:** Nov 23-25. **Owner:** D. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-07, CAP-08. **Backlog:** EW-09.
+**Dates:** Nov 23-25. **Owner:** D. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-07; history integration coordinated with CAP-08 by Nov 27. **Backlog:** EW-09.
 
 - Offer a small seeded biller list, reference validation, amount entry, fee preview, and PIN confirmation.
 - Reuse provider pending/success/failure handling and duplicate protection.

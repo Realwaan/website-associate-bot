@@ -7,6 +7,38 @@ from config import TICKETS_DIR
 
 logger = logging.getLogger(__name__)
 
+PLANNING_FILES = {'readme.md', 'roadmap.md', 'plan.md', 'pdf_brief.md'}
+
+
+def resolve_ticket_folder(folder_name, root=None):
+    base = Path(root or TICKETS_DIR).resolve()
+    path = (base / folder_name).resolve()
+    if path == base or not path.is_relative_to(base):
+        raise ValueError('Choose a folder inside the tickets directory.')
+    if not path.is_dir():
+        raise FileNotFoundError(f"Ticket folder '{folder_name}' does not exist")
+    return path
+
+
+def ticket_files(folder_name, root=None):
+    folder = resolve_ticket_folder(folder_name, root)
+    return [p for p in sorted(folder.glob('*.md'))
+            if p.name.lower() not in PLANNING_FILES
+            and p.resolve().is_relative_to(folder)]
+
+
+def validate_ticket(ticket):
+    missing = [key for key in ('title', 'problem', 'what_to_fix', 'acceptance_criteria') if not ticket.get(key)]
+    if missing:
+        raise ValueError(f"{ticket['name']}: missing {', '.join(missing)}")
+    from datetime import date
+    for field in ('start_date', 'due_date'):
+        if ticket.get(field):
+            date.fromisoformat(ticket[field])
+    if ticket.get('start_date') and ticket.get('due_date') and ticket['start_date'] > ticket['due_date']:
+        raise ValueError(f"{ticket['name']}: due date precedes start date")
+    return ticket
+
 
 def parse_ticket_markdown(file_path: str) -> dict:
     """
@@ -76,6 +108,10 @@ def parse_ticket_markdown(file_path: str) -> dict:
             criteria_items = re.findall(r'^\d+\.\s+(.+?)(?:\n|$)', acceptance_text, re.MULTILINE)
         ticket["acceptance_criteria"] = [item.strip() for item in criteria_items if item.strip()]
     
+    for key in ('ticket_id', 'start_date', 'due_date', 'timezone', 'owner_suggestion', 'dependencies', 'scope'):
+        label = key.replace('_', ' ')
+        match = re.search(r'^\*\*' + label + r':\*\*\s*([^\n]+)', content, re.MULTILINE | re.IGNORECASE)
+        ticket[key] = match.group(1).strip() if match else None
     return ticket
 
 
@@ -93,7 +129,7 @@ def load_tickets_from_folder(folder_name: str) -> list:
     Returns:
         List of parsed ticket dictionaries
     """
-    folder_path = Path(TICKETS_DIR) / folder_name
+    folder_path = resolve_ticket_folder(folder_name)
     
     if not folder_path.exists():
         raise FileNotFoundError(f"Folder '{folder_name}' not found in tickets directory")
@@ -102,7 +138,7 @@ def load_tickets_from_folder(folder_name: str) -> list:
         raise NotADirectoryError(f"'{folder_name}' is not a directory")
     
     tickets = []
-    for file in folder_path.glob("*.md"):
+    for file in ticket_files(folder_name):
         try:
             ticket = parse_ticket_markdown(str(file))
             ticket["folder"] = folder_name

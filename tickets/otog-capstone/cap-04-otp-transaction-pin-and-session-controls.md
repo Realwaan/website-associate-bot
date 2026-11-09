@@ -1,12 +1,20 @@
 # CAP-04 - OTP, transaction PIN, and session controls
 
+**Ticket ID:** CAP-04
+**Start Date:** 2026-11-16
+**Due Date:** 2026-11-18
+**Timezone:** Asia/Manila
+**Owner Suggestion:** A
+**Dependencies:** CAP-03
+**Scope:** Required for presentation build
+
 **[PRIORITY]**
 
-**Dates:** Nov 16-18. **Owner:** A. **Estimate:** 3 days. **Priority:** Must. **Dependencies:** CAP-03. **Backlog:** EW-04, EW-05 subset.
+**Dates:** Nov 16-18. **Owner:** A. **Estimate:** 3 days. **Priority:** Must. **Backlog:** EW-04, EW-05 subset.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: otp, transaction pin, and session controls. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+The current second-factor check accepts any nonempty text and no transaction PIN service exists. Require verified, expiring challenges and protected payment authorization.
 
 ## Potentially Related Files
 

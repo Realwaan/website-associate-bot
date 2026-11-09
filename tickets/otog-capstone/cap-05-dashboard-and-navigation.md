@@ -1,10 +1,18 @@
 # CAP-05 - Dashboard and navigation
 
-**Dates:** Nov 11-13; authenticated integration Nov 18. **Owner:** C. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-01; CAP-02-04 for final integration. **Backlog:** EW-06.
+**Ticket ID:** CAP-05
+**Start Date:** 2026-11-11
+**Due Date:** 2026-11-18
+**Timezone:** Asia/Manila
+**Owner Suggestion:** C
+**Dependencies:** CAP-01, CAP-02, CAP-03, CAP-04
+**Scope:** Required for presentation build
+
+**Dates:** Nov 11-13; authenticated integration Nov 18. **Owner:** C. **Estimate:** 2 days. **Priority:** Must. **Backlog:** EW-06.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: dashboard and navigation. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+Successful login currently ends with a dialog. Users need a dashboard that displays their own wallet and navigates to working payment features.
 
 ## Potentially Related Files
 

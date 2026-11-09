@@ -1,10 +1,18 @@
 # CAP-12 - Basic simulated loan workflow
 
-**Dates:** Nov 26-27. **Owner:** D. **Estimate:** 2 days. **Priority:** Planned, subject to Nov 20 scope gate. **Dependencies:** CAP-02, CAP-04, CAP-09. **Backlog:** EW-14 reduced scope.
+**Ticket ID:** CAP-12
+**Start Date:** 2026-11-26
+**Due Date:** 2026-11-27
+**Timezone:** Asia/Manila
+**Owner Suggestion:** D
+**Dependencies:** CAP-02, CAP-04, CAP-09
+**Scope:** Conditional: retain only if required/feasible at November 20 scope gate
+
+**Dates:** Nov 26-27. **Owner:** D. **Estimate:** 2 days. **Priority:** Planned, subject to Nov 20 scope gate. **Backlog:** EW-14 reduced scope.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: basic simulated loan workflow. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+Loan is diagrammed, but no implementation was found. Deliver a small simulated application, approval, single disbursement, and full-repayment lifecycle if retained at the November 20 scope gate.
 
 ## Potentially Related Files
 

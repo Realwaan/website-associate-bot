@@ -1,10 +1,18 @@
 # CAP-16 - Final diagrams, documentation, and slides
 
-**Dates:** Nov 30-Dec 3. **Owner:** E, with each contributor supplying their module notes. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-14.
+**Ticket ID:** CAP-16
+**Start Date:** 2026-11-30
+**Due Date:** 2026-12-03
+**Timezone:** Asia/Manila
+**Owner Suggestion:** E with all contributors
+**Dependencies:** CAP-14
+**Scope:** Required for presentation build
+
+**Dates:** Nov 30-Dec 3. **Owner:** E, with each contributor supplying their module notes. **Estimate:** 2 days. **Priority:** Must.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: final diagrams, documentation, and slides. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+The original diagram omits required actors and proposed implementation classes. Align diagrams and presentation claims with the delivered build and provide concrete OOP examples.
 
 ## Potentially Related Files
 

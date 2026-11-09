@@ -1,10 +1,18 @@
 # CAP-09 - Admin permissions and account controls
 
-**Dates:** Nov 16-18. **Owner:** E. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-02, CAP-03. **Backlog:** EW-13.
+**Ticket ID:** CAP-09
+**Start Date:** 2026-11-16
+**Due Date:** 2026-11-18
+**Timezone:** Asia/Manila
+**Owner Suggestion:** E
+**Dependencies:** CAP-02, CAP-03
+**Scope:** Required for presentation build
+
+**Dates:** Nov 16-18. **Owner:** E. **Estimate:** 2 days. **Priority:** Must. **Backlog:** EW-13.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: admin permissions and account controls. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+The Admin actor is in the requirements but role authorization and account controls are absent from the inspected implementation. Add service-level permissions and traceable administrative actions.
 
 ## Potentially Related Files
 

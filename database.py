@@ -445,6 +445,7 @@ def update_thread_status(
     reviewed_by_id: int | None | object = _UNSET,
     reviewed_by_username: str | None | object = _UNSET,
     pr_url: str | None | object = _UNSET,
+    expected: dict | None = None,
 ):
     """Update the status of a thread and optionally track who made the change."""
     updates = []
@@ -497,9 +498,30 @@ def update_thread_status(
 
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute(f"""
-            UPDATE threads SET status = %s{update_clause} WHERE thread_id = %s
-        """, params)
+        cursor.execute("SELECT * FROM threads WHERE thread_id = %s FOR UPDATE", (thread_id,))
+        old = cursor.fetchone()
+        if not old:
+            raise ValueError("Ticket no longer exists.")
+        if expected is not None:
+            for key in ('status', 'claimed_by_id', 'resolved_by_id', 'reviewed_by_id'):
+                if old.get(key) != expected.get(key):
+                    raise ValueError("Ticket changed while you were working. Refresh /ticket-info and try again.")
+        cursor.execute(f"UPDATE threads SET status = %s{update_clause} WHERE thread_id = %s", params)
+        # Keep attribution and leaderboard deltas in the same transaction as state.
+        for prefix, new_id, new_name, counter in (
+            ('resolved', resolved_by_id, resolved_by_username, 'dev_resolved_count'),
+            ('reviewed', reviewed_by_id, reviewed_by_username, 'qa_reviewed_count'),
+        ):
+            old_id = old.get(prefix + '_by_id')
+            if new_id is _UNSET or new_id == old_id:
+                continue
+            if old_id:
+                cursor.execute(f"UPDATE leaderboard SET {counter} = GREATEST(0, {counter} - 1) WHERE user_id = %s", (old_id,))
+            if new_id:
+                username = str(new_name if new_name is not _UNSET and new_name else new_id)
+                cursor.execute(f"""INSERT INTO leaderboard (user_id, username, {counter}) VALUES (%s, %s, 1)
+                    ON CONFLICT (user_id) DO UPDATE SET {counter} = leaderboard.{counter} + 1,
+                    username = EXCLUDED.username""", (new_id, username))
         conn.commit()
     # Bust the thread cache so next read reflects the new status
     cache_delete(f"thread:{thread_id}")
@@ -759,15 +781,38 @@ def get_user_resolved_count(user_id: int) -> int:
 
 # ===== Loaded Tickets Management =====
 
-def is_ticket_loaded(ticket_filename: str, folder: str) -> bool:
+def is_ticket_loaded(ticket_filename: str, folder: str, channel_id: int | None = None) -> bool:
     """Check if a ticket has already been loaded."""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT 1 FROM loaded_tickets WHERE ticket_filename = %s AND folder = %s",
-            (ticket_filename, folder)
+            "SELECT 1 FROM loaded_tickets WHERE ticket_filename = %s AND folder = %s AND (%s::bigint IS NULL OR channel_id = %s)",
+            (ticket_filename, folder, channel_id, channel_id)
         )
         return cursor.fetchone() is not None
+
+
+def reserve_ticket_import(filename, folder, channel_id):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""INSERT INTO ticket_import_jobs (channel_id, folder, filename)
+            VALUES (%s, %s, %s) ON CONFLICT DO NOTHING RETURNING channel_id""",
+            (channel_id, folder, filename))
+        created = cursor.fetchone() is not None
+        cursor.execute("SELECT state, thread_id FROM ticket_import_jobs WHERE channel_id=%s AND folder=%s AND filename=%s",
+                       (channel_id, folder, filename))
+        result = dict(cursor.fetchone())
+        conn.commit()
+    return {**result, 'created': created}
+
+
+def record_import_thread(filename, folder, channel_id, thread_id, complete=False):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""UPDATE ticket_import_jobs SET thread_id=%s, state=%s
+            WHERE channel_id=%s AND folder=%s AND filename=%s""",
+            (thread_id, 'complete' if complete else 'pending', channel_id, folder, filename))
+        conn.commit()
 
 def mark_ticket_loaded(ticket_filename: str, folder: str, thread_id: int, channel_id: int):
     """Mark a ticket as loaded in the database."""
@@ -776,7 +821,7 @@ def mark_ticket_loaded(ticket_filename: str, folder: str, thread_id: int, channe
         cursor.execute("""
             INSERT INTO loaded_tickets (ticket_filename, folder, thread_id, channel_id)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (ticket_filename, folder) DO UPDATE SET
+            ON CONFLICT (ticket_filename, folder, channel_id) DO UPDATE SET
                 thread_id = EXCLUDED.thread_id,
                 channel_id = EXCLUDED.channel_id,
                 loaded_at = CURRENT_TIMESTAMP
@@ -788,6 +833,7 @@ def remove_thread_record(thread_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM loaded_tickets WHERE thread_id = %s", (thread_id,))
+        cursor.execute("DELETE FROM ticket_import_jobs WHERE thread_id = %s", (thread_id,))
         cursor.execute("DELETE FROM threads WHERE thread_id = %s", (thread_id,))
         conn.commit()
 
@@ -817,6 +863,10 @@ def clear_loaded_tickets(folder: str, channel_id: int | None = None) -> int:
                 (folder, channel_id),
             )
         deleted = cursor.rowcount or 0
+        if channel_id is None:
+            cursor.execute("DELETE FROM ticket_import_jobs WHERE folder = %s", (folder,))
+        else:
+            cursor.execute("DELETE FROM ticket_import_jobs WHERE folder = %s AND channel_id = %s", (folder, channel_id))
         conn.commit()
         return deleted
 

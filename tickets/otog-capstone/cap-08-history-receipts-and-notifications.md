@@ -1,10 +1,18 @@
 # CAP-08 - History, receipts, and notifications
 
-**Dates:** Nov 19-20; extend to new payment types Nov 27. **Owner:** C. **Estimate:** 3 days total. **Priority:** Must. **Dependencies:** CAP-02, CAP-06; CAP-07 for funding records. **Backlog:** EW-11, EW-12.
+**Ticket ID:** CAP-08
+**Start Date:** 2026-11-19
+**Due Date:** 2026-11-27
+**Timezone:** Asia/Manila
+**Owner Suggestion:** C
+**Dependencies:** CAP-02, CAP-06, CAP-07
+**Scope:** Required for presentation build
+
+**Dates:** Nov 19-20; extend to new payment types Nov 27. **Owner:** C. **Estimate:** 3 days total. **Priority:** Must. **Backlog:** EW-11, EW-12.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: history, receipts, and notifications. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+Users currently have no persistent history, receipt detail, or notification inbox. Make completed, failed, and pending payments traceable without exposing another account's data.
 
 ## Potentially Related Files
 

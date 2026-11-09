@@ -1,10 +1,18 @@
 # CAP-15 - Regression testing and defect fixes
 
-**Dates:** Nov 30-Dec 3. **Owners:** A and B; each module owner fixes their defects. **Estimate:** 6 person-days total. **Priority:** Must. **Dependencies:** CAP-14.
+**Ticket ID:** CAP-15
+**Start Date:** 2026-11-30
+**Due Date:** 2026-12-03
+**Timezone:** Asia/Manila
+**Owner Suggestion:** A and B; module owners fix defects
+**Dependencies:** CAP-14
+**Scope:** Required for presentation build
+
+**Dates:** Nov 30-Dec 3. **Owners:** A and B; each module owner fixes their defects. **Estimate:** 6 person-days total. **Priority:** Must.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: regression testing and defect fixes. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+The integrated build needs evidence that invalid inputs, retries, concurrency, and restarts do not corrupt financial or authorization state. Fix failures before packaging.
 
 ## Potentially Related Files
 

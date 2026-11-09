@@ -1,10 +1,18 @@
 # CAP-18 - Rehearse and approve the final presentation build
 
-**Dates:** Dec 7-8. **Owner:** All. **Estimate:** Two 60-90 minute team sessions. **Priority:** Must. **Dependencies:** CAP-17.
+**Ticket ID:** CAP-18
+**Start Date:** 2026-12-07
+**Due Date:** 2026-12-08
+**Timezone:** Asia/Manila
+**Owner Suggestion:** All contributors
+**Dependencies:** CAP-17
+**Scope:** Required for presentation build
+
+**Dates:** Dec 7-8. **Owner:** All. **Estimate:** Two 60-90 minute team sessions. **Priority:** Must.
 
 ## Problem
 
-The OTOG capstone needs this deliverable: rehearse and approve the final presentation build. Complete it in the scheduled window for presentation readiness on December 8, 2026. Verify existing team contributions before duplicating work.
+The team needs proof it can present the packaged application within the allotted time. Rehearse, verify backups, and freeze a known-good release before the earliest presentation.
 
 ## Potentially Related Files
 

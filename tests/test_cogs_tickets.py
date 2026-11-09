@@ -99,6 +99,7 @@ class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
         mock_update.assert_called_once_with(
             self.thread.id,
             "CLAIMED",
+            expected=mock_get_thread.return_value,
             claimed_by_id=self.interaction.user.id,
             claimed_by_username="Dev User",
         )
@@ -149,11 +150,12 @@ class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
         mock_update.assert_called_once_with(
             self.thread.id,
             "PENDING-REVIEW",
+            expected=mock_get_thread.return_value,
             resolved_by_id=self.interaction.user.id,
             resolved_by_username="Dev User",
             pr_url=pr_url,
         )
-        mock_record.assert_called_once_with(self.interaction.user.id, "Dev User")
+        mock_record.assert_not_called()
         self.interaction.followup.send.assert_awaited_once()
 
     @patch("cogs.tickets.get_thread")
@@ -178,11 +180,12 @@ class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
         mock_update.assert_called_once_with(
             self.thread.id,
             "CLAIMED",
+            expected=mock_get_thread.return_value,
             resolved_by_id=None,
             resolved_by_username=None,
             pr_url=None,
         )
-        mock_decrement.assert_called_once_with(self.interaction.user.id)
+        mock_decrement.assert_not_called()
 
     @patch("cogs.tickets.get_thread")
     @patch("cogs.tickets.get_user_roles")
@@ -204,10 +207,11 @@ class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
         mock_update.assert_called_once_with(
             self.thread.id,
             "REVIEWED",
+            expected=mock_get_thread.return_value,
             reviewed_by_id=self.interaction.user.id,
             reviewed_by_username="Dev User",
         )
-        mock_record.assert_called_once_with(self.interaction.user.id, "Dev User")
+        mock_record.assert_not_called()
 
     @patch("cogs.tickets.get_thread")
     @patch("cogs.tickets.get_user_roles")
@@ -230,10 +234,11 @@ class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
         mock_update.assert_called_once_with(
             self.thread.id,
             "PENDING-REVIEW",
+            expected=mock_get_thread.return_value,
             reviewed_by_id=None,
             reviewed_by_username=None,
         )
-        mock_decrement.assert_called_once_with(self.interaction.user.id)
+        mock_decrement.assert_not_called()
 
     @patch("cogs.tickets.get_thread")
     @patch("cogs.tickets.get_user_roles")
@@ -252,7 +257,7 @@ class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
 
         await self.cog.close_ticket.callback(self.cog, self.interaction)
 
-        mock_update.assert_called_once_with(self.thread.id, "CLOSED")
+        mock_update.assert_called_once_with(self.thread.id, "CLOSED", expected=mock_get_thread.return_value)
         self.thread.edit.assert_awaited_once_with(
             name="[CLOSED] [Dev User] Implement Auth Flow", archived=True, locked=True
         )

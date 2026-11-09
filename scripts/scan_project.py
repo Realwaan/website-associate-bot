@@ -11,6 +11,7 @@ handlers, technical debt markers, and line counts), directory walking logic, cat
 system, and ticket formatting template generator in a single dependency-free pipeline.
 """
 import os
+from services.scan_safety import redact_source
 import re
 import logging
 from pathlib import Path
@@ -92,8 +93,8 @@ _TODO_PATTERN = re.compile(
 
 # Debug / console statements
 _DEBUG_PATTERNS = [
-    re.compile(r"\bconsole\.(log|debug|info|warn|error|trace|dir)\s*\(", re.IGNORECASE),
-    re.compile(r"\bprint\s*\(", re.IGNORECASE),
+    re.compile(r"\bconsole\.(debug|trace)\s*\(", re.IGNORECASE),
+    re.compile(r'''\bprint\s*\(\s*["'](?:debug|test|temp)''', re.IGNORECASE),
     re.compile(r"\bSystem\.out\.print(ln)?\s*\(", re.IGNORECASE),
     re.compile(r"\blogger\.(debug|info|warn)\s*\(.*?(test|temp|xxx|delete)", re.IGNORECASE),
     re.compile(r"\bdebugger\b"),
@@ -157,7 +158,7 @@ def _detect_in_file(
                 category="todo",
                 severity=severity,
                 message=f"[{tag}] {msg}",
-                snippet=stripped,
+                snippet=redact_source(stripped),
             ))
 
         # 2) Debug / console statements (skip logger utility files and test files)
@@ -173,7 +174,7 @@ def _detect_in_file(
                         category="debug",
                         severity="low",
                         message=f"Debug statement left in code",
-                        snippet=stripped,
+                        snippet=redact_source(stripped),
                     ))
                     break  # one match per line is enough
 
@@ -186,7 +187,7 @@ def _detect_in_file(
                     category="empty-catch",
                     severity="medium",
                     message="Empty or swallowed exception handler",
-                    snippet=stripped,
+                    snippet=redact_source(stripped),
                 ))
                 break
 
@@ -200,7 +201,7 @@ def _detect_in_file(
                         category="skipped-test",
                         severity="low",
                         message="Disabled/skipped test case",
-                        snippet=stripped,
+                        snippet=redact_source(stripped),
                     ))
                     break
 
@@ -213,10 +214,16 @@ def _detect_in_file(
                     category="hardcoded-secret",
                     severity="high",
                     message="Possible hardcoded secret or API key",
-                    snippet=stripped[:80] + ("..." if len(stripped) > 80 else ""),
+                    snippet=redact_source(stripped)[:80],
                 ))
                 break
 
+    for issue in issues:
+        if issue.line_number <= len(lines) and redact_source(lines[issue.line_number - 1]) != lines[issue.line_number - 1]:
+            issue.message = '[REDACTED: potential credential]'
+            issue.snippet = '[REDACTED: potential credential]'
+        issue.message = redact_source(issue.message)
+        issue.snippet = redact_source(issue.snippet)
     return issues
 
 

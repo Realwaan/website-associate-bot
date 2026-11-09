@@ -177,6 +177,11 @@ class AssociateBot(commands.Bot):
 
     async def on_ready(self):
         logger.info(f"🟢 Logged in as {self.user} (ID: {self.user.id})")
+        expected_id = os.getenv("EXPECTED_DISCORD_BOT_ID", "").strip()
+        if expected_id and str(self.user.id) != expected_id:
+            logger.error("Bot account mismatch: expected %s, connected %s. Closing connection.", expected_id, self.user.id)
+            await self.close()
+            return
         logger.info("Bot is active and ready to manage tickets and scans.")
         await self.change_presence(
             activity=discord.Activity(
@@ -425,7 +430,7 @@ async def sync_capstone_ticket_status(payload: dict) -> dict:
         status_kwargs["reviewed_by_username"] = actor
 
     # 1. Guarantee database state persistence and linked task sync first
-    await asyncio.to_thread(update_thread_status, thread.id, discord_status, **status_kwargs)
+    await asyncio.to_thread(update_thread_status, thread.id, discord_status, expected=thread_info, **status_kwargs)
 
     # 2. Safely perform Discord thread rename with rate-limit and 503 resilience
     raw_ticket_name = str(thread_info.get("ticket_name") or thread.name)
