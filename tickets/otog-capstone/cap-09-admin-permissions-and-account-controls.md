@@ -16,8 +16,9 @@ The Admin actor is in the requirements but role authorization and account contro
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `src/com/otog/model/User.java`, `src/com/otog/model/UserRole.java`, `src/com/otog/model/UserStatus.java`
+- `src/com/otog/repository/UserRepository.java`
+- `src/com/otog/service/WalletService.java`
 
 ## What to Fix
 

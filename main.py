@@ -8,6 +8,8 @@ import re
 import time
 import discord
 from discord.ext import commands
+from services.readiness import bot_is_ready
+
 from config import DISCORD_TOKEN
 from database import (
     init_db,
@@ -18,6 +20,7 @@ from database import (
     begin_integration_delivery,
     finish_integration_delivery,
     get_setting,
+    get_setting_across_guilds,
     set_setting,
     mark_repo_event_posted,
     register_webhook_delivery,
@@ -658,6 +661,15 @@ async def _process_github_push_payload(payload: dict, delivery_id: str | None = 
 
         channel_id_str = await asyncio.to_thread(get_setting, "commit_channel_id")
         if not channel_id_str:
+            try:
+                scoped_rows = await asyncio.to_thread(get_setting_across_guilds, "commit_channel_id")
+                for row in scoped_rows:
+                    if row.get("value"):
+                        channel_id_str = str(row["value"])
+                        break
+            except Exception:
+                pass
+        if not channel_id_str:
             channel_id_str = await asyncio.to_thread(get_setting, "reminders_channel_id")
 
         target_channel = None
@@ -757,9 +769,61 @@ def github_webhook_handler(raw_body: bytes, headers: dict) -> tuple[int, str]:
         except Exception:
             return 400, "Invalid JSON payload"
 
-        if bot.loop and not bot.loop.is_closed():
+        if bot and getattr(bot, "loop", None) and not bot.loop.is_closed():
             asyncio.run_coroutine_threadsafe(_process_github_push_payload(payload, delivery_id or None), bot.loop)
-        return 200, "Push event received and scheduled"
+            return 200, "Push event received and scheduled"
+        try:
+            enqueue_webhook_dead_letter(
+                delivery_id or f"push-{int(time.time())}",
+                "push",
+                payload if isinstance(payload, dict) else {},
+                "Discord bot event loop was not ready when webhook arrived",
+            )
+            return 202, "Push event queued in dead-letter table until bot is ready"
+        except Exception:
+            return 503, "Discord bot is not ready to process webhook"
+
+    if event_type == "pull_request":
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except Exception:
+            return 400, "Invalid JSON payload"
+
+        pr = payload.get("pull_request") or {}
+        if payload.get("action") == "closed" and pr.get("merged"):
+            repo_data = payload.get("repository") or {}
+            head_sha = (pr.get("merge_commit_sha") or (pr.get("head") or {}).get("sha") or f"pr-{pr.get('number', '0')}")
+            base_branch = (pr.get("base") or {}).get("ref") or "main"
+            synthetic_push = {
+                "repository": repo_data,
+                "ref": f"refs/heads/{base_branch}",
+                "commits": [
+                    {
+                        "id": head_sha,
+                        "message": f"Merge PR #{pr.get('number')}: {pr.get('title', 'Pull Request')}",
+                        "url": pr.get("html_url") or "",
+                        "author": {
+                            "name": (pr.get("merged_by") or pr.get("user") or {}).get("login") or "GitHub",
+                            "username": (pr.get("merged_by") or pr.get("user") or {}).get("login") or "GitHub",
+                        },
+                        "added": [],
+                        "modified": [],
+                    }
+                ],
+            }
+            if bot and getattr(bot, "loop", None) and not bot.loop.is_closed():
+                asyncio.run_coroutine_threadsafe(_process_github_push_payload(synthetic_push, delivery_id or None), bot.loop)
+                return 200, "Merged pull_request event received and scheduled"
+            try:
+                enqueue_webhook_dead_letter(
+                    delivery_id or f"pr-{int(time.time())}",
+                    "pull_request",
+                    synthetic_push,
+                    "Discord bot event loop was not ready when webhook arrived",
+                )
+                return 202, "Merged pull_request event queued in dead-letter table until bot is ready"
+            except Exception:
+                return 503, "Discord bot is not ready to process webhook"
 
     return 200, f"Event {event_type} ignored"
 
@@ -770,7 +834,7 @@ def main():
         try:
             set_capstone_ticket_handler(capstone_ticket_handler)
             set_capstone_status_handler(capstone_status_handler)
-            set_capstone_ready_checker(lambda: bot.is_ready())
+            set_capstone_ready_checker(lambda: bot_is_ready(bot))
             set_github_webhook_handler(github_webhook_handler)
             keep_alive()
             logger.info("Keep-alive web server initialized.")

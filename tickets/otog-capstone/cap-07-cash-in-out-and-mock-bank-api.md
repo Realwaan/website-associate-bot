@@ -16,8 +16,9 @@ CashInOut appears in the diagram but no funding adapter or settlement implementa
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `src/com/otog/model/CashInOutTransaction.java` & `src/com/otog/model/PaymentMethod.java`
+- `src/com/otog/repository/PaymentMethodRepository.java` & `src/com/otog/repository/TransactionRepository.java`
+- `src/com/otog/service/WalletService.java`
 
 ## What to Fix
 

@@ -16,8 +16,9 @@ The team needs proof it can present the packaged application within the allotted
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `run.bat` & `build.bat`
+- `README.md`
+- `Class Diagram/ewallet_cd.png`
 
 ## What to Fix
 

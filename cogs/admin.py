@@ -12,14 +12,14 @@ from datetime import time, timezone
 from typing import Optional
 from database import (
     add_thread, is_ticket_loaded, mark_ticket_loaded, reserve_ticket_import, record_import_thread,
-    set_setting, get_setting, get_threads_by_status,
+    set_setting, get_setting, get_setting_across_guilds, get_threads_by_status,
     set_user_role, get_user_roles, remove_thread_record,
     clear_loaded_tickets, update_thread_status, get_thread, get_loaded_tickets,
     get_db, mark_repo_event_posted, log_audit_event,
     get_command_metrics_summary,
 )
 from ticket_loader import parse_ticket_file, get_available_folders, load_tickets_from_folder, resolve_ticket_folder, ticket_files, validate_ticket
-from config import TICKETS_DIR
+from config import TICKETS_DIR, DEFAULT_REPO_URL
 from math_renderer import has_latex
 
 from services.authorization import get_user_roles
@@ -60,6 +60,23 @@ def _normalize_ticket_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
 
 
+def _guild_id(interaction: discord.Interaction) -> int | None:
+    gid = getattr(getattr(interaction, "guild", None), "id", None)
+    return int(gid) if isinstance(gid, int) else None
+
+
+def _set_guild_setting(key: str, value: str, guild_id: int | None = None):
+    if guild_id is not None:
+        return set_setting(key, value, guild_id)
+    return set_setting(key, value)
+
+
+def _get_guild_setting(key: str, guild_id: int | None = None) -> str | None:
+    if guild_id is not None:
+        return get_setting(key, guild_id)
+    return get_setting(key)
+
+
 def _rebuild_thread_record(
     thread_id: int,
     ticket_name: str,
@@ -68,9 +85,13 @@ def _rebuild_thread_record(
     status: str,
     created_by: str,
     filename: str | None,
+    guild_id: int | None = None,
 ) -> None:
     """Persist one recovered thread in a worker thread."""
-    add_thread(thread_id, ticket_name, folder, channel_id, created_by)
+    if guild_id is not None:
+        add_thread(thread_id, ticket_name, folder, channel_id, created_by, guild_id=guild_id)
+    else:
+        add_thread(thread_id, ticket_name, folder, channel_id, created_by)
     update_thread_status(thread_id, status)
     if filename:
         mark_ticket_loaded(filename, folder, thread_id, channel_id)
@@ -108,12 +129,27 @@ class AdminCog(commands.Cog, name="Admin"):
             self.daily_summary_task.start()
         except RuntimeError:
             pass
+        try:
+            asyncio.get_running_loop()
+            self.auto_updates_task.start()
+        except RuntimeError:
+            pass
+
+    async def cog_load(self):
+        for task_loop in (self.daily_summary_task, getattr(self, "auto_updates_task", None)):
+            if task_loop is not None and not task_loop.is_running():
+                try:
+                    task_loop.start()
+                except RuntimeError:
+                    pass
 
     def cog_unload(self):
-        try:
-            self.daily_summary_task.cancel()
-        except Exception:
-            pass
+        for task_loop in (self.daily_summary_task, getattr(self, "auto_updates_task", None)):
+            if task_loop is not None:
+                try:
+                    task_loop.cancel()
+                except Exception:
+                    pass
 
     # 1. /load-tickets
     @app_commands.command(name="load-tickets", description="Import markdown tickets from a folder and create Discord threads")
@@ -190,14 +226,27 @@ class AdminCog(commands.Cog, name="Admin"):
                                   file=ticket_attachment(ticket_data),
                                   allowed_mentions=discord.AllowedMentions.none())
 
-                await asyncio.to_thread(
-                    add_thread,
-                    thread.id,
-                    title,
-                    folder,
-                    target_channel.id,
-                    interaction.user.name,
-                )
+                guild_id_arg = _guild_id(interaction)
+                if guild_id_arg is not None:
+                    await asyncio.to_thread(
+                        add_thread,
+                        thread.id,
+                        title,
+                        folder,
+                        target_channel.id,
+                        interaction.user.name,
+                        None,
+                        guild_id_arg,
+                    )
+                else:
+                    await asyncio.to_thread(
+                        add_thread,
+                        thread.id,
+                        title,
+                        folder,
+                        target_channel.id,
+                        interaction.user.name,
+                    )
                 await asyncio.to_thread(
                     mark_ticket_loaded,
                     filename,
@@ -228,35 +277,110 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.followup.send("Only Project Managers can refresh tickets.", ephemeral=True)
             return
         target = channel or interaction.channel
+        if isinstance(target, discord.Thread) and isinstance(getattr(target, "parent", None), discord.TextChannel):
+            target = target.parent
         if not isinstance(target, discord.TextChannel):
             await interaction.followup.send("Choose a text channel.", ephemeral=True)
             return
         try:
             files = ticket_files(folder, TICKETS_DIR)
-            tickets = {p.name: validate_ticket(parse_ticket_file(str(p))) for p in files}
+            tickets = {}
+            tickets_by_norm_title = {}
+            for p in files:
+                parsed = validate_ticket(parse_ticket_file(str(p)))
+                tickets[p.name] = parsed
+                tickets[p.stem] = parsed
+                norm = _normalize_ticket_name(parsed.get('title') or p.stem)
+                if norm:
+                    tickets_by_norm_title[norm] = parsed
+                    stripped = re.sub(r'^cap\s*\d+\s*', '', norm).strip()
+                    if stripped:
+                        tickets_by_norm_title[stripped] = parsed
+
             records = await asyncio.to_thread(get_loaded_tickets, folder)
-            updated = 0
+            candidates: list[tuple[discord.Thread, dict]] = []
+            seen_thread_ids: set[int] = set()
+
             for record in records:
-                if record['channel_id'] != target.id or record['ticket_filename'] not in tickets:
+                if record.get('channel_id') != target.id:
                     continue
-                data = tickets[record['ticket_filename']]
-                thread = self.bot.get_channel(record['thread_id']) or await self.bot.fetch_channel(record['thread_id'])
+                fname = record.get('ticket_filename') or ''
+                data = tickets.get(fname) or tickets.get(Path(fname).stem)
+                if not data:
+                    continue
+                tid = record.get('thread_id')
+                if not tid or tid in seen_thread_ids:
+                    continue
+                thread = self.bot.get_channel(tid)
+                if thread is None:
+                    try:
+                        thread = await self.bot.fetch_channel(tid)
+                    except Exception as fetch_err:
+                        logger.warning("Skipping unreachable thread %s during refresh: %s", tid, fetch_err)
+                        continue
                 if not isinstance(thread, discord.Thread) or thread.parent_id != target.id:
                     continue
-                # Edit the original bot ticket message; do not change claims or workflow state.
-                message = None
-                async for candidate in thread.history(limit=30, oldest_first=True):
-                    if candidate.author.id == self.bot.user.id and candidate.embeds:
-                        title = candidate.embeds[0].title or ''
-                        if 'Ticket:' in title and data['title'] in title:
-                            message = candidate
-                            break
-                if message is None:
+                seen_thread_ids.add(tid)
+                candidates.append((thread, data))
+
+            # Fallback: also match active/archived threads in the channel by title if not in loaded_tickets
+            channel_threads = list(getattr(target, "threads", None) or [])
+            if hasattr(target, "archived_threads"):
+                try:
+                    async for arch in target.archived_threads(limit=100):
+                        channel_threads.append(arch)
+                except Exception:
+                    pass
+            for thread in channel_threads:
+                if thread.id in seen_thread_ids:
                     continue
-                await message.edit(embed=ticket_embed(data, folder),
-                                   attachments=[ticket_attachment(data)],
-                                   allowed_mentions=discord.AllowedMentions.none())
-                updated += 1
+                _status, raw_tname = _parse_thread_status(getattr(thread, "name", ""))
+                norm_tname = _normalize_ticket_name(raw_tname)
+                stripped_tname = re.sub(r'^cap\s*\d+\s*', '', norm_tname).strip()
+                data = tickets_by_norm_title.get(norm_tname) or tickets_by_norm_title.get(stripped_tname)
+                if data:
+                    seen_thread_ids.add(thread.id)
+                    candidates.append((thread, data))
+
+            updated = 0
+            for thread, data in candidates:
+                try:
+                    # Edit the original bot ticket message; do not change claims or workflow state.
+                    message = None
+                    fallback_message = None
+                    async for candidate in thread.history(limit=30, oldest_first=True):
+                        if candidate.author.id == self.bot.user.id and candidate.embeds:
+                            title = candidate.embeds[0].title or ''
+                            if 'Ticket:' in title:
+                                if fallback_message is None:
+                                    fallback_message = candidate
+                                if data['title'] in title or _normalize_ticket_name(data['title']) in _normalize_ticket_name(title):
+                                    message = candidate
+                                    break
+                    message = message or fallback_message
+                    if message is None:
+                        continue
+                    if getattr(thread, "archived", False):
+                        try:
+                            await thread.edit(archived=False)
+                        except Exception:
+                            pass
+                    new_embed = ticket_embed(data, folder)
+                    try:
+                        await message.edit(
+                            embed=new_embed,
+                            attachments=[ticket_attachment(data)],
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                    except discord.HTTPException:
+                        # Fallback if Attach Files permission is restricted on message edit
+                        await message.edit(
+                            embed=new_embed,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                    updated += 1
+                except Exception as item_err:
+                    logger.warning("Could not refresh ticket thread %s: %s", getattr(thread, "id", "?"), item_err)
             await interaction.followup.send(f"Updated {updated} existing ticket messages. Assignees and statuses were preserved. No new threads created.")
         except Exception:
             logger.exception("Ticket refresh failed")
@@ -349,6 +473,7 @@ class AdminCog(commands.Cog, name="Admin"):
                     status,
                     interaction.user.name,
                     filename,
+                    _guild_id(interaction),
                 )
                 rebuilt_count += 1
                 if not filename:
@@ -400,7 +525,12 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.followup.send("❌ Only Project Managers can run ticket cleanup.")
                 return
 
-            grouped_tickets = await asyncio.to_thread(get_threads_by_status)
+            guild_id_arg = _guild_id(interaction)
+            grouped_tickets = (
+                await asyncio.to_thread(get_threads_by_status, guild_id_arg)
+                if guild_id_arg is not None
+                else await asyncio.to_thread(get_threads_by_status)
+            )
             closed_tickets = grouped_tickets.get("CLOSED", [])
             if not closed_tickets:
                 await interaction.followup.send("ℹ️ No CLOSED tickets found to clean up.")
@@ -766,7 +896,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 ephemeral=True,
             )
             return
-        await asyncio.to_thread(set_setting, "reminders_channel_id", str(channel.id))
+        await asyncio.to_thread(_set_guild_setting, "reminders_channel_id", str(channel.id), _guild_id(interaction))
         await _safe_log_audit("set_reminders_channel", interaction, {"channel_id": channel.id})
         await interaction.followup.send(f"✅ Daily sprint reminders channel set to {channel.mention}.")
 
@@ -976,7 +1106,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 ephemeral=True,
             )
             return
-        await asyncio.to_thread(set_setting, "commit_channel_id", str(channel.id))
+        await asyncio.to_thread(_set_guild_setting, "commit_channel_id", str(channel.id), _guild_id(interaction))
         await _safe_log_audit("set_commit_channel", interaction, {"channel_id": channel.id})
         await interaction.followup.send(f"✅ Repository commit and merge bulletins channel set to {channel.mention}.")
 
@@ -1010,9 +1140,10 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.followup.send("❌ Only Project Managers can run /update-project.", ephemeral=True)
                 return
 
+            guild_id_arg = _guild_id(interaction)
             target_channel = channel
             if not target_channel:
-                stored_ch_id = await asyncio.to_thread(get_setting, "commit_channel_id")
+                stored_ch_id = await asyncio.to_thread(_get_guild_setting, "commit_channel_id", guild_id_arg)
                 if stored_ch_id and stored_ch_id.isdigit():
                     target_channel = self.bot.get_channel(int(stored_ch_id))
             if not target_channel:
@@ -1022,10 +1153,10 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.followup.send("❌ Target channel must be a text channel.", ephemeral=True)
                 return
 
-            await asyncio.to_thread(set_setting, "commit_channel_id", str(target_channel.id))
-            await asyncio.to_thread(set_setting, "auto_updates_repo", repo_url)
-            await asyncio.to_thread(set_setting, "auto_updates_branch", branch)
-            await asyncio.to_thread(set_setting, "auto_updates_feed_type", feed_type)
+            await asyncio.to_thread(_set_guild_setting, "commit_channel_id", str(target_channel.id), guild_id_arg)
+            await asyncio.to_thread(_set_guild_setting, "auto_updates_repo", repo_url, guild_id_arg)
+            await asyncio.to_thread(_set_guild_setting, "auto_updates_branch", branch, guild_id_arg)
+            await asyncio.to_thread(_set_guild_setting, "auto_updates_feed_type", feed_type, guild_id_arg)
 
             github_token = os.getenv("GITHUB_TOKEN")
 
@@ -1101,26 +1232,27 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.followup.send("❌ Only Project Managers can configure automatic updates.", ephemeral=True)
             return
 
+        guild_id_arg = _guild_id(interaction)
         if action == "enable":
-            await asyncio.to_thread(set_setting, "auto_updates_enabled", "true")
+            await asyncio.to_thread(_set_guild_setting, "auto_updates_enabled", "true", guild_id_arg)
             if repo_url:
-                await asyncio.to_thread(set_setting, "auto_updates_repo", repo_url)
+                await asyncio.to_thread(_set_guild_setting, "auto_updates_repo", repo_url, guild_id_arg)
             if branch:
-                await asyncio.to_thread(set_setting, "auto_updates_branch", branch)
+                await asyncio.to_thread(_set_guild_setting, "auto_updates_branch", branch, guild_id_arg)
             if feed_type:
-                await asyncio.to_thread(set_setting, "auto_updates_feed_type", feed_type)
+                await asyncio.to_thread(_set_guild_setting, "auto_updates_feed_type", feed_type, guild_id_arg)
             await _safe_log_audit("auto_updates_enable", interaction, {"repo_url": repo_url, "branch": branch, "feed_type": feed_type})
             await interaction.followup.send("✅ Automatic repository updates enabled.")
         elif action == "disable":
-            await asyncio.to_thread(set_setting, "auto_updates_enabled", "false")
+            await asyncio.to_thread(_set_guild_setting, "auto_updates_enabled", "false", guild_id_arg)
             await _safe_log_audit("auto_updates_disable", interaction, {})
             await interaction.followup.send("⏸️ Automatic repository updates paused.")
         else:
-            enabled = (await asyncio.to_thread(get_setting, "auto_updates_enabled")) or "true"
-            curr_repo = (await asyncio.to_thread(get_setting, "auto_updates_repo")) or "Not configured"
-            curr_branch = (await asyncio.to_thread(get_setting, "auto_updates_branch")) or "main"
-            curr_feed = (await asyncio.to_thread(get_setting, "auto_updates_feed_type")) or "both"
-            commit_ch_id = await asyncio.to_thread(get_setting, "commit_channel_id")
+            enabled = (await asyncio.to_thread(_get_guild_setting, "auto_updates_enabled", guild_id_arg)) or "true"
+            curr_repo = (await asyncio.to_thread(_get_guild_setting, "auto_updates_repo", guild_id_arg)) or "Not configured"
+            curr_branch = (await asyncio.to_thread(_get_guild_setting, "auto_updates_branch", guild_id_arg)) or "main"
+            curr_feed = (await asyncio.to_thread(_get_guild_setting, "auto_updates_feed_type", guild_id_arg)) or "both"
+            commit_ch_id = await asyncio.to_thread(_get_guild_setting, "commit_channel_id", guild_id_arg)
             ch_mention = f"<#{commit_ch_id}>" if commit_ch_id else "None (will use notifications/system channel)"
             webhook_sec = bool(os.getenv("GITHUB_WEBHOOK_SECRET"))
             embed = discord.Embed(
@@ -1159,9 +1291,10 @@ class AdminCog(commands.Cog, name="Admin"):
 
         ws_latency_ms = round(self.bot.latency * 1000, 2) if self.bot.latency else 0.0
         webhook_secret_set = bool(os.getenv("GITHUB_WEBHOOK_SECRET"))
-        auto_enabled = (await asyncio.to_thread(get_setting, "auto_updates_enabled")) or "true"
-        commit_ch = await asyncio.to_thread(get_setting, "commit_channel_id")
-        remind_ch = await asyncio.to_thread(get_setting, "reminders_channel_id")
+        guild_id_arg = _guild_id(interaction)
+        auto_enabled = (await asyncio.to_thread(_get_guild_setting, "auto_updates_enabled", guild_id_arg)) or "true"
+        commit_ch = await asyncio.to_thread(_get_guild_setting, "commit_channel_id", guild_id_arg)
+        remind_ch = await asyncio.to_thread(_get_guild_setting, "reminders_channel_id", guild_id_arg)
 
         embed = discord.Embed(
             title="🩺 CapStoneFlow System Health & Diagnostics",
@@ -1292,32 +1425,120 @@ class AdminCog(commands.Cog, name="Admin"):
     # Daily Summary Task at 8:00 AM PHT (00:00 UTC)
     @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
     async def daily_summary_task(self):
-        channel_id = await asyncio.to_thread(get_setting, "reminders_channel_id")
-        if not channel_id:
-            return
-        channel = self.bot.get_channel(int(channel_id))
-        if not channel:
-            return
+        try:
+            rows = await asyncio.to_thread(get_setting_across_guilds, "reminders_channel_id")
+        except Exception:
+            rows = []
+        if not rows:
+            fallback_ch = await asyncio.to_thread(get_setting, "reminders_channel_id")
+            if fallback_ch:
+                rows = [{"guild_id": 0, "value": fallback_ch}]
+        seen_channels: set[int] = set()
+        for entry in rows:
+            channel_id = entry.get("value")
+            if not channel_id or not str(channel_id).isdigit():
+                continue
+            ch_int = int(channel_id)
+            if ch_int in seen_channels:
+                continue
+            seen_channels.add(ch_int)
+            channel = self.bot.get_channel(ch_int)
+            if not channel:
+                continue
+            guild_id = int(entry.get("guild_id") or 0) or getattr(getattr(channel, "guild", None), "id", None)
+            grouped_tickets = (
+                await asyncio.to_thread(get_threads_by_status, int(guild_id))
+                if isinstance(guild_id, int) and guild_id > 0
+                else await asyncio.to_thread(get_threads_by_status)
+            )
+            open_tickets = grouped_tickets.get("OPEN", [])
+            claimed_tickets = grouped_tickets.get("CLAIMED", [])
+            review_tickets = grouped_tickets.get("PENDING-REVIEW", [])
 
-        grouped_tickets = await asyncio.to_thread(get_threads_by_status)
-        open_tickets = grouped_tickets.get("OPEN", [])
-        claimed_tickets = grouped_tickets.get("CLAIMED", [])
-        review_tickets = grouped_tickets.get("PENDING-REVIEW", [])
+            embed = discord.Embed(
+                title="🌅 Daily Sprint Ticket Briefing",
+                description="Good morning team! Here is the current ticket pipeline status:",
+                color=0x6366f1
+            )
+            embed.add_field(name="🟢 Open Tickets", value=f"`{len(open_tickets)}` unassigned", inline=True)
+            embed.add_field(name="🟡 In Progress", value=f"`{len(claimed_tickets)}` claimed", inline=True)
+            embed.add_field(name="🔵 Pending Review", value=f"`{len(review_tickets)}` waiting for QA", inline=True)
+            embed.set_footer(text="CapStoneFlow • Daily Standup Pipeline")
 
-        embed = discord.Embed(
-            title="🌅 Daily Sprint Ticket Briefing",
-            description="Good morning team! Here is the current ticket pipeline status:",
-            color=0x6366f1
-        )
-        embed.add_field(name="🟢 Open Tickets", value=f"`{len(open_tickets)}` unassigned", inline=True)
-        embed.add_field(name="🟡 In Progress", value=f"`{len(claimed_tickets)}` claimed", inline=True)
-        embed.add_field(name="🔵 Pending Review", value=f"`{len(review_tickets)}` waiting for QA", inline=True)
-        embed.set_footer(text="CapStoneFlow • Daily Standup Pipeline")
-
-        await channel.send(embed=embed)
+            await channel.send(embed=embed)
 
     @daily_summary_task.before_loop
     async def before_daily_summary(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=3)
+    async def auto_updates_task(self):
+        """Periodically poll configured GitHub repositories for new commits and merged PRs."""
+        try:
+            from repo_updates import post_project_updates
+            github_token = os.getenv("GITHUB_TOKEN") or os.getenv("VITE_GITHUB_TOKEN") or os.getenv("VITE_GITHUB_PAT")
+            commit_rows = await asyncio.to_thread(get_setting_across_guilds, "commit_channel_id")
+            if not commit_rows:
+                fallback_ch = await asyncio.to_thread(get_setting, "commit_channel_id")
+                if fallback_ch:
+                    commit_rows = [{"guild_id": 0, "value": fallback_ch}]
+
+            seen_channels: set[int] = set()
+            for entry in commit_rows:
+                ch_str = str(entry.get("value") or "").strip()
+                if not ch_str.isdigit():
+                    continue
+                ch_id = int(ch_str)
+                if ch_id in seen_channels:
+                    continue
+                seen_channels.add(ch_id)
+
+                guild_id = int(entry.get("guild_id") or 0) or None
+                enabled = (await asyncio.to_thread(_get_guild_setting, "auto_updates_enabled", guild_id)) or "true"
+                if enabled.strip().lower() == "false":
+                    continue
+
+                repo_url = (await asyncio.to_thread(_get_guild_setting, "auto_updates_repo", guild_id)) or DEFAULT_REPO_URL
+                branch = (await asyncio.to_thread(_get_guild_setting, "auto_updates_branch", guild_id)) or "main"
+                feed_type = (await asyncio.to_thread(_get_guild_setting, "auto_updates_feed_type", guild_id)) or "both"
+                if not repo_url:
+                    continue
+
+                target_channel = self.bot.get_channel(ch_id)
+                if target_channel is None:
+                    try:
+                        target_channel = await self.bot.fetch_channel(ch_id)
+                    except Exception:
+                        continue
+
+                async def _mark_event(key: str, c_id: int) -> bool:
+                    try:
+                        return await asyncio.to_thread(mark_repo_event_posted, key, c_id)
+                    except Exception:
+                        s_key = f"event_posted:{c_id}:{key}"
+                        existing = await asyncio.to_thread(_get_guild_setting, s_key, guild_id)
+                        if existing:
+                            return False
+                        await asyncio.to_thread(_set_guild_setting, s_key, "1", guild_id)
+                        return True
+
+                await post_project_updates(
+                    target_channel=target_channel,
+                    repo_url=repo_url,
+                    branch=branch,
+                    limit=5,
+                    feed_type=feed_type,
+                    reported_by="Auto-Updates Monitor",
+                    github_token=github_token,
+                    get_setting=lambda k, g=guild_id: asyncio.to_thread(_get_guild_setting, k, g),
+                    set_setting=lambda k, v, g=guild_id: asyncio.to_thread(_set_guild_setting, k, v, g),
+                    mark_event_posted=_mark_event,
+                )
+        except Exception as exc:
+            logger.warning("Auto-updates background poll warning: %s", exc)
+
+    @auto_updates_task.before_loop
+    async def before_auto_updates(self):
         await self.bot.wait_until_ready()
 
 async def setup(bot: commands.Bot):

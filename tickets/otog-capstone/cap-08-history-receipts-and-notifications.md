@@ -16,8 +16,9 @@ Users currently have no persistent history, receipt detail, or notification inbo
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `src/com/otog/model/Transaction.java` & `src/com/otog/model/LedgerEntry.java`
+- `src/com/otog/repository/TransactionRepository.java` & `src/com/otog/repository/LedgerRepository.java`
+- `src/com/otog/service/WalletService.java`
 
 ## What to Fix
 

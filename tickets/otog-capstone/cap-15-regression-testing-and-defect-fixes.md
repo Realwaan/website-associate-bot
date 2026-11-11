@@ -16,8 +16,10 @@ The integrated build needs evidence that invalid inputs, retries, concurrency, a
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `test/com/otog/AtomicCommitAndRollbackTest.java`
+- `test/com/otog/BigDecimalMoneyValidationTest.java`
+- `test/com/otog/ConcurrencyDoubleSpendTest.java`
+- `test/com/otog/RestartPersistenceTest.java` & `test/com/otog/UserWalletPersistenceTest.java`
 
 ## What to Fix
 

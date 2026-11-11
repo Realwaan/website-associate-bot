@@ -130,3 +130,84 @@ def test_score_failure_does_not_commit_state():
         with pytest.raises(RuntimeError):
             database.update_thread_status(1, 'PENDING-REVIEW', resolved_by_id=2, resolved_by_username='Dev')
     conn.commit.assert_not_called()
+
+
+def test_pool_queues_waiters_and_evicts_broken_connections():
+    import threading
+    import time
+    from psycopg2 import pool as psycopg2_pool
+
+    fake_pool = MagicMock()
+    broken_conn = MagicMock(closed=1)
+    good_conn = MagicMock(closed=0)
+    fake_pool.getconn.side_effect = [broken_conn, good_conn]
+
+    conn = database._acquire_pooled_connection(fake_pool, timeout=1.0)
+    assert conn is good_conn
+    fake_pool.putconn.assert_called_once_with(broken_conn, close=True)
+    database._release_pooled_connection(fake_pool, conn)
+    fake_pool.putconn.assert_called_with(good_conn, close=False)
+
+    # Verify bounded semaphore waits and wakes up when a slot is released
+    sem = threading.BoundedSemaphore(1)
+    sem.acquire()
+    pool2 = MagicMock()
+    pool2.getconn.return_value = good_conn
+
+    def release_soon():
+        time.sleep(0.05)
+        sem.release()
+
+    with patch.object(database, '_pool_semaphore', sem):
+        t = threading.Thread(target=release_soon)
+        t.start()
+        acquired = database._acquire_pooled_connection(pool2, timeout=1.0)
+        assert acquired is good_conn
+        database._release_pooled_connection(pool2, acquired)
+        t.join()
+
+        # Exhausted timeout raises PoolError
+        sem.acquire()
+        with pytest.raises(psycopg2_pool.PoolError):
+            database._acquire_pooled_connection(pool2, timeout=0.02)
+        sem.release()
+
+
+def test_guild_scoped_settings_and_leaderboard_queries():
+    conn = MagicMock(); cursor = conn.cursor.return_value
+    cursor.fetchone.return_value = {'value': '999'}
+    with patch.object(database, 'get_db') as context:
+        context.return_value.__enter__.return_value = conn
+        database.set_setting('reminders_channel_id', '999', guild_id=42)
+        val = database.get_setting('reminders_channel_id', guild_id=42)
+    assert val == '999'
+    insert_sql, insert_params = cursor.execute.call_args_list[0][0]
+    assert 'ON CONFLICT (guild_id, key)' in insert_sql
+    assert insert_params == (42, 'reminders_channel_id', '999')
+
+    conn2 = MagicMock(); cursor2 = conn2.cursor.return_value
+    cursor2.fetchall.return_value = [{'user_id': 7, 'username': 'dev', 'dev_resolved_count': 3, 'last_dev_resolved': None}]
+    with patch.object(database, 'get_db') as context2:
+        context2.return_value.__enter__.return_value = conn2
+        rows = database.get_leaderboard_dev(limit=5, guild_id=42)
+    assert len(rows) == 1
+    lb_sql, lb_params = cursor2.execute.call_args_list[0][0]
+    assert 'WHERE guild_id = %s' in lb_sql
+    assert lb_params == (42, 5)
+
+
+def test_webhook_push_when_bot_unready_enqueues_dead_letter():
+    import main
+    payload = {
+        'ref': 'refs/heads/main',
+        'repository': {'name': 'repo', 'owner': {'login': 'owner'}},
+        'commits': [{'id': 'c1', 'message': 'fix'}],
+    }
+    with patch('webhook_security.verify_github_signature', return_value=True), \
+         patch.object(main, 'register_webhook_delivery', return_value=True), \
+         patch.object(main, 'bot', None), \
+         patch.object(main, 'enqueue_webhook_dead_letter') as mock_dl:
+        code, msg = main.github_webhook_handler(json.dumps(payload).encode('utf-8'), {'X-GitHub-Event': 'push', 'X-GitHub-Delivery': 'd-1'})
+    assert code == 202
+    mock_dl.assert_called_once()
+

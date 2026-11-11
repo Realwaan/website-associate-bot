@@ -18,8 +18,10 @@ The diagram defines users, wallets, and transactions, but the checkout has no pe
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `src/com/otog/database/DatabaseManager.java` & `src/com/otog/database/TransactionCallback.java`
+- `src/com/otog/model/Wallet.java`, `src/com/otog/model/Transaction.java`, `src/com/otog/model/LedgerEntry.java`, `src/com/otog/model/PaymentMethod.java`
+- `src/com/otog/repository/WalletRepository.java`, `src/com/otog/repository/TransactionRepository.java`, `src/com/otog/repository/LedgerRepository.java`
+- `src/com/otog/service/WalletService.java` & `src/com/otog/util/MoneyUtil.java`
 
 ## What to Fix
 

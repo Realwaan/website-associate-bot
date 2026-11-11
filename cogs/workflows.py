@@ -775,14 +775,27 @@ class WorkflowsCog(commands.Cog, name="AI UX Workflows"):
                 step_embed.set_footer(text="Type /claim to take ownership of this step.")
                 await thread.send(embed=step_embed)
 
-                await asyncio.to_thread(
-                    add_thread,
-                    thread.id,
-                    title,
-                    folder_slug,
-                    interaction.channel_id,
-                    interaction.user.name,
-                )
+                guild_id = getattr(getattr(interaction, "guild", None), "id", None)
+                if isinstance(guild_id, int):
+                    await asyncio.to_thread(
+                        add_thread,
+                        thread.id,
+                        title,
+                        folder_slug,
+                        interaction.channel_id,
+                        interaction.user.name,
+                        None,
+                        int(guild_id),
+                    )
+                else:
+                    await asyncio.to_thread(
+                        add_thread,
+                        thread.id,
+                        title,
+                        folder_slug,
+                        interaction.channel_id,
+                        interaction.user.name,
+                    )
                 await asyncio.to_thread(
                     mark_ticket_loaded,
                     filename,

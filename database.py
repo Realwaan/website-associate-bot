@@ -37,8 +37,10 @@ _UNSET = object()
 # connections.  We keep 2 warm connections and allow bursting to 8.
 _DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "2"))
 _DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "8"))
+_DB_POOL_WAIT_SECONDS = float(os.getenv("DB_POOL_WAIT_SECONDS", "10.0"))
 _pool: psycopg2_pool.ThreadedConnectionPool | None = None
 _pool_lock = threading.Lock()
+_pool_semaphore = threading.BoundedSemaphore(_DB_POOL_MAX)
 
 
 def _get_pool() -> psycopg2_pool.ThreadedConnectionPool | None:
@@ -72,6 +74,55 @@ def _get_pool() -> psycopg2_pool.ThreadedConnectionPool | None:
     return _pool
 
 
+def _acquire_pooled_connection(p: psycopg2_pool.ThreadedConnectionPool, timeout: float | None = None):
+    """Wait for a pool slot, borrow a connection, and evict broken ones."""
+    wait = _DB_POOL_WAIT_SECONDS if timeout is None else max(0.0, float(timeout))
+    deadline = time.monotonic() + wait
+    if not _pool_semaphore.acquire(timeout=wait):
+        raise psycopg2_pool.PoolError(f"Connection pool exhausted (waited {wait:.1f}s)")
+    try:
+        while True:
+            try:
+                conn = p.getconn()
+                if getattr(conn, "closed", 0):
+                    p.putconn(conn, close=True)
+                    conn = p.getconn()
+                return conn
+            except psycopg2_pool.PoolError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(0.02, remaining))
+    except BaseException:
+        _pool_semaphore.release()
+        raise
+
+
+def _release_pooled_connection(p: psycopg2_pool.ThreadedConnectionPool | None, conn) -> None:
+    """Reset or evict a borrowed connection and release its semaphore slot."""
+    if conn is None:
+        return
+    try:
+        if p is None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return
+        broken = bool(getattr(conn, "closed", 0))
+        if not broken:
+            try:
+                conn.rollback()
+            except Exception:
+                broken = True
+        p.putconn(conn, close=broken)
+    finally:
+        try:
+            _pool_semaphore.release()
+        except ValueError:
+            pass
+
+
 @contextmanager
 def get_db():
     """Borrow a connection from the pool, yield it, then return it.
@@ -86,19 +137,18 @@ def get_db():
     p = _get_pool()
     if p is None:
         raise RuntimeError("Database pool is unavailable.")
-    conn = p.getconn()
+    conn = _acquire_pooled_connection(p)
     try:
         yield conn
     except psycopg2.Error:
-        conn.rollback()
+        if not getattr(conn, "closed", 0):
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
     finally:
-        # Reset the connection so the next caller starts clean.
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        p.putconn(conn)
+        _release_pooled_connection(p, conn)
 
 
 def get_connection():
@@ -113,7 +163,7 @@ def get_connection():
     if p is None:
         return None
     try:
-        return p.getconn()
+        return _acquire_pooled_connection(p)
     except psycopg2.Error as exc:
         logger.error("Could not obtain connection from pool: %s", exc)
         return None
@@ -123,18 +173,7 @@ def release_connection(conn):
     """Return a connection obtained via ``get_connection()`` to the pool."""
     if conn is None:
         return
-    p = _get_pool()
-    if p is None:
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return
-    try:
-        conn.rollback()
-    except Exception:
-        pass
-    p.putconn(conn)
+    _release_pooled_connection(_get_pool(), conn)
 
 
 
@@ -446,6 +485,7 @@ def update_thread_status(
     reviewed_by_username: str | None | object = _UNSET,
     pr_url: str | None | object = _UNSET,
     expected: dict | None = None,
+    guild_id: int | None = None,
 ):
     """Update the status of a thread and optionally track who made the change."""
     updates = []
@@ -506,7 +546,14 @@ def update_thread_status(
             for key in ('status', 'claimed_by_id', 'resolved_by_id', 'reviewed_by_id'):
                 if old.get(key) != expected.get(key):
                     raise ValueError("Ticket changed while you were working. Refresh /ticket-info and try again.")
-        cursor.execute(f"UPDATE threads SET status = %s{update_clause} WHERE thread_id = %s", params)
+        effective_guild_id = int(guild_id if guild_id is not None else (old.get("guild_id") or 0))
+        if effective_guild_id and not old.get("guild_id"):
+            cursor.execute(
+                f"UPDATE threads SET status = %s, guild_id = %s{update_clause} WHERE thread_id = %s",
+                [params[0], effective_guild_id, *params[1:]],
+            )
+        else:
+            cursor.execute(f"UPDATE threads SET status = %s{update_clause} WHERE thread_id = %s", params)
         # Keep attribution and leaderboard deltas in the same transaction as state.
         for prefix, new_id, new_name, counter in (
             ('resolved', resolved_by_id, resolved_by_username, 'dev_resolved_count'),
@@ -516,12 +563,18 @@ def update_thread_status(
             if new_id is _UNSET or new_id == old_id:
                 continue
             if old_id:
-                cursor.execute(f"UPDATE leaderboard SET {counter} = GREATEST(0, {counter} - 1) WHERE user_id = %s", (old_id,))
+                cursor.execute(
+                    f"UPDATE leaderboard SET {counter} = GREATEST(0, {counter} - 1) WHERE guild_id = %s AND user_id = %s",
+                    (effective_guild_id, old_id),
+                )
             if new_id:
                 username = str(new_name if new_name is not _UNSET and new_name else new_id)
-                cursor.execute(f"""INSERT INTO leaderboard (user_id, username, {counter}) VALUES (%s, %s, 1)
-                    ON CONFLICT (user_id) DO UPDATE SET {counter} = leaderboard.{counter} + 1,
-                    username = EXCLUDED.username""", (new_id, username))
+                cursor.execute(
+                    f"""INSERT INTO leaderboard (guild_id, user_id, username, {counter}) VALUES (%s, %s, %s, 1)
+                    ON CONFLICT (guild_id, user_id) DO UPDATE SET {counter} = leaderboard.{counter} + 1,
+                    username = EXCLUDED.username""",
+                    (effective_guild_id, new_id, username),
+                )
         conn.commit()
     # Bust the thread cache so next read reflects the new status
     cache_delete(f"thread:{thread_id}")
@@ -647,8 +700,16 @@ def sync_linked_task_status(thread_id: int, status: str):
 
 # ===== User Role Management =====
 
-def set_user_role(user_id: int, username: str, is_developer: bool = False, is_qa: bool = False, is_pm: bool = False):
+def set_user_role(
+    user_id: int,
+    username: str,
+    is_developer: bool = False,
+    is_qa: bool = False,
+    is_pm: bool = False,
+    guild_id: int | None = None,
+):
     """Set or update a user's roles (can have multiple)."""
+    gid = int(guild_id or 0)
     cache_delete(f"roles:{user_id}")
     with get_db() as conn:
         cursor = conn.cursor()
@@ -662,10 +723,10 @@ def set_user_role(user_id: int, username: str, is_developer: bool = False, is_qa
                 is_pm = EXCLUDED.is_pm
         """, (user_id, username, int(is_developer), int(is_qa), int(is_pm)))
         cursor.execute("""
-            INSERT INTO leaderboard (user_id, username, dev_resolved_count, qa_reviewed_count)
-            VALUES (%s, %s, 0, 0)
-            ON CONFLICT (user_id) DO NOTHING
-        """, (user_id, username))
+            INSERT INTO leaderboard (guild_id, user_id, username, dev_resolved_count, qa_reviewed_count)
+            VALUES (%s, %s, %s, 0, 0)
+            ON CONFLICT (guild_id, user_id) DO NOTHING
+        """, (gid, user_id, username))
         conn.commit()
 
 def get_user_roles(user_id: int) -> dict:
@@ -698,83 +759,106 @@ def has_role(user_id: int, role: str) -> bool:
 
 # ===== Leaderboard Management =====
 
-def increment_developer_resolved(user_id: int, username: str):
+def increment_developer_resolved(user_id: int, username: str, guild_id: int | None = None):
     """Increment the resolved count for a developer."""
+    gid = int(guild_id or 0)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO leaderboard (user_id, username, dev_resolved_count, last_dev_resolved)
-            VALUES (%s, %s, 1, %s)
-            ON CONFLICT (user_id) DO UPDATE SET
+            INSERT INTO leaderboard (guild_id, user_id, username, dev_resolved_count, last_dev_resolved)
+            VALUES (%s, %s, %s, 1, %s)
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET
                 username = EXCLUDED.username,
                 dev_resolved_count = leaderboard.dev_resolved_count + 1,
                 last_dev_resolved = EXCLUDED.last_dev_resolved
-        """, (user_id, username, datetime.now().isoformat()))
+        """, (gid, user_id, username, datetime.now().isoformat()))
         conn.commit()
 
-def increment_qa_reviewed(user_id: int, username: str):
+def increment_qa_reviewed(user_id: int, username: str, guild_id: int | None = None):
     """Increment the reviewed count for a QA."""
+    gid = int(guild_id or 0)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO leaderboard (user_id, username, qa_reviewed_count, last_qa_reviewed)
-            VALUES (%s, %s, 1, %s)
-            ON CONFLICT (user_id) DO UPDATE SET
+            INSERT INTO leaderboard (guild_id, user_id, username, qa_reviewed_count, last_qa_reviewed)
+            VALUES (%s, %s, %s, 1, %s)
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET
                 username = EXCLUDED.username,
                 qa_reviewed_count = leaderboard.qa_reviewed_count + 1,
                 last_qa_reviewed = EXCLUDED.last_qa_reviewed
-        """, (user_id, username, datetime.now().isoformat()))
+        """, (gid, user_id, username, datetime.now().isoformat()))
         conn.commit()
 
-def decrement_developer_resolved(user_id: int):
+def decrement_developer_resolved(user_id: int, guild_id: int | None = None):
     """Decrement the resolved count for a developer (use for unresolve)."""
+    gid = int(guild_id or 0)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE leaderboard
             SET dev_resolved_count = GREATEST(0, dev_resolved_count - 1)
-            WHERE user_id = %s
-        """, (user_id,))
+            WHERE guild_id = %s AND user_id = %s
+        """, (gid, user_id))
         conn.commit()
 
-def decrement_qa_reviewed(user_id: int):
+def decrement_qa_reviewed(user_id: int, guild_id: int | None = None):
     """Decrement the reviewed count for a QA (use for unreview)."""
+    gid = int(guild_id or 0)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE leaderboard
             SET qa_reviewed_count = GREATEST(0, qa_reviewed_count - 1)
-            WHERE user_id = %s
-        """, (user_id,))
+            WHERE guild_id = %s AND user_id = %s
+        """, (gid, user_id))
         conn.commit()
 
-def get_leaderboard_dev(limit: int = 10):
+def get_leaderboard_dev(limit: int = 10, guild_id: int | None = None):
     """Get the developer leaderboard sorted by resolved count."""
     with get_db() as conn:
         cursor = conn.cursor()
+        if guild_id is not None:
+            cursor.execute("""
+                SELECT user_id, username, dev_resolved_count, last_dev_resolved
+                FROM leaderboard WHERE guild_id = %s AND dev_resolved_count > 0
+                ORDER BY dev_resolved_count DESC LIMIT %s
+            """, (int(guild_id), limit))
+            rows = cursor.fetchall()
+            if rows:
+                return [dict(row) for row in rows]
         cursor.execute("""
             SELECT user_id, username, dev_resolved_count, last_dev_resolved
-            FROM leaderboard WHERE dev_resolved_count > 0
+            FROM leaderboard WHERE guild_id = 0 AND dev_resolved_count > 0
             ORDER BY dev_resolved_count DESC LIMIT %s
         """, (limit,))
         return [dict(row) for row in cursor.fetchall()]
 
-def get_leaderboard_qa(limit: int = 10):
+def get_leaderboard_qa(limit: int = 10, guild_id: int | None = None):
     """Get the QA leaderboard sorted by reviewed count."""
     with get_db() as conn:
         cursor = conn.cursor()
+        if guild_id is not None:
+            cursor.execute("""
+                SELECT user_id, username, qa_reviewed_count, last_qa_reviewed
+                FROM leaderboard WHERE guild_id = %s AND qa_reviewed_count > 0
+                ORDER BY qa_reviewed_count DESC LIMIT %s
+            """, (int(guild_id), limit))
+            rows = cursor.fetchall()
+            if rows:
+                return [dict(row) for row in rows]
         cursor.execute("""
             SELECT user_id, username, qa_reviewed_count, last_qa_reviewed
-            FROM leaderboard WHERE qa_reviewed_count > 0
+            FROM leaderboard WHERE guild_id = 0 AND qa_reviewed_count > 0
             ORDER BY qa_reviewed_count DESC LIMIT %s
         """, (limit,))
         return [dict(row) for row in cursor.fetchall()]
 
-def get_user_resolved_count(user_id: int) -> int:
+def get_user_resolved_count(user_id: int, guild_id: int | None = None) -> int:
     """Get the resolved count for a specific developer."""
+    gid = int(guild_id or 0)
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT dev_resolved_count FROM leaderboard WHERE user_id = %s", (user_id,))
+        cursor.execute("SELECT dev_resolved_count FROM leaderboard WHERE guild_id = %s AND user_id = %s", (gid, user_id))
         row = cursor.fetchone()
     return row['dev_resolved_count'] if row else 0
 
@@ -872,31 +956,48 @@ def clear_loaded_tickets(folder: str, channel_id: int | None = None) -> int:
 
 # ===== Settings Management =====
 
-def set_setting(key: str, value: str):
-    """Set a persistent configuration value."""
+def set_setting(key: str, value: str, guild_id: int | None = None):
+    """Set a persistent configuration value (optionally scoped to a Discord guild)."""
+    gid = int(guild_id or 0)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO settings (key, value)
-            VALUES (%s, %s)
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-        """, (key, value))
+            INSERT INTO settings (guild_id, key, value)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (guild_id, key) DO UPDATE SET value = EXCLUDED.value
+        """, (gid, key, value))
         conn.commit()
 
-def get_setting(key: str) -> str | None:
-    """Get a persistent configuration value."""
+def get_setting(key: str, guild_id: int | None = None) -> str | None:
+    """Get a persistent configuration value (checks guild scope first, then global fallback 0)."""
+    gid = int(guild_id or 0)
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT value FROM settings WHERE key = %s", (key,))
+        if gid != 0:
+            cursor.execute(
+                "SELECT value FROM settings WHERE key = %s AND guild_id IN (%s, 0) ORDER BY CASE WHEN guild_id = %s THEN 0 ELSE 1 END LIMIT 1",
+                (key, gid, gid),
+            )
+        else:
+            cursor.execute("SELECT value FROM settings WHERE guild_id = 0 AND key = %s", (key,))
         row = cursor.fetchone()
     return row['value'] if row else None
 
 
-def delete_setting(key: str):
-    """Delete a persistent configuration value."""
+def get_setting_across_guilds(key: str) -> list[dict]:
+    """Return all non-empty (guild_id, value) rows for a setting key across guilds."""
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM settings WHERE key = %s", (key,))
+        cursor.execute("SELECT guild_id, value FROM settings WHERE key = %s", (key,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def delete_setting(key: str, guild_id: int | None = None):
+    """Delete a persistent configuration value."""
+    gid = int(guild_id or 0)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM settings WHERE guild_id = %s AND key = %s", (gid, key))
         conn.commit()
 
 
@@ -1277,15 +1378,23 @@ def log_audit_event(
 
 # ===== Thread Statistics =====
 
-def get_threads_by_status() -> dict:
-    """Get all threads grouped by status."""
+def get_threads_by_status(guild_id: int | None = None) -> dict:
+    """Get threads grouped by status (optionally scoped to a Discord guild, including legacy NULL guild_id rows)."""
     default = {"OPEN": [], "CLAIMED": [], "PENDING-REVIEW": [], "REVIEWED": [], "CLOSED": []}
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT status, ticket_name, thread_id, channel_id
-            FROM threads ORDER BY status, created_at DESC
-        """)
+        if guild_id is not None:
+            cursor.execute("""
+                SELECT status, ticket_name, thread_id, channel_id, folder, guild_id
+                FROM threads
+                WHERE guild_id = %s OR guild_id IS NULL
+                ORDER BY status, created_at DESC
+            """, (int(guild_id),))
+        else:
+            cursor.execute("""
+                SELECT status, ticket_name, thread_id, channel_id, folder, guild_id
+                FROM threads ORDER BY status, created_at DESC
+            """)
         rows = cursor.fetchall()
     status_groups = {k: [] for k in default}
     for row in rows:
@@ -1294,22 +1403,37 @@ def get_threads_by_status() -> dict:
     return status_groups
 
 
-def get_stale_threads(threshold_hours: int = 48) -> list:
+def get_stale_threads(threshold_hours: int = 48, guild_id: int | None = None) -> list:
     """Get threads that have remained in active statuses beyond threshold hours."""
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                thread_id, ticket_name, folder, channel_id, status, created_at,
-                FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) / 3600) AS age_hours
-            FROM threads
-            WHERE status IN ('OPEN', 'CLAIMED', 'PENDING-REVIEW')
-              AND EXTRACT(EPOCH FROM (NOW() - created_at)) >= (%s * 3600)
-            ORDER BY created_at ASC
-            """,
-            (max(1, int(threshold_hours)),),
-        )
+        if guild_id is not None:
+            cursor.execute(
+                """
+                SELECT
+                    thread_id, ticket_name, folder, channel_id, status, created_at,
+                    FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) / 3600) AS age_hours
+                FROM threads
+                WHERE status IN ('OPEN', 'CLAIMED', 'PENDING-REVIEW')
+                  AND (guild_id = %s OR guild_id IS NULL)
+                  AND EXTRACT(EPOCH FROM (NOW() - created_at)) >= (%s * 3600)
+                ORDER BY created_at ASC
+                """,
+                (int(guild_id), max(1, int(threshold_hours))),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT
+                    thread_id, ticket_name, folder, channel_id, status, created_at,
+                    FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) / 3600) AS age_hours
+                FROM threads
+                WHERE status IN ('OPEN', 'CLAIMED', 'PENDING-REVIEW')
+                  AND EXTRACT(EPOCH FROM (NOW() - created_at)) >= (%s * 3600)
+                ORDER BY created_at ASC
+                """,
+                (max(1, int(threshold_hours)),),
+            )
         return [dict(row) for row in cursor.fetchall()]
 
 
@@ -1335,29 +1459,29 @@ async def async_update_thread_status(thread_id: int, status: str, **kwargs):
     """Non-blocking version of update_thread_status."""
     return await asyncio.to_thread(update_thread_status, thread_id, status, **kwargs)
 
-async def async_get_threads_by_status() -> dict:
+async def async_get_threads_by_status(guild_id: int | None = None) -> dict:
     """Non-blocking version of get_threads_by_status."""
-    return await asyncio.to_thread(get_threads_by_status)
+    return await asyncio.to_thread(get_threads_by_status, guild_id)
 
-async def async_get_leaderboard_dev(limit: int = 10) -> list:
+async def async_get_leaderboard_dev(limit: int = 10, guild_id: int | None = None) -> list:
     """Non-blocking version of get_leaderboard_dev."""
-    return await asyncio.to_thread(get_leaderboard_dev, limit)
+    return await asyncio.to_thread(get_leaderboard_dev, limit, guild_id)
 
-async def async_get_leaderboard_qa(limit: int = 10) -> list:
+async def async_get_leaderboard_qa(limit: int = 10, guild_id: int | None = None) -> list:
     """Non-blocking version of get_leaderboard_qa."""
-    return await asyncio.to_thread(get_leaderboard_qa, limit)
+    return await asyncio.to_thread(get_leaderboard_qa, limit, guild_id)
 
-async def async_get_setting(key: str) -> str | None:
+async def async_get_setting(key: str, guild_id: int | None = None) -> str | None:
     """Non-blocking version of get_setting."""
-    return await asyncio.to_thread(get_setting, key)
+    return await asyncio.to_thread(get_setting, key, guild_id)
 
-async def async_set_setting(key: str, value: str) -> None:
+async def async_set_setting(key: str, value: str, guild_id: int | None = None) -> None:
     """Non-blocking version of set_setting."""
-    return await asyncio.to_thread(set_setting, key, value)
+    return await asyncio.to_thread(set_setting, key, value, guild_id)
 
-async def async_get_stale_threads(threshold_hours: int = 48) -> list:
+async def async_get_stale_threads(threshold_hours: int = 48, guild_id: int | None = None) -> list:
     """Non-blocking version of get_stale_threads."""
-    return await asyncio.to_thread(get_stale_threads, threshold_hours)
+    return await asyncio.to_thread(get_stale_threads, threshold_hours, guild_id)
 
 async def async_log_command_metric(
     command_name: str,

@@ -16,8 +16,10 @@ A developer-machine build is not sufficient for laboratory presentation. Package
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `build.bat`, `run.bat`, `test.bat`
+- `lib/forms_rt.jar` & `lib/sqlite-jdbc-3.47.0.0.jar`
+- `src/com/otog/database/DatabaseManager.java`
+- `README.md`
 
 ## What to Fix
 

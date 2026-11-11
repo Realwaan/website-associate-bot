@@ -16,8 +16,9 @@ Loan is diagrammed, but no implementation was found. Deliver a small simulated a
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `src/com/otog/model/LoanTransaction.java` & `src/com/otog/model/TransactionType.java`
+- `src/com/otog/repository/TransactionRepository.java`
+- `src/com/otog/service/WalletService.java`
 
 ## What to Fix
 

@@ -47,10 +47,20 @@ class LeaderboardCog(commands.Cog, name="Leaderboard"):
             role = role.lower()
             dev_leaders = []
             qa_leaders = []
+            guild_id = getattr(getattr(interaction, "guild", None), "id", None)
+            guild_id_arg = int(guild_id) if isinstance(guild_id, int) else None
             if role in {"both", "dev"}:
-                dev_leaders = await asyncio.to_thread(get_leaderboard_dev, int(limit))
+                dev_leaders = (
+                    await asyncio.to_thread(get_leaderboard_dev, int(limit), guild_id_arg)
+                    if guild_id_arg is not None
+                    else await asyncio.to_thread(get_leaderboard_dev, int(limit))
+                )
             if role in {"both", "qa"}:
-                qa_leaders = await asyncio.to_thread(get_leaderboard_qa, int(limit))
+                qa_leaders = (
+                    await asyncio.to_thread(get_leaderboard_qa, int(limit), guild_id_arg)
+                    if guild_id_arg is not None
+                    else await asyncio.to_thread(get_leaderboard_qa, int(limit))
+                )
 
             embed = discord.Embed(
                 title="🏆 CapStoneFlow Leaderboard",
@@ -103,7 +113,13 @@ class LeaderboardCog(commands.Cog, name="Leaderboard"):
     async def sprint_stats(self, interaction: discord.Interaction):
         await safe_defer(interaction)
         try:
-            grouped_tickets = await asyncio.to_thread(get_threads_by_status)
+            guild_id = getattr(getattr(interaction, "guild", None), "id", None)
+            guild_id_arg = int(guild_id) if isinstance(guild_id, int) else None
+            grouped_tickets = (
+                await asyncio.to_thread(get_threads_by_status, guild_id_arg)
+                if guild_id_arg is not None
+                else await asyncio.to_thread(get_threads_by_status)
+            )
             open_list = grouped_tickets.get("OPEN", [])
             claimed_list = grouped_tickets.get("CLAIMED", [])
             review_list = grouped_tickets.get("PENDING-REVIEW", [])

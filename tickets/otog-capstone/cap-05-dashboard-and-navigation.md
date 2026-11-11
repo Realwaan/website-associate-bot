@@ -16,8 +16,9 @@ Successful login currently ends with a dialog. Users need a dashboard that displ
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `src/UserLogin.java` & `src/UserLogin.form`
+- `src/com/otog/model/Wallet.java` & `src/com/otog/model/Transaction.java`
+- `src/com/otog/service/WalletService.java`
 
 ## What to Fix
 

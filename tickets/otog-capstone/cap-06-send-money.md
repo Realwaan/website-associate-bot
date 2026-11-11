@@ -16,8 +16,10 @@ SendMoney appears in the class diagram but no source implementation was found. D
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `src/com/otog/model/SendMoneyTransaction.java` & `src/com/otog/model/Transaction.java`
+- `src/com/otog/service/WalletService.java`
+- `src/com/otog/repository/WalletRepository.java` & `src/com/otog/repository/TransactionRepository.java`
+- `src/com/otog/exception/InsufficientFundsException.java` & `src/com/otog/exception/DuplicateTransactionException.java`
 
 ## What to Fix
 

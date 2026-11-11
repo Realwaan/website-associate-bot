@@ -16,8 +16,9 @@ The original diagram omits required actors and proposed implementation classes. 
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `Class Diagram/ewallet_cd.png`
+- `README.md`
+- `src/com/otog/model/` & `src/com/otog/service/WalletService.java`
 
 ## What to Fix
 

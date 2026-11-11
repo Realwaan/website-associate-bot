@@ -18,8 +18,10 @@ The current second-factor check accepts any nonempty text and no transaction PIN
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `src/UserLogin.java` & `src/UserLogin.form`
+- `src/com/otog/model/User.java`
+- `src/com/otog/repository/UserRepository.java`
+- `src/com/otog/service/WalletService.java`
 
 ## What to Fix
 

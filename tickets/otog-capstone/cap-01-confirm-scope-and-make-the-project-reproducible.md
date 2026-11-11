@@ -18,8 +18,10 @@ The current checkout contains a Swing login prototype, but no reproducible build
 
 ## Potentially Related Files
 
-- [OTOG source](F:/OTOG/src/) - Java application; confirm new module paths during implementation.
-- [One-month plan](../../OTOG-one-month-ticket-plan.md) - schedule, roles, dependencies, and scope gates.
+- `build.bat`, `run.bat`, `test.bat`
+- `src/UserLogin.java` & `src/UserLogin.form`
+- `src/com/otog/database/DatabaseManager.java`
+- `README.md`
 
 ## What to Fix
 
