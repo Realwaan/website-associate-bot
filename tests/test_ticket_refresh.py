@@ -86,7 +86,8 @@ class TestTicketRefresh(unittest.IsolatedAsyncioTestCase):
              patch('cogs.admin.get_loaded_tickets', return_value=records):
             await cog.refresh_tickets.callback(cog, interaction, 'otog-capstone')
 
-        valid_thread.edit.assert_awaited_once_with(archived=False)
+        valid_thread.edit.assert_any_await(archived=False)
+        valid_thread.edit.assert_any_await(archived=True)
         original.edit.assert_awaited_once()
         msg_sent = interaction.followup.send.call_args.args[0]
         assert "Updated 1 existing ticket messages" in msg_sent

@@ -360,7 +360,8 @@ class AdminCog(commands.Cog, name="Admin"):
                     message = message or fallback_message
                     if message is None:
                         continue
-                    if getattr(thread, "archived", False):
+                    was_archived = bool(getattr(thread, "archived", False))
+                    if was_archived:
                         try:
                             await thread.edit(archived=False)
                         except Exception:
@@ -378,6 +379,11 @@ class AdminCog(commands.Cog, name="Admin"):
                             embed=new_embed,
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
+                    if was_archived:
+                        try:
+                            await thread.edit(archived=True)
+                        except Exception:
+                            pass
                     updated += 1
                 except Exception as item_err:
                     logger.warning("Could not refresh ticket thread %s: %s", getattr(thread, "id", "?"), item_err)
