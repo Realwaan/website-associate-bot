@@ -81,10 +81,14 @@ def health():
 
 @app.route('/ready', methods=['GET', 'HEAD'], strict_slashes=False)
 def ready():
-    """Report whether the Discord client is connected and ready."""
-    is_ready = _capstone_ready_checker() if _capstone_ready_checker else False
+    """Report availability of the bot and its required dependencies."""
+    try:
+        is_ready = _capstone_ready_checker() if _capstone_ready_checker else False
+    except Exception:
+        logger.warning("Readiness dependency check failed")
+        is_ready = False
     if not is_ready:
-        return jsonify({"ok": False, "ready": False, "message": "Discord bot is not ready"}), 503
+        return jsonify({"ok": False, "ready": False, "message": "Bot dependencies are not ready"}), 503
     return jsonify({"ok": True, "ready": True}), 200
 
 
