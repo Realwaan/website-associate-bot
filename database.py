@@ -1378,23 +1378,33 @@ def log_audit_event(
 
 # ===== Thread Statistics =====
 
-def get_threads_by_status(guild_id: int | None = None) -> dict:
-    """Get threads grouped by status (optionally scoped to a Discord guild, including legacy NULL guild_id rows)."""
+def get_threads_by_status(guild_id: int | None = None, folder: str | None = None) -> dict:
+    """Get threads grouped by status (optionally scoped to a Discord guild and/or ticket folder)."""
     default = {"OPEN": [], "CLAIMED": [], "PENDING-REVIEW": [], "REVIEWED": [], "CLOSED": []}
+    clauses = []
+    params = []
+    if guild_id is not None:
+        clauses.append("(guild_id = %s OR guild_id IS NULL)")
+        params.append(int(guild_id))
+    if folder:
+        clauses.append("folder = %s")
+        params.append(folder)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with get_db() as conn:
         cursor = conn.cursor()
-        if guild_id is not None:
-            cursor.execute("""
-                SELECT status, ticket_name, thread_id, channel_id, folder, guild_id
-                FROM threads
-                WHERE guild_id = %s OR guild_id IS NULL
-                ORDER BY status, created_at DESC
-            """, (int(guild_id),))
-        else:
-            cursor.execute("""
-                SELECT status, ticket_name, thread_id, channel_id, folder, guild_id
-                FROM threads ORDER BY status, created_at DESC
-            """)
+        cursor.execute(
+            f"""
+            SELECT status, ticket_name, thread_id, channel_id, folder, guild_id,
+                   claimed_by_id, claimed_by_username,
+                   resolved_by_id, resolved_by_username,
+                   reviewed_by_id, reviewed_by_username,
+                   pr_url
+            FROM threads
+            {where_sql}
+            ORDER BY status, created_at DESC
+            """,
+            tuple(params),
+        )
         rows = cursor.fetchall()
     status_groups = {k: [] for k in default}
     for row in rows:
@@ -1459,9 +1469,9 @@ async def async_update_thread_status(thread_id: int, status: str, **kwargs):
     """Non-blocking version of update_thread_status."""
     return await asyncio.to_thread(update_thread_status, thread_id, status, **kwargs)
 
-async def async_get_threads_by_status(guild_id: int | None = None) -> dict:
+async def async_get_threads_by_status(guild_id: int | None = None, folder: str | None = None) -> dict:
     """Non-blocking version of get_threads_by_status."""
-    return await asyncio.to_thread(get_threads_by_status, guild_id)
+    return await asyncio.to_thread(get_threads_by_status, guild_id, folder)
 
 async def async_get_leaderboard_dev(limit: int = 10, guild_id: int | None = None) -> list:
     """Non-blocking version of get_leaderboard_dev."""

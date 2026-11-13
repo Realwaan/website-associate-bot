@@ -8,7 +8,7 @@ import glob
 import logging
 import re
 from pathlib import Path
-from datetime import time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 from database import (
     add_thread, is_ticket_loaded, mark_ticket_loaded, reserve_ticket_import, record_import_thread,
@@ -902,9 +902,21 @@ class AdminCog(commands.Cog, name="Admin"):
                 ephemeral=True,
             )
             return
-        await asyncio.to_thread(_set_guild_setting, "reminders_channel_id", str(channel.id), _guild_id(interaction))
+        guild_id_arg = _guild_id(interaction)
+        await asyncio.to_thread(_set_guild_setting, "reminders_channel_id", str(channel.id), guild_id_arg)
         await _safe_log_audit("set_reminders_channel", interaction, {"channel_id": channel.id})
-        await interaction.followup.send(f"✅ Daily sprint reminders channel set to {channel.mention}.")
+
+        posted_preview = False
+        if hasattr(channel, "send") and callable(channel.send):
+            try:
+                reminder_embed = await self._build_weekly_reminder_embed(guild_id_arg)
+                await channel.send(embed=reminder_embed)
+                posted_preview = True
+            except Exception as exc:
+                logger.warning("Could not post initial weekly reminder to #%s: %s", getattr(channel, "id", "?"), exc)
+
+        extra = " Posted the current weekly task roadmap there now." if posted_preview else ""
+        await interaction.followup.send(f"✅ Daily sprint reminders channel set to {channel.mention}.{extra}")
 
     # Helper: Apply role synchronization
     async def _apply_user_role(
@@ -1428,6 +1440,183 @@ class AdminCog(commands.Cog, name="Admin"):
             logger.exception("Error in /sync-commands: %s", e)
             await interaction.followup.send(f"❌ Error syncing commands: {e}", ephemeral=True)
 
+    @staticmethod
+    def _join_lines_bounded(lines: list[str], limit: int = 1000) -> str:
+        """Join bullet lines without exceeding Discord's 1024-char field limit mid-link."""
+        kept: list[str] = []
+        total = 0
+        for line in lines:
+            added = len(line) + (1 if kept else 0)
+            if total + added > limit:
+                remaining = len(lines) - len(kept)
+                if remaining > 0 and total + 25 <= 1024:
+                    kept.append(f"... and {remaining} more")
+                break
+            kept.append(line)
+            total += added
+        return "\n".join(kept) if kept else "None"
+
+    async def _build_weekly_reminder_embed(
+        self,
+        guild_id: int | None = None,
+        folder: str = "otog-capstone",
+        today_pht: date | None = None,
+    ) -> discord.Embed:
+        """Build a Discord embed grouping OTOG capstone tasks by sprint week with live thread status."""
+        pht_tz = timezone(timedelta(hours=8))
+        today = today_pht or datetime.now(pht_tz).date()
+
+        scoped_gid = int(guild_id) if isinstance(guild_id, int) and guild_id > 0 else None
+        try:
+            grouped_tickets = await asyncio.to_thread(get_threads_by_status, scoped_gid, folder)
+        except TypeError:
+            grouped_tickets = (
+                await asyncio.to_thread(get_threads_by_status, scoped_gid)
+                if scoped_gid is not None
+                else await asyncio.to_thread(get_threads_by_status)
+            )
+
+        try:
+            ticket_defs = await asyncio.to_thread(load_tickets_from_folder, folder)
+        except Exception:
+            ticket_defs = []
+
+        # Index live thread rows by CAP-XX key and normalized title
+        by_key: dict[str, dict] = {}
+        all_rows: list[dict] = []
+        for status_name, rows in (grouped_tickets or {}).items():
+            for row in rows:
+                enriched = {**row, "status": str(row.get("status") or status_name).upper()}
+                all_rows.append(enriched)
+                tname = str(enriched.get("ticket_name") or "")
+                cap_match = re.match(r"^(CAP-\d+)", tname, re.IGNORECASE)
+                if cap_match:
+                    by_key[cap_match.group(1).upper()] = enriched
+                norm = _normalize_ticket_name(tname)
+                if norm:
+                    by_key[norm] = enriched
+
+        dated_defs = [t for t in ticket_defs if t.get("due_date")]
+        if not dated_defs:
+            open_tickets = grouped_tickets.get("OPEN", [])
+            claimed_tickets = grouped_tickets.get("CLAIMED", [])
+            review_tickets = grouped_tickets.get("PENDING-REVIEW", [])
+            embed = discord.Embed(
+                title="🌅 Daily Sprint Ticket Briefing",
+                description="Good morning team! Here is the current ticket pipeline status:",
+                color=0x6366f1,
+            )
+            embed.add_field(name="🟢 Open Tickets", value=f"`{len(open_tickets)}` unassigned", inline=True)
+            embed.add_field(name="🟡 In Progress", value=f"`{len(claimed_tickets)}` claimed", inline=True)
+            embed.add_field(name="🔵 Pending Review", value=f"`{len(review_tickets)}` waiting for QA", inline=True)
+            embed.set_footer(text="CapStoneFlow • Daily Standup Pipeline")
+            return embed
+
+        weeks = [
+            ("📌 Week 1 (Nov 9–15): Foundation, Domain & Auth", date(2026, 11, 9), date(2026, 11, 15)),
+            ("📌 Week 2 (Nov 16–22): Security, Dashboard & Core Payments", date(2026, 11, 16), date(2026, 11, 22)),
+            ("📌 Week 3 (Nov 23–29): History, Bills, QR & Feature Freeze", date(2026, 11, 23), date(2026, 11, 29)),
+            ("📌 Week 4 (Nov 30–Dec 8): Regression QA, Patterns Docs & Defense", date(2026, 11, 30), date(2026, 12, 8)),
+        ]
+
+        current_week_end = date(2026, 11, 15)
+        for _wlabel, wstart, wend in weeks:
+            if wstart <= today <= wend:
+                current_week_end = wend
+                break
+            if today > wend:
+                current_week_end = wend
+
+        done_count = 0
+        claimed_count = 0
+        review_count = 0
+        open_count = 0
+        urgent_lines: list[str] = []
+        week_buckets: list[list[str]] = [[] for _ in weeks]
+
+        for t in dated_defs:
+            tid = str(t.get("ticket_id") or "").upper()
+            title = str(t.get("title") or t.get("name") or tid)
+            short_title = re.sub(r"^CAP-\d+\s*[-–]\s*", "", title, flags=re.IGNORECASE).strip()
+            if len(short_title) > 42:
+                short_title = short_title[:39].rstrip() + "..."
+            due_str = str(t.get("due_date"))
+            due_dt = date.fromisoformat(due_str)
+            due_short = due_dt.strftime("%b %d")
+
+            row = by_key.get(tid) or by_key.get(_normalize_ticket_name(title))
+            status = str(row.get("status") or "OPEN").upper() if row else "OPEN"
+            thread_id = row.get("thread_id") if row else None
+            ref_label = f"<#{thread_id}>" if thread_id else f"`{tid}`"
+
+            if status == "CLOSED":
+                done_count += 1
+                status_badge = "✅ Done"
+            elif status == "REVIEWED":
+                review_count += 1
+                status_badge = "🟣 QA Approved"
+            elif status == "PENDING-REVIEW":
+                review_count += 1
+                status_badge = "🔵 In QA Review"
+            elif status == "CLAIMED":
+                claimed_count += 1
+                c_id = row.get("claimed_by_id") if row else None
+                c_name = row.get("claimed_by_username") if row else None
+                who = f"<@{c_id}>" if c_id else (c_name or "teammate")
+                status_badge = f"🟡 {who}"
+            else:
+                open_count += 1
+                status_badge = "🚨 Unclaimed" if due_dt <= current_week_end else "🟢 Open"
+
+            line = f"• {ref_label} **{tid}**: {short_title} (Due {due_short}) — {status_badge}"
+
+            if status != "CLOSED" and due_dt <= current_week_end:
+                if status == "OPEN":
+                    urgent_lines.append(f"• {ref_label} (**{tid}**, Due **{due_short}**) — 🚨 Needs `/claim`")
+                else:
+                    urgent_lines.append(f"• {ref_label} (**{tid}**, Due **{due_short}**) — {status_badge}")
+
+            placed = False
+            for idx, (_wlabel, _wstart, wend) in enumerate(weeks):
+                if due_dt <= wend:
+                    week_buckets[idx].append(line)
+                    placed = True
+                    break
+            if not placed:
+                week_buckets[-1].append(line)
+
+        embed = discord.Embed(
+            title="🗓️ OTOG Capstone — Weekly Task Reminders & Sprint Roadmap",
+            description=(
+                f"**Today:** {today.strftime('%b %d, %Y')} (PHT) • **Active Target:** Through {current_week_end.strftime('%b %d')}\n"
+                f"**Progress:** ✅ `{done_count}/{len(dated_defs)}` Done | 🟡 `{claimed_count}` Claimed | 🔵 `{review_count}` In QA | 🟢 `{open_count}` Open"
+            ),
+            color=0x6366f1,
+        )
+
+        if urgent_lines:
+            embed.add_field(
+                name="🔥 Action Needed This Week (Due / Overdue)",
+                value=self._join_lines_bounded(urgent_lines),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="🔥 Action Needed This Week (Due / Overdue)",
+                value="🎉 All tasks due through this week are closed!",
+                inline=False,
+            )
+
+        for (wlabel, _wstart, _wend), lines in zip(weeks, week_buckets):
+            embed.add_field(
+                name=wlabel,
+                value=self._join_lines_bounded(lines),
+                inline=False,
+            )
+
+        embed.set_footer(text="Click any #CAP thread to open it • Use /claim to start, /review to submit PR, /close when merged")
+        return embed
+
     # Daily Summary Task at 8:00 AM PHT (00:00 UTC)
     @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
     async def daily_summary_task(self):
@@ -1449,28 +1638,13 @@ class AdminCog(commands.Cog, name="Admin"):
                 continue
             seen_channels.add(ch_int)
             channel = self.bot.get_channel(ch_int)
-            if not channel:
-                continue
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(ch_int)
+                except Exception:
+                    continue
             guild_id = int(entry.get("guild_id") or 0) or getattr(getattr(channel, "guild", None), "id", None)
-            grouped_tickets = (
-                await asyncio.to_thread(get_threads_by_status, int(guild_id))
-                if isinstance(guild_id, int) and guild_id > 0
-                else await asyncio.to_thread(get_threads_by_status)
-            )
-            open_tickets = grouped_tickets.get("OPEN", [])
-            claimed_tickets = grouped_tickets.get("CLAIMED", [])
-            review_tickets = grouped_tickets.get("PENDING-REVIEW", [])
-
-            embed = discord.Embed(
-                title="🌅 Daily Sprint Ticket Briefing",
-                description="Good morning team! Here is the current ticket pipeline status:",
-                color=0x6366f1
-            )
-            embed.add_field(name="🟢 Open Tickets", value=f"`{len(open_tickets)}` unassigned", inline=True)
-            embed.add_field(name="🟡 In Progress", value=f"`{len(claimed_tickets)}` claimed", inline=True)
-            embed.add_field(name="🔵 Pending Review", value=f"`{len(review_tickets)}` waiting for QA", inline=True)
-            embed.set_footer(text="CapStoneFlow • Daily Standup Pipeline")
-
+            embed = await self._build_weekly_reminder_embed(guild_id)
             await channel.send(embed=embed)
 
     @daily_summary_task.before_loop

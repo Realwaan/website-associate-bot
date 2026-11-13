@@ -172,6 +172,86 @@ class TestAdminCog(unittest.IsolatedAsyncioTestCase):
         mock_set_setting.assert_called_once()
         self.interaction.followup.send.assert_awaited_once()
 
+    @patch("cogs.admin.get_threads_by_status")
+    async def test_weekly_reminder_embed_groups_otog_tasks_by_week(self, mock_get_threads):
+        """Weekly reminder embed groups OTOG capstone tasks by sprint week with live statuses."""
+        from datetime import date
+
+        mock_get_threads.return_value = {
+            "OPEN": [
+                {
+                    "status": "OPEN",
+                    "ticket_name": "CAP-03 - Registration and password authentication",
+                    "thread_id": 1003,
+                }
+            ],
+            "CLAIMED": [
+                {
+                    "status": "CLAIMED",
+                    "ticket_name": "CAP-04 - OTP, transaction PIN, and session controls",
+                    "thread_id": 1004,
+                    "claimed_by_id": 503068503293820940,
+                    "claimed_by_username": "Jirooooo",
+                }
+            ],
+            "PENDING-REVIEW": [],
+            "REVIEWED": [],
+            "CLOSED": [
+                {
+                    "status": "CLOSED",
+                    "ticket_name": "CAP-02 - Persist the wallet domain and transaction rules",
+                    "thread_id": 1002,
+                }
+            ],
+        }
+
+        embed = await self.cog._build_weekly_reminder_embed(
+            guild_id=None,
+            folder="otog-capstone",
+            today_pht=date(2026, 11, 13),
+        )
+
+        self.assertIn("Weekly Task Reminders", embed.title)
+        self.assertIn("`1/18` Done", embed.description)
+        field_map = {f.name: f.value for f in embed.fields}
+        self.assertTrue(any("Week 1" in name for name in field_map))
+        self.assertTrue(any("Week 2" in name for name in field_map))
+        self.assertTrue(any("Week 3" in name for name in field_map))
+        self.assertTrue(any("Week 4" in name for name in field_map))
+        for fname, fval in field_map.items():
+            self.assertLessEqual(len(fval), 1024, f"Field {fname} exceeds 1024 chars")
+
+        week1_text = next(v for k, v in field_map.items() if "Week 1" in k)
+        week2_text = next(v for k, v in field_map.items() if "Week 2" in k)
+        self.assertIn("CAP-02", week1_text)
+        self.assertIn("✅ Done", week1_text)
+        self.assertIn("<#1003>", week1_text)
+        self.assertIn("<@503068503293820940>", week2_text)
+
+    @patch("cogs.admin.get_threads_by_status")
+    @patch("cogs.admin.set_setting")
+    @patch("cogs.admin.get_user_roles")
+    async def test_set_reminders_channel_posts_initial_weekly_roadmap(
+        self, mock_get_roles, mock_set_setting, mock_get_threads
+    ):
+        """PM running /setreminderschannel persists channel and immediately posts weekly roadmap."""
+        mock_get_roles.return_value = {"is_pm": True}
+        mock_get_threads.return_value = {"OPEN": [], "CLAIMED": [], "PENDING-REVIEW": [], "REVIEWED": [], "CLOSED": []}
+
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 888
+        channel.mention = "<#888>"
+        channel.send = AsyncMock()
+
+        await self.cog.set_reminders_channel.callback(self.cog, self.interaction, channel=channel)
+
+        mock_set_setting.assert_called_once()
+        channel.send.assert_awaited_once()
+        sent_embed = channel.send.call_args.kwargs["embed"]
+        self.assertIn("Weekly Task Reminders", sent_embed.title)
+        self.interaction.followup.send.assert_awaited_once()
+        self.assertIn("Posted the current weekly task roadmap", self.interaction.followup.send.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()
