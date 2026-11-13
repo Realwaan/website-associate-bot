@@ -17,6 +17,7 @@ SendMoney appears in the class diagram but no source implementation was found. D
 ## Potentially Related Files
 
 - `src/com/otog/model/SendMoneyTransaction.java` & `src/com/otog/model/Transaction.java`
+- `src/com/otog/model/TransactionFactory.java` & `src/com/otog/model/TransactionBuilder.java` (Creational Factory/Builder)
 - `src/com/otog/service/WalletService.java`
 - `src/com/otog/repository/WalletRepository.java` & `src/com/otog/repository/TransactionRepository.java`
 - `src/com/otog/exception/InsufficientFundsException.java` & `src/com/otog/exception/DuplicateTransactionException.java`
@@ -25,14 +26,14 @@ SendMoney appears in the class diagram but no source implementation was found. D
 
 1. Validate recipient, amount, balance including any fee, and configured limits.
 2. Show recipient and total before PIN confirmation.
-3. Debit sender and credit recipient atomically; repeated confirmation produces one transfer.
+3. Construct SendMoneyTransaction via TransactionFactory/TransactionBuilder and debit sender/credit recipient atomically; repeated confirmation produces one transfer.
 4. Verify success, invalid recipient, insufficient balance, wrong PIN, and failed persistence.
 
 ## Acceptance Criteria
 
 - [ ] Validate recipient, amount, balance including any fee, and configured limits.
 - [ ] Show recipient and total before PIN confirmation.
-- [ ] Debit sender and credit recipient atomically; repeated confirmation produces one transfer.
+- [ ] Construct SendMoneyTransaction via TransactionFactory/TransactionBuilder and debit sender/credit recipient atomically; repeated confirmation produces one transfer.
 - [ ] Verify success, invalid recipient, insufficient balance, wrong PIN, and failed persistence.
 
 ## Delivery Context

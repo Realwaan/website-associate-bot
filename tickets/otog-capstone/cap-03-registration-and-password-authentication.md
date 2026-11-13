@@ -22,18 +22,19 @@ UserLogin currently compares input with hardcoded admin/password credentials. Im
 - `src/com/otog/model/User.java` & `src/com/otog/model/UserStatus.java`
 - `src/com/otog/repository/UserRepository.java`
 - `src/com/otog/service/WalletService.java`
+- `src/com/otog/service/SessionManager.java` (Singleton session holder)
 
 ## What to Fix
 
 1. Register a unique account and create its wallet; replace hardcoded credentials with salted password hashes.
 2. Reject incorrect passwords and duplicate account identifiers; enforce failed-login limits.
-3. Protect authenticated screens and clear session state on logout.
+3. Protect authenticated screens using a Singleton SessionManager (`SessionManager.getInstance()`) and clear session state on logout.
 
 ## Acceptance Criteria
 
 - [ ] Register a unique account and create its wallet; replace hardcoded credentials with salted password hashes.
 - [ ] Reject incorrect passwords and duplicate account identifiers; enforce failed-login limits.
-- [ ] Protect authenticated screens and clear session state on logout.
+- [ ] Protect authenticated screens using a Singleton SessionManager (`SessionManager.getInstance()`) and clear session state on logout.
 
 ## Delivery Context
 

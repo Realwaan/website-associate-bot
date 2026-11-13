@@ -24,7 +24,7 @@ The original diagram omits required actors and proposed implementation classes. 
 
 1. Update class diagram to match implemented classes, relationships, and multiplicities.
 2. Include use-case diagram for all four actors and send-money sequence diagram.
-3. Explain encapsulation, abstraction, inheritance/interfaces, and polymorphism using actual code examples.
+3. Explain encapsulation, abstraction, inheritance/interfaces, polymorphism, and the integrated Creational Design Patterns (Singleton SessionManager, Factory/Abstract Factory, Builder, Prototype) using actual code examples.
 4. Document setup, mock integrations, implemented scope, limitations, testing evidence, and team contributions.
 5. Prepare slides and a timed demo outline; avoid claiming deferred features are complete.
 
@@ -32,7 +32,7 @@ The original diagram omits required actors and proposed implementation classes. 
 
 - [ ] Update class diagram to match implemented classes, relationships, and multiplicities.
 - [ ] Include use-case diagram for all four actors and send-money sequence diagram.
-- [ ] Explain encapsulation, abstraction, inheritance/interfaces, and polymorphism using actual code examples.
+- [ ] Explain encapsulation, abstraction, inheritance/interfaces, polymorphism, and the integrated Creational Design Patterns (Singleton SessionManager, Factory/Abstract Factory, Builder, Prototype) using actual code examples.
 - [ ] Document setup, mock integrations, implemented scope, limitations, testing evidence, and team contributions.
 - [ ] Prepare slides and a timed demo outline; avoid claiming deferred features are complete.
 

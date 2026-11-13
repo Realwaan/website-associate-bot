@@ -22,19 +22,20 @@ The current second-factor check accepts any nonempty text and no transaction PIN
 - `src/com/otog/model/User.java`
 - `src/com/otog/repository/UserRepository.java`
 - `src/com/otog/service/WalletService.java`
+- `src/com/otog/service/SessionManager.java` (Singleton session & inactivity state)
 
 ## What to Fix
 
 1. Verify an account-bound OTP with expiry, one-time use, resend cooldown, and attempt limits.
 2. Label delivery as simulated; reject random, expired, reused, and another account's codes.
-3. Set/change hashed PIN with reauthentication; enforce PIN attempt limits and inactivity timeout.
+3. Set/change hashed PIN with reauthentication; enforce PIN attempt limits and inactivity timeout via the Singleton SessionManager.
 4. Block outgoing payments without valid PIN authorization. Full account recovery is deferred.
 
 ## Acceptance Criteria
 
 - [ ] Verify an account-bound OTP with expiry, one-time use, resend cooldown, and attempt limits.
 - [ ] Label delivery as simulated; reject random, expired, reused, and another account's codes.
-- [ ] Set/change hashed PIN with reauthentication; enforce PIN attempt limits and inactivity timeout.
+- [ ] Set/change hashed PIN with reauthentication; enforce PIN attempt limits and inactivity timeout via the Singleton SessionManager.
 - [ ] Block outgoing payments without valid PIN authorization. Full account recovery is deferred.
 
 ## Delivery Context

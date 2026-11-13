@@ -19,16 +19,17 @@ Successful login currently ends with a dialog. Users need a dashboard that displ
 - `src/UserLogin.java` & `src/UserLogin.form`
 - `src/com/otog/model/Wallet.java` & `src/com/otog/model/Transaction.java`
 - `src/com/otog/service/WalletService.java`
+- `src/com/otog/service/SessionManager.java` (Singleton active user/wallet context)
 
 ## What to Fix
 
-1. Show signed-in user's balance, recent activity, logout, and feature navigation.
+1. Show signed-in user's balance, recent activity, logout, and feature navigation using the Singleton SessionManager context.
 2. Refresh after payments; display useful empty, loading, and failure states.
 3. Keep database/provider work off the Swing UI thread; hide unfinished features from the final demo.
 
 ## Acceptance Criteria
 
-- [ ] Show signed-in user's balance, recent activity, logout, and feature navigation.
+- [ ] Show signed-in user's balance, recent activity, logout, and feature navigation using the Singleton SessionManager context.
 - [ ] Refresh after payments; display useful empty, loading, and failure states.
 - [ ] Keep database/provider work off the Swing UI thread; hide unfinished features from the final demo.
 

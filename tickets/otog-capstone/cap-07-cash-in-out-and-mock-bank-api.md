@@ -19,17 +19,18 @@ CashInOut appears in the diagram but no funding adapter or settlement implementa
 - `src/com/otog/model/CashInOutTransaction.java` & `src/com/otog/model/PaymentMethod.java`
 - `src/com/otog/repository/PaymentMethodRepository.java` & `src/com/otog/repository/TransactionRepository.java`
 - `src/com/otog/service/WalletService.java`
+- `src/com/otog/service/PaymentProviderFactory.java` (Factory / Abstract Factory for mock bank providers)
 
 ## What to Fix
 
-1. Link seeded demo bank methods and implement BankApiClient with a mock adapter.
+1. Link seeded demo bank methods and implement BankApiClient with a mock adapter and PaymentProviderFactory (Factory/Abstract Factory for deterministic success/failure/timeout modes).
 2. Credit cash-in only on success; reserve cash-out funds until settlement, releasing them on confirmed failure.
 3. Support success, rejection, and timeout followed by status lookup; unknown outcomes stay pending.
 4. Repeated provider responses never duplicate money movement; display provider reference and status.
 
 ## Acceptance Criteria
 
-- [ ] Link seeded demo bank methods and implement BankApiClient with a mock adapter.
+- [ ] Link seeded demo bank methods and implement BankApiClient with a mock adapter and PaymentProviderFactory (Factory/Abstract Factory for deterministic success/failure/timeout modes).
 - [ ] Credit cash-in only on success; reserve cash-out funds until settlement, releasing them on confirmed failure.
 - [ ] Support success, rejection, and timeout followed by status lookup; unknown outcomes stay pending.
 - [ ] Repeated provider responses never duplicate money movement; display provider reference and status.

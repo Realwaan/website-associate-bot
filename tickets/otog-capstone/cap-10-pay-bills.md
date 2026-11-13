@@ -19,17 +19,18 @@ Pay bills is an original use case missing from the class diagram and source. Add
 - `src/com/otog/model/Transaction.java` & `src/com/otog/model/TransactionType.java`
 - `src/com/otog/repository/TransactionRepository.java`
 - `src/com/otog/service/WalletService.java`
+- `src/com/otog/service/PaymentProviderFactory.java` (Factory / Abstract Factory for mock biller settlement)
 
 ## What to Fix
 
 1. Offer a small seeded biller list, reference validation, amount entry, fee preview, and PIN confirmation.
-2. Reuse provider pending/success/failure handling and duplicate protection.
+2. Reuse PaymentProviderFactory and provider pending/success/failure handling with duplicate protection.
 3. Create bill-payment history, receipt details, and notification; confirmed failure releases reserved funds.
 
 ## Acceptance Criteria
 
 - [ ] Offer a small seeded biller list, reference validation, amount entry, fee preview, and PIN confirmation.
-- [ ] Reuse provider pending/success/failure handling and duplicate protection.
+- [ ] Reuse PaymentProviderFactory and provider pending/success/failure handling with duplicate protection.
 - [ ] Create bill-payment history, receipt details, and notification; confirmed failure releases reserved funds.
 
 ## Delivery Context

@@ -17,20 +17,21 @@ Users currently have no persistent history, receipt detail, or notification inbo
 ## Potentially Related Files
 
 - `src/com/otog/model/Transaction.java` & `src/com/otog/model/LedgerEntry.java`
+- `src/com/otog/model/ReceiptBuilder.java` (Builder pattern for masked receipts & Prototype repeat-draft helper)
 - `src/com/otog/repository/TransactionRepository.java` & `src/com/otog/repository/LedgerRepository.java`
 - `src/com/otog/service/WalletService.java`
 
 ## What to Fix
 
 1. List owned transactions with date/type/status filters and a receipt detail view.
-2. Show amount, fee, reference, counterparty, timestamp, and status; mask private account identifiers.
+2. Format receipt details via a ReceiptBuilder (showing amount, fee, reference, counterparty, timestamp, and masked identifiers) and optionally support Prototype-style repeat transaction drafts with a fresh reference number.
 3. Persist read/unread notifications after successful commit; notification retries never repeat payments.
 4. Verify sender/recipient notifications and account isolation. Printable/exported receipts are stretch scope.
 
 ## Acceptance Criteria
 
 - [ ] List owned transactions with date/type/status filters and a receipt detail view.
-- [ ] Show amount, fee, reference, counterparty, timestamp, and status; mask private account identifiers.
+- [ ] Format receipt details via a ReceiptBuilder (showing amount, fee, reference, counterparty, timestamp, and masked identifiers) and optionally support Prototype-style repeat transaction drafts with a fresh reference number.
 - [ ] Persist read/unread notifications after successful commit; notification retries never repeat payments.
 - [ ] Verify sender/recipient notifications and account isolation. Printable/exported receipts are stretch scope.
 
