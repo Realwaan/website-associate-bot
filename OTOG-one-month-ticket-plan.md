@@ -175,11 +175,35 @@ All tickets start as **To do**. Use board columns: To do, In progress, Review, D
 ### CAP-18 - Rehearse and approve the final presentation build
 **Dates:** Dec 7-8. **Owner:** All. **Estimate:** Two 60-90 minute team sessions. **Priority:** Must. **Dependencies:** CAP-17.
 
-- Run two timed rehearsals, assign speaking sections, and practice OOP/security/transaction questions.
+- Run two timed **12-minute** rehearsals, assign speaking sections, and practice OOP, Exception Handling, File Handling, Design Pattern, and Swing `.form` GUI inspection questions.
 - Reset and complete the demo from the packaged release on the actual laptop.
-- Confirm slides, source, diagrams, database, QR sample, and recording are backed up.
+- Confirm slides, source, IntelliJ `.form` files, diagrams, `README.md` Design Patterns documentation, database, QR sample, and recording are backed up.
 - Allow only verified critical fixes; rerun affected scenarios after every fix and preserve the previous working package.
 - Final readiness sign-off on Dec 8 for F1/F2/G9.
+
+### CAP-19 - Convert auth and dialog screens to IntelliJ Swing forms
+**Dates:** Nov 18-22. **Owner:** A, with C. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-01, CAP-03, CAP-04.
+
+- Synchronize `src/UserLogin.form` with `src/UserLogin.java` (`$$$setupUI$$$()`) and refine login and 2FA visual spacing and headers.
+- Convert `src/com/otog/ui/RegisterDialog.java` from hardcoded `GridLayout` to a bound IntelliJ Swing form (`src/com/otog/ui/RegisterDialog.form`).
+- Extract the inline Transaction PIN dialog from `Main` into `src/com/otog/ui/PinSettingsDialog.java` and `src/com/otog/ui/PinSettingsDialog.form`.
+- Update `build.bat` to copy all `src/**/*.form` files into matching package directories under `out/production/OTOG/`.
+
+### CAP-20 - Modularize Main dashboard into Swing form panels
+**Dates:** Nov 19-26. **Owner:** C, with B. **Estimate:** 3 days. **Priority:** Must. **Dependencies:** CAP-05, CAP-06, CAP-07, CAP-09, CAP-19.
+
+- Bind `src/com/otog/ui/Main.java` to `src/com/otog/ui/Main.form` for the top-level dashboard shell (header, tabbed navigation, status footer).
+- Extract hardcoded tab builders from `Main.java` into dedicated `.form`-backed panel classes (`OverviewPanel`, `CashInOutPanel`, `SendMoneyPanel`, `AdminControlsPanel`).
+- Apply neat, consistent Swing visual styling (typography, padding, borders, table sizing) for the CSIT227 GUI rubric (`[15%]`).
+- Preserve all existing `Main` public component getters, `SwingWorker` off-EDT execution, and service interface boundaries so all JUnit 5 UI tests pass.
+
+### CAP-21 - Add Java file handling to store and load wallet statements
+**Dates:** Nov 20-27. **Owner:** C, with E. **Estimate:** 2 days. **Priority:** Must. **Dependencies:** CAP-02, CAP-08.
+
+- Implement `StatementFileService` using `try-with-resources` `BufferedWriter` and `BufferedReader` to store (export) and load (import) masked wallet statements and transaction receipts (`[5% + bonus 5%]` File Handling rubric).
+- Add Export Statement and Load Statement actions to the dashboard (`OverviewPanel` / `Main`) using `JFileChooser` and off-EDT `SwingWorker` tasks.
+- Validate imported statement files and throw domain exceptions (`OtogException`) on malformed or tampered files without corrupting wallet state.
+- Add automated JUnit 5 tests covering store/load round-trips, identifier masking, and malformed file rejection.
 
 ## Scope gates and contingency
 

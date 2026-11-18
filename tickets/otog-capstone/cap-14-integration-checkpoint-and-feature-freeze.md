@@ -5,7 +5,7 @@
 **Due Date:** 2026-11-29
 **Timezone:** Asia/Manila
 **Owner Suggestion:** B with C
-**Dependencies:** CAP-06, CAP-07, CAP-08, CAP-09, CAP-10, CAP-11; CAP-12 and CAP-13 only if retained
+**Dependencies:** CAP-06, CAP-07, CAP-08, CAP-09, CAP-10, CAP-11, CAP-19, CAP-20, CAP-21; CAP-12 and CAP-13 only if retained
 **Scope:** Required for presentation build
 
 **Dates:** Nov 23-27; freeze Nov 29. **Owner:** B, with C. **Estimate:** 2 days. **Priority:** Must.

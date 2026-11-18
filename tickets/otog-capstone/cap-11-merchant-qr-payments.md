@@ -19,17 +19,18 @@ The Merchant actor and QR payment use case are not represented by working code. 
 - `src/com/otog/model/User.java` & `src/com/otog/model/UserRole.java`
 - `src/com/otog/model/SendMoneyTransaction.java`
 - `src/com/otog/service/WalletService.java`
+- `src/com/otog/ui/MerchantQrPanel.java` & `src/com/otog/ui/MerchantQrPanel.form`
 
 ## What to Fix
 
-1. Seed a merchant profile; generate and import QR images using a documented project format.
+1. Seed a merchant profile; generate and import QR files using a documented project format in a bound IntelliJ Swing `.form` panel (`MerchantQrPanel.form`).
 2. Validate merchant, currency, and amount; show recipient confirmation before PIN approval.
 3. Reuse the atomic transfer service; merchant sees received payments.
 4. Reject malformed/inactive-merchant QR codes and duplicate submissions. Camera scanning and real-provider QR compatibility are excluded.
 
 ## Acceptance Criteria
 
-- [ ] Seed a merchant profile; generate and import QR images using a documented project format.
+- [ ] Seed a merchant profile; generate and import QR files using a documented project format in a bound IntelliJ Swing `.form` panel (`MerchantQrPanel.form`).
 - [ ] Validate merchant, currency, and amount; show recipient confirmation before PIN approval.
 - [ ] Reuse the atomic transfer service; merchant sees received payments.
 - [ ] Reject malformed/inactive-merchant QR codes and duplicate submissions. Camera scanning and real-provider QR compatibility are excluded.

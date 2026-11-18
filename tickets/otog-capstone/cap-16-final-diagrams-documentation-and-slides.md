@@ -22,19 +22,19 @@ The original diagram omits required actors and proposed implementation classes. 
 
 ## What to Fix
 
-1. Update class diagram to match implemented classes, relationships, and multiplicities.
+1. Update class diagram (`Class Diagram/ewallet_cd.png`) to match all implemented classes, Swing `.form` panels, `StatementFileService`, relationships, and multiplicities (`[15%]` Class Diagram rubric).
 2. Include use-case diagram for all four actors and send-money sequence diagram.
-3. Explain encapsulation, abstraction, inheritance/interfaces, polymorphism, and the integrated Creational Design Patterns (Singleton SessionManager, Factory/Abstract Factory, Builder, Prototype) using actual code examples.
-4. Document setup, mock integrations, implemented scope, limitations, testing evidence, and team contributions.
-5. Prepare slides and a timed demo outline; avoid claiming deferred features are complete.
+3. Add a dedicated `README.md` Design Patterns section explaining where each pattern (`Singleton`, `Factory` / `Abstract Factory`, `Builder`, `Adapter`, `Facade`, `Prototype`) is applied (`[bonus 5%]`), alongside concrete examples of the Four OOP Principles (`[30%]`), Exception Handling (`[10%]`), and File Handling (`[5% + bonus 5%]`).
+4. Submit the shareable GitHub repository link (or invite `jayvince.serato@cit.edu`) in MS Teams by December 1, 2026, and document setup, mock integrations, testing evidence, and team contributions.
+5. Prepare slides and a timed **12-minute** demo outline; avoid claiming deferred features are complete.
 
 ## Acceptance Criteria
 
-- [ ] Update class diagram to match implemented classes, relationships, and multiplicities.
+- [ ] Update class diagram (`Class Diagram/ewallet_cd.png`) to match all implemented classes, Swing `.form` panels, `StatementFileService`, relationships, and multiplicities (`[15%]` Class Diagram rubric).
 - [ ] Include use-case diagram for all four actors and send-money sequence diagram.
-- [ ] Explain encapsulation, abstraction, inheritance/interfaces, polymorphism, and the integrated Creational Design Patterns (Singleton SessionManager, Factory/Abstract Factory, Builder, Prototype) using actual code examples.
-- [ ] Document setup, mock integrations, implemented scope, limitations, testing evidence, and team contributions.
-- [ ] Prepare slides and a timed demo outline; avoid claiming deferred features are complete.
+- [ ] Add a dedicated `README.md` Design Patterns section explaining where each pattern (`Singleton`, `Factory` / `Abstract Factory`, `Builder`, `Adapter`, `Facade`, `Prototype`) is applied (`[bonus 5%]`), alongside concrete examples of the Four OOP Principles (`[30%]`), Exception Handling (`[10%]`), and File Handling (`[5% + bonus 5%]`).
+- [ ] Submit the shareable GitHub repository link (or invite `jayvince.serato@cit.edu`) in MS Teams by December 1, 2026, and document setup, mock integrations, testing evidence, and team contributions.
+- [ ] Prepare slides and a timed **12-minute** demo outline; avoid claiming deferred features are complete.
 
 ## Delivery Context
 

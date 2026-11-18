@@ -19,10 +19,11 @@ Loan is diagrammed, but no implementation was found. Deliver a small simulated a
 - `src/com/otog/model/LoanTransaction.java` & `src/com/otog/model/TransactionType.java`
 - `src/com/otog/repository/TransactionRepository.java`
 - `src/com/otog/service/WalletService.java`
+- `src/com/otog/ui/LoanPanel.java` & `src/com/otog/ui/LoanPanel.form`
 
 ## What to Fix
 
-1. Offer one configured loan product with documented interest/fee calculation and total repayment preview.
+1. Offer one configured loan product with documented interest/fee calculation and total repayment preview in a bound IntelliJ Swing `.form` panel (`LoanPanel.form`).
 2. User applies; admin approves/rejects; approval credits the wallet exactly once.
 3. Show amount due and support full repayment with atomic wallet/loan updates.
 4. Reject duplicate disbursement, insufficient-funds repayment, and repeat repayment of a paid loan.
@@ -30,7 +31,7 @@ Loan is diagrammed, but no implementation was found. Deliver a small simulated a
 
 ## Acceptance Criteria
 
-- [ ] Offer one configured loan product with documented interest/fee calculation and total repayment preview.
+- [ ] Offer one configured loan product with documented interest/fee calculation and total repayment preview in a bound IntelliJ Swing `.form` panel (`LoanPanel.form`).
 - [ ] User applies; admin approves/rejects; approval credits the wallet exactly once.
 - [ ] Show amount due and support full repayment with atomic wallet/loan updates.
 - [ ] Reject duplicate disbursement, insufficient-funds repayment, and repeat repayment of a paid loan.

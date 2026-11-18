@@ -19,17 +19,18 @@ InvestMoney is diagrammed, but no implementation was found. Deliver a single sim
 - `src/com/otog/model/InvestMoneyTransaction.java` & `src/com/otog/model/TransactionType.java`
 - `src/com/otog/repository/TransactionRepository.java`
 - `src/com/otog/service/WalletService.java`
+- `src/com/otog/ui/InvestmentPanel.java` & `src/com/otog/ui/InvestmentPanel.form`
 
 ## What to Fix
 
-1. Offer one seeded investment product with clearly simulated prices.
+1. Offer one seeded investment product with clearly simulated prices in a bound IntelliJ Swing `.form` panel (`InvestmentPanel.form`).
 2. Preview units and cost; buying debits wallet and increases holdings atomically.
 3. Redeeming credits wallet and decreases holdings atomically; reject insufficient funds and overselling.
 4. Persist holdings and activity. Defer live prices, forecasting, and multiple product types.
 
 ## Acceptance Criteria
 
-- [ ] Offer one seeded investment product with clearly simulated prices.
+- [ ] Offer one seeded investment product with clearly simulated prices in a bound IntelliJ Swing `.form` panel (`InvestmentPanel.form`).
 - [ ] Preview units and cost; buying debits wallet and increases holdings atomically.
 - [ ] Redeeming credits wallet and decreases holdings atomically; reject insufficient funds and overselling.
 - [ ] Persist holdings and activity. Defer live prices, forecasting, and multiple product types.

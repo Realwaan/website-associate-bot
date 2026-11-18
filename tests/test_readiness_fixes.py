@@ -63,9 +63,9 @@ def test_import_containment_and_planning_files():
 
 def test_capstone_bundle_is_complete_and_scheduled():
     tickets = load_tickets_from_folder('otog-capstone')
-    assert len(tickets) == 18
+    assert len(tickets) == 21
     ids = {ticket['ticket_id'] for ticket in tickets}
-    assert len(ids) == 18
+    assert len(ids) == 21
     by_id = {t['ticket_id']: t for t in tickets}
     import re
     for ticket in tickets:

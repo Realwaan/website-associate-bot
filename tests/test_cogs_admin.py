@@ -212,7 +212,7 @@ class TestAdminCog(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Weekly Task Reminders", embed.title)
-        self.assertIn("`1/18` Done", embed.description)
+        self.assertIn("`1/21` Done", embed.description)
         field_map = {f.name: f.value for f in embed.fields}
         self.assertTrue(any("Week 1" in name for name in field_map))
         self.assertTrue(any("Week 2" in name for name in field_map))
