@@ -16,6 +16,7 @@ from database import (
     add_thread,
     get_thread,
     get_thread_by_external_task_id,
+    get_threads_by_status,
     update_thread_status,
     begin_integration_delivery,
     finish_integration_delivery,
@@ -465,66 +466,47 @@ async def sync_capstone_ticket_status(payload: dict) -> dict:
     # 1. Guarantee database state persistence and linked task sync first
     await asyncio.to_thread(update_thread_status, thread.id, discord_status, expected=thread_info, **status_kwargs)
 
-    # 2. Safely perform Discord thread rename with rate-limit and 503 resilience
-    raw_ticket_name = str(thread_info.get("ticket_name") or thread.name)
-    ticket_name = _strip_leading_bracket_prefixes(raw_ticket_name)
+    # 2. Safely perform Discord thread rename with archive-safe order and rate-limit queueing
+    from services.thread_rename_sync import format_status_thread_name, safe_edit_thread_name
 
-    target_name = f"[{discord_status}] {ticket_name}"[:100]
-    edit_kwargs = {
-        "reason": f"CapStoneFlow website status update by {actor}",
-    }
-    if getattr(thread, "name", None) != target_name:
-        edit_kwargs["name"] = target_name
+    raw_ticket_name = str(thread_info.get("ticket_name") or thread.name)
+    target_name = format_status_thread_name(discord_status, raw_ticket_name, actor)
+    reason = f"CapStoneFlow website status update by {actor}"
+    rename_throttled = False
+
+    embed = discord.Embed(
+        title=f"🔄 Status Sync: [{discord_status}]",
+        description=f"Ticket status was updated to **{discord_status}** (`{website_status}`) by **{actor}** via CapStoneFlow.",
+        color=0x10b981 if discord_status in ("REVIEWED", "CLOSED") else (0xf59e0b if discord_status == "PENDING-REVIEW" else 0x3b82f6)
+    )
 
     if discord_status == "CLOSED":
-        if not getattr(thread, "archived", False) or not getattr(thread, "locked", False):
-            edit_kwargs.update({"archived": True, "locked": True})
-    else:
-        if getattr(thread, "archived", False) or getattr(thread, "locked", False):
-            edit_kwargs.update({"archived": False, "locked": False})
-
-    rename_throttled = False
-    # If only 'reason' is present, no actual thread attributes need changing
-    fields_to_change = {k: v for k, v in edit_kwargs.items() if k != "reason"}
-    if fields_to_change:
+        if getattr(thread, "archived", False) is True or getattr(thread, "locked", False) is True:
+            try:
+                await asyncio.wait_for(thread.edit(archived=False, locked=False, reason=reason), timeout=2.5)
+            except Exception as exc:
+                logger.debug("Could not unarchive thread %s before close notification: %s", thread.id, exc)
         try:
-            await asyncio.wait_for(thread.edit(**edit_kwargs), timeout=2.0)
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(
-                "Discord thread edit timed out (>2.0s) for thread %s (rate limit / 503 delay). Proceeding.",
-                thread.id,
-            )
-            rename_throttled = True
-        except discord.HTTPException as exc:
-            if exc.status in (429, 500, 502, 503, 504):
-                logger.warning(
-                    "Discord thread edit throttled or gateway error (%s) for thread %s: %s",
-                    exc.status, thread.id, exc
-                )
-            else:
-                logger.warning(
-                    "Discord thread edit API error for thread %s: %s",
-                    thread.id, exc
-                )
-            rename_throttled = True
-        except Exception as exc:
-            logger.warning("Discord thread edit unexpected error for thread %s: %s", thread.id, exc)
-            rename_throttled = True
-
-    # 3. Post an in-thread notification embed for team awareness in Discord
-    try:
-        embed = discord.Embed(
-            title=f"🔄 Status Sync: [{discord_status}]",
-            description=f"Ticket status was updated to **{discord_status}** (`{website_status}`) by **{actor}** via CapStoneFlow.",
-            color=0x10b981 if discord_status in ("REVIEWED", "CLOSED") else (0xf59e0b if discord_status == "PENDING-REVIEW" else 0x3b82f6)
-        )
-        if rename_throttled:
-            embed.set_footer(text="CapStoneFlow • Thread rename throttled by Discord rate-limit; database state synchronized.")
-        else:
             embed.set_footer(text="CapStoneFlow • Real-Time Synchronized")
-        await thread.send(embed=embed)
-    except Exception as exc:
-        logger.debug("Could not post Discord in-thread notification: %s", exc)
+            await thread.send(embed=embed)
+        except Exception as exc:
+            logger.debug("Could not post Discord in-thread close notification: %s", exc)
+        renamed = await safe_edit_thread_name(thread, target_name, archived=True, locked=True, reason=reason)
+        rename_throttled = not renamed
+    else:
+        edit_kwargs: dict = {"reason": reason}
+        if getattr(thread, "archived", False) is True or getattr(thread, "locked", False) is True:
+            edit_kwargs.update({"archived": False, "locked": False})
+        renamed = await safe_edit_thread_name(thread, target_name, **edit_kwargs)
+        rename_throttled = not renamed
+        try:
+            if rename_throttled:
+                embed.set_footer(text="CapStoneFlow • Rename rate-limited; queued for automatic sync.")
+            else:
+                embed.set_footer(text="CapStoneFlow • Real-Time Synchronized")
+            await thread.send(embed=embed)
+        except Exception as exc:
+            logger.debug("Could not post Discord in-thread notification: %s", exc)
 
     result = {
         "ok": True,
@@ -571,7 +553,31 @@ async def on_message(message: discord.Message):
                 history.insert(0, {"role": role, "content": item.content})
 
             if ai_client:
-                reply = await asyncio.to_thread(ai_client.chat, history)
+                system_ctx = None
+                try:
+                    from pathlib import Path
+                    from services.rust_bridge import build_repo_context_fast
+
+                    latest_query = (message.content or "").strip()
+                    if latest_query:
+                        repo_root = str(Path(__file__).resolve().parent)
+                        chunks = await asyncio.to_thread(build_repo_context_fast, repo_root, latest_query, 3, 1800)
+                        if chunks:
+                            context_blocks = [
+                                f"--- {c['file']}:{c['start_line']}-{c['end_line']} ---\n{c['snippet']}"
+                                for c in chunks
+                            ]
+                            system_ctx = (
+                                "You are an expert AI engineering assistant. Use the retrieved workspace context below when relevant:\n\n"
+                                + "\n\n".join(context_blocks)
+                            )
+                except Exception:
+                    system_ctx = None
+
+                if system_ctx:
+                    reply = await asyncio.to_thread(ai_client.chat, history, system=system_ctx)
+                else:
+                    reply = await asyncio.to_thread(ai_client.chat, history)
                 if has_latex() and "$$" in reply:
                     png_bytes = await asyncio.to_thread(render_equations_to_single_png, reply)
                     if png_bytes:
@@ -637,75 +643,137 @@ def capstone_status_handler(payload: dict):
         return 500, {"ok": False, "message": "Ticket status update failed"}
 
 
-async def _process_github_push_payload(payload: dict, delivery_id: str | None = None) -> None:
-    """Extract and post GitHub commits arriving via webhook payload."""
+async def _fetch_channel_by_id(channel_id_str: str | None):
+    text = str(channel_id_str or "").strip()
+    if not text.isdigit():
+        return None
+    cid = int(text)
+    channel = bot.get_channel(cid)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(cid)
+        except Exception as exc:
+            logger.debug("Could not fetch Discord channel %s: %s", cid, exc)
+            return None
+    return channel
+
+
+async def _resolve_webhook_target_channel():
+    """Resolve the destination channel for GitHub webhook updates."""
+    from repo_updates import find_project_updates_channel
+
+    channel = await _fetch_channel_by_id(await asyncio.to_thread(get_setting, "commit_channel_id"))
+    if channel is not None:
+        return channel
+
     try:
+        scoped_rows = await asyncio.to_thread(get_setting_across_guilds, "commit_channel_id")
+        for row in scoped_rows:
+            channel = await _fetch_channel_by_id(row.get("value"))
+            if channel is not None:
+                return channel
+    except Exception as exc:
+        logger.debug("Could not query guild-scoped commit_channel_id: %s", exc)
+
+    env_channel_id = os.getenv("PROJECT_UPDATES_CHANNEL_ID") or os.getenv("COMMIT_CHANNEL_ID")
+    channel = await _fetch_channel_by_id(env_channel_id)
+    if channel is not None:
+        return channel
+
+    for guild in getattr(bot, "guilds", None) or []:
+        discovered = find_project_updates_channel(guild)
+        if discovered is not None:
+            try:
+                await asyncio.to_thread(set_setting, "commit_channel_id", str(discovered.id), getattr(guild, "id", None))
+            except Exception as exc:
+                logger.debug("Could not persist auto-discovered commit channel %s: %s", discovered.id, exc)
+            return discovered
+
+    reminders_channel = await _fetch_channel_by_id(await asyncio.to_thread(get_setting, "reminders_channel_id"))
+    if reminders_channel is not None:
+        return reminders_channel
+
+    for guild in getattr(bot, "guilds", None) or []:
+        if getattr(guild, "system_channel", None):
+            return guild.system_channel
+        for ch in getattr(guild, "text_channels", None) or []:
+            return ch
+    return None
+
+
+async def _is_auto_updates_enabled() -> bool:
+    try:
+        auto_enabled = await asyncio.to_thread(get_setting, "auto_updates_enabled")
+        return str(auto_enabled or "").strip().lower() != "false"
+    except Exception as exc:
+        logger.debug("Could not check auto_updates_enabled setting: %s", exc)
+        return True
+
+
+async def _build_webhook_ticket_lookup(target_channel) -> dict[str, int | str]:
+    from repo_updates import build_cap_ticket_lookup
+
+    raw_guild_id = getattr(getattr(target_channel, "guild", None), "id", None)
+    gid = int(raw_guild_id) if isinstance(raw_guild_id, int) else None
+    try:
+        grouped = await asyncio.to_thread(get_threads_by_status, gid)
+        return build_cap_ticket_lookup(grouped, gid)
+    except Exception as exc:
+        logger.debug("Could not build CAP ticket lookup for webhook card: %s", exc)
+        return {}
+
+
+def _make_mark_event_posted():
+    async def mark_event_posted(key: str, ch_id: int) -> bool:
+        try:
+            return await asyncio.to_thread(mark_repo_event_posted, key, ch_id)
+        except Exception as exc:
+            logger.debug("mark_repo_event_posted fallback to settings for %s: %s", key, exc)
+            setting_key = f"event_posted:{ch_id}:{key}"
+            val = await asyncio.to_thread(get_setting, setting_key)
+            if val:
+                return False
+            await asyncio.to_thread(set_setting, setting_key, "1")
+            return True
+
+    return mark_event_posted
+
+
+async def _process_github_push_payload(
+    payload: dict,
+    delivery_id: str | None = None,
+    *,
+    _requeue_on_error: bool = True,
+) -> None:
+    """Extract and post grouped GitHub commits arriving via webhook payload."""
+    try:
+        if payload.get("deleted") is True:
+            return
+
         repo_data = payload.get("repository", {})
         repo_name = repo_data.get("name")
         owner_data = repo_data.get("owner", {})
         repo_owner = owner_data.get("login") or owner_data.get("name")
         ref = payload.get("ref", "")
-        branch = ref.split("/")[-1] if "/" in ref else "main"
+        branch = ref.removeprefix("refs/heads/") if ref.startswith("refs/heads/") else (ref.split("/")[-1] if "/" in ref else "main")
         commits = payload.get("commits", [])
 
         if not repo_owner or not repo_name or not commits:
             return
+        if not await _is_auto_updates_enabled():
+            logger.info("Skipping GitHub webhook push for %s/%s because auto_updates_enabled is false.", repo_owner, repo_name)
+            return
 
-        try:
-            auto_enabled = await asyncio.to_thread(get_setting, "auto_updates_enabled")
-            if str(auto_enabled or "").strip().lower() == "false":
-                logger.info("Skipping GitHub webhook push for %s/%s because auto_updates_enabled is false.", repo_owner, repo_name)
-                return
-        except Exception:
-            pass
-
-        channel_id_str = await asyncio.to_thread(get_setting, "commit_channel_id")
-        if not channel_id_str:
-            try:
-                scoped_rows = await asyncio.to_thread(get_setting_across_guilds, "commit_channel_id")
-                for row in scoped_rows:
-                    if row.get("value"):
-                        channel_id_str = str(row["value"])
-                        break
-            except Exception:
-                pass
-        if not channel_id_str:
-            channel_id_str = await asyncio.to_thread(get_setting, "reminders_channel_id")
-
-        target_channel = None
-        if channel_id_str and str(channel_id_str).isdigit():
-            target_channel = bot.get_channel(int(channel_id_str))
-            if not target_channel:
-                try:
-                    target_channel = await bot.fetch_channel(int(channel_id_str))
-                except Exception:
-                    target_channel = None
-
-        if not target_channel:
-            for guild in bot.guilds:
-                if guild.system_channel:
-                    target_channel = guild.system_channel
-                    break
-                for ch in guild.text_channels:
-                    target_channel = ch
-                    break
-                if target_channel:
-                    break
-
+        target_channel = await _resolve_webhook_target_channel()
         if not target_channel:
             logger.warning("No channel found to post webhook commits to.")
             return
 
-        async def mark_event_posted(key: str, ch_id: int) -> bool:
-            try:
-                return await asyncio.to_thread(mark_repo_event_posted, key, ch_id)
-            except Exception:
-                setting_key = f"event_posted:{ch_id}:{key}"
-                val = await asyncio.to_thread(get_setting, setting_key)
-                if val:
-                    return False
-                await asyncio.to_thread(set_setting, setting_key, "1")
-                return True
+        ticket_lookup = await _build_webhook_ticket_lookup(target_channel)
+        sender = payload.get("sender") or {}
+        pusher = payload.get("pusher") or {}
+        pusher_login = sender.get("login") or pusher.get("name")
+        pusher_avatar = sender.get("avatar_url")
 
         from repo_updates import post_push_commits_from_payload
         posted = await post_push_commits_from_payload(
@@ -714,11 +782,17 @@ async def _process_github_push_payload(payload: dict, delivery_id: str | None = 
             repo_name=repo_name,
             branch=branch,
             commits=commits,
-            mark_event_posted=mark_event_posted,
+            mark_event_posted=_make_mark_event_posted(),
+            compare_url=payload.get("compare"),
+            pusher_login=pusher_login,
+            pusher_avatar=pusher_avatar,
+            ticket_lookup=ticket_lookup,
         )
         logger.info("Posted %s webhook commit(s) to #%s", posted, getattr(target_channel, "name", "channel"))
     except Exception as exc:
         logger.exception("Error processing GitHub push payload: %s", exc)
+        if not _requeue_on_error:
+            raise
         try:
             await asyncio.to_thread(
                 enqueue_webhook_dead_letter,
@@ -727,8 +801,137 @@ async def _process_github_push_payload(payload: dict, delivery_id: str | None = 
                 payload if isinstance(payload, dict) else {},
                 str(exc),
             )
-        except Exception:
-            pass
+        except Exception as dl_exc:
+            logger.warning("Could not enqueue push webhook dead letter: %s", dl_exc)
+
+
+async def _process_github_pull_request_payload(
+    payload: dict,
+    delivery_id: str | None = None,
+    *,
+    _requeue_on_error: bool = True,
+) -> None:
+    """Post a dedicated Pull Request card from a GitHub pull_request webhook payload."""
+    try:
+        action = str(payload.get("action") or "").lower()
+        if action not in {"opened", "closed", "reopened", "ready_for_review"}:
+            return
+        repo_data = payload.get("repository") or {}
+        repo_name = repo_data.get("name")
+        owner_data = repo_data.get("owner") or {}
+        repo_owner = owner_data.get("login") or owner_data.get("name")
+        pr = payload.get("pull_request") or {}
+        if not repo_owner or not repo_name or not pr:
+            return
+        if not await _is_auto_updates_enabled():
+            return
+
+        target_channel = await _resolve_webhook_target_channel()
+        if not target_channel:
+            logger.warning("No channel found to post pull_request webhook update to.")
+            return
+
+        ticket_lookup = await _build_webhook_ticket_lookup(target_channel)
+        sender = payload.get("sender") or {}
+        from repo_updates import post_pull_request_from_payload
+        posted = await post_pull_request_from_payload(
+            target_channel=target_channel,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            pr=pr,
+            action=action,
+            sender_login=sender.get("login"),
+            sender_avatar=sender.get("avatar_url"),
+            mark_event_posted=_make_mark_event_posted(),
+            ticket_lookup=ticket_lookup,
+        )
+        if posted:
+            logger.info("Posted pull_request #%s (%s) to #%s", pr.get("number"), action, getattr(target_channel, "name", "channel"))
+    except Exception as exc:
+        logger.exception("Error processing GitHub pull_request payload: %s", exc)
+        if not _requeue_on_error:
+            raise
+        try:
+            await asyncio.to_thread(
+                enqueue_webhook_dead_letter,
+                delivery_id or f"pr-{int(time.time())}",
+                "pull_request",
+                payload if isinstance(payload, dict) else {},
+                str(exc),
+            )
+        except Exception as dl_exc:
+            logger.warning("Could not enqueue pull_request webhook dead letter: %s", dl_exc)
+
+
+async def _process_github_pr_review_payload(
+    payload: dict,
+    delivery_id: str | None = None,
+    *,
+    _requeue_on_error: bool = True,
+) -> None:
+    """Post a PR review feedback card from a GitHub pull_request_review webhook payload."""
+    try:
+        action = str(payload.get("action") or "").lower()
+        if action not in {"submitted", "created"}:
+            return
+        repo_data = payload.get("repository") or {}
+        repo_name = repo_data.get("name")
+        owner_data = repo_data.get("owner") or {}
+        repo_owner = owner_data.get("login") or owner_data.get("name")
+        pr = payload.get("pull_request") or {}
+        review = payload.get("review") or {}
+        if not repo_owner or not repo_name or not pr or not review:
+            return
+        if not await _is_auto_updates_enabled():
+            return
+
+        target_channel = await _resolve_webhook_target_channel()
+        if not target_channel:
+            logger.warning("No channel found to post pull_request_review webhook update to.")
+            return
+
+        ticket_lookup = await _build_webhook_ticket_lookup(target_channel)
+        from repo_updates import post_pr_review_from_payload
+        posted = await post_pr_review_from_payload(
+            target_channel=target_channel,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            pr=pr,
+            review=review,
+            mark_event_posted=_make_mark_event_posted(),
+            ticket_lookup=ticket_lookup,
+        )
+        if posted:
+            logger.info("Posted pull_request_review on PR #%s to #%s", pr.get("number"), getattr(target_channel, "name", "channel"))
+    except Exception as exc:
+        logger.exception("Error processing GitHub pull_request_review payload: %s", exc)
+        if not _requeue_on_error:
+            raise
+        try:
+            await asyncio.to_thread(
+                enqueue_webhook_dead_letter,
+                delivery_id or f"review-{int(time.time())}",
+                "pull_request_review",
+                payload if isinstance(payload, dict) else {},
+                str(exc),
+            )
+        except Exception as dl_exc:
+            logger.warning("Could not enqueue pull_request_review webhook dead letter: %s", dl_exc)
+
+
+async def replay_dead_letter_event(event_type: str, payload: dict, delivery_id: str | None = None) -> None:
+    """Replay a previously queued GitHub webhook payload from webhook_dead_letters."""
+    if not isinstance(payload, dict):
+        return
+    if event_type == "push":
+        await _process_github_push_payload(payload, delivery_id, _requeue_on_error=False)
+    elif event_type == "pull_request":
+        if "pull_request" in payload:
+            await _process_github_pull_request_payload(payload, delivery_id, _requeue_on_error=False)
+        elif "commits" in payload:
+            await _process_github_push_payload(payload, delivery_id, _requeue_on_error=False)
+    elif event_type == "pull_request_review":
+        await _process_github_pr_review_payload(payload, delivery_id, _requeue_on_error=False)
 
 
 def github_webhook_handler(raw_body: bytes, headers: dict) -> tuple[int, str]:
@@ -756,9 +959,8 @@ def github_webhook_handler(raw_body: bytes, headers: dict) -> tuple[int, str]:
             is_first_delivery = register_webhook_delivery(delivery_id, event_type)
             if not is_first_delivery:
                 return 200, "Duplicate webhook delivery ignored"
-        except Exception:
-            # Proceed if DB is not active (e.g., standalone or unit test mode)
-            pass
+        except Exception as exc:
+            logger.debug("Webhook replay receipt DB check skipped: %s", exc)
 
     if event_type == "ping":
         return 200, "pong"
@@ -790,38 +992,44 @@ def github_webhook_handler(raw_body: bytes, headers: dict) -> tuple[int, str]:
             return 400, "Invalid JSON payload"
 
         pr = payload.get("pull_request") or {}
-        if payload.get("action") == "closed" and pr.get("merged"):
-            repo_data = payload.get("repository") or {}
-            head_sha = (pr.get("merge_commit_sha") or (pr.get("head") or {}).get("sha") or f"pr-{pr.get('number', '0')}")
-            base_branch = (pr.get("base") or {}).get("ref") or "main"
-            synthetic_push = {
-                "repository": repo_data,
-                "ref": f"refs/heads/{base_branch}",
-                "commits": [
-                    {
-                        "id": head_sha,
-                        "message": f"Merge PR #{pr.get('number')}: {pr.get('title', 'Pull Request')}",
-                        "url": pr.get("html_url") or "",
-                        "author": {
-                            "name": (pr.get("merged_by") or pr.get("user") or {}).get("login") or "GitHub",
-                            "username": (pr.get("merged_by") or pr.get("user") or {}).get("login") or "GitHub",
-                        },
-                        "added": [],
-                        "modified": [],
-                    }
-                ],
-            }
+        action = str(payload.get("action") or "").lower()
+        if action in {"opened", "closed", "reopened", "ready_for_review"}:
+            is_merged = action == "closed" and bool(pr.get("merged"))
+            ok_msg = "Merged pull_request event received and scheduled" if is_merged else f"Pull request {action} event received and scheduled"
+            dl_msg = "Merged pull_request event queued in dead-letter table until bot is ready" if is_merged else f"Pull request {action} event queued in dead-letter table until bot is ready"
             if bot and getattr(bot, "loop", None) and not bot.loop.is_closed():
-                asyncio.run_coroutine_threadsafe(_process_github_push_payload(synthetic_push, delivery_id or None), bot.loop)
-                return 200, "Merged pull_request event received and scheduled"
+                asyncio.run_coroutine_threadsafe(_process_github_pull_request_payload(payload, delivery_id or None), bot.loop)
+                return 200, ok_msg
             try:
                 enqueue_webhook_dead_letter(
                     delivery_id or f"pr-{int(time.time())}",
                     "pull_request",
-                    synthetic_push,
+                    payload,
                     "Discord bot event loop was not ready when webhook arrived",
                 )
-                return 202, "Merged pull_request event queued in dead-letter table until bot is ready"
+                return 202, dl_msg
+            except Exception:
+                return 503, "Discord bot is not ready to process webhook"
+
+    if event_type == "pull_request_review":
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except Exception:
+            return 400, "Invalid JSON payload"
+
+        action = str(payload.get("action") or "").lower()
+        if action in {"submitted", "created"}:
+            if bot and getattr(bot, "loop", None) and not bot.loop.is_closed():
+                asyncio.run_coroutine_threadsafe(_process_github_pr_review_payload(payload, delivery_id or None), bot.loop)
+                return 200, "Pull request review event received and scheduled"
+            try:
+                enqueue_webhook_dead_letter(
+                    delivery_id or f"review-{int(time.time())}",
+                    "pull_request_review",
+                    payload,
+                    "Discord bot event loop was not ready when webhook arrived",
+                )
+                return 202, "Pull request review event queued in dead-letter table until bot is ready"
             except Exception:
                 return 503, "Discord bot is not ready to process webhook"
 

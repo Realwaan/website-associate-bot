@@ -1,9 +1,26 @@
+import io
+import json
 import unittest
-from unittest.mock import patch, AsyncMock
-from datetime import datetime, timezone
+import urllib.error
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import discord
 
-from repo_updates import fetch_new_commits, fetch_new_merged_prs, post_project_updates
+from repo_updates import (
+    clear_github_etag_cache,
+    fetch_commits_atom_fallback,
+    fetch_new_commits,
+    fetch_new_merged_prs,
+    fetch_new_repo_events,
+    find_project_updates_channel,
+    github_get,
+    post_project_updates,
+)
+from services.github_embed_formatter import (
+    build_grouped_push_embeds,
+    format_author_inline,
+)
 
 
 class TestRepoUpdates(unittest.IsolatedAsyncioTestCase):
@@ -146,16 +163,336 @@ class TestRepoUpdates(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(commit_count, 1)
         self.assertEqual(pr_count, 1)
 
-        # Expected 3 posts: Header bulletin, PR embed, Commit embed
-        self.assertEqual(channel_mock.send.call_count, 3)
+        # Expected 2 posts: PR card and grouped Commit card (no redundant Bulletin header)
+        self.assertEqual(channel_mock.send.call_count, 2)
 
-        # Verify the PR embed structure and custom description
-        pr_send_args = channel_mock.send.call_args_list[1]
-        pr_embed = pr_send_args[1].get("embed") or pr_send_args[0][0]
+        pr_embed = channel_mock.send.call_args_list[0][1].get("embed")
         self.assertIsInstance(pr_embed, discord.Embed)
-        self.assertEqual(pr_embed.title, "Merged Pull Request  #101")
+        self.assertEqual(pr_embed.title, "🟣 Pull Request Merged • #101")
         self.assertIn("PR 101 Title", pr_embed.description)
         self.assertIn("PR Body Content 1", pr_embed.description)
+
+        push_embed = channel_mock.send.call_args_list[1][1].get("embed")
+        self.assertIsInstance(push_embed, discord.Embed)
+        self.assertEqual(push_embed.title, "🔨 1 new commit to `main`")
+        self.assertIn("c1", push_embed.description)
+        self.assertIn("Commit 1", push_embed.description)
+
+    async def test_grouped_push_chronological_author_normalization_noise_and_tickets(self):
+        """Grouped push cards sort oldest->newest, fix LAB/WS authors, collapse sync noise, and link CAP tickets."""
+        self.assertEqual(
+            format_author_inline("LAB15_USER ON WS27", "Realwaan"),
+            "[@Realwaan](https://github.com/Realwaan)",
+        )
+        commits = [
+            {
+                "sha": "aaaa111",
+                "subject": "feat(wallet): CAP-07 cash in/out",
+                "body": "",
+                "author_name": "LAB15_USER ON WS25",
+                "author_login": "Realwaan",
+                "author_avatar": None,
+                "dt": datetime(2026, 11, 16, 8, 4, tzinfo=timezone.utc),
+                "url": "https://github.com/acme/demo/commit/aaaa111",
+            },
+            {
+                "sha": "bbbb222",
+                "subject": "fix: resolve CAP-04/CAP-05 merge breakage",
+                "body": "",
+                "author_name": "LAB15_USER ON WS27",
+                "author_login": "Andrei",
+                "author_avatar": None,
+                "dt": datetime(2026, 11, 16, 8, 10, tzinfo=timezone.utc),
+                "url": "https://github.com/acme/demo/commit/bbbb222",
+            },
+            {
+                "sha": "cccc333",
+                "subject": "Merge branch 'main' into feat/andrei/cap-05",
+                "body": "",
+                "author_name": "Marc Andrei Regulacion",
+                "author_login": "Andrei",
+                "author_avatar": None,
+                "dt": datetime(2026, 11, 16, 8, 12, tzinfo=timezone.utc),
+                "url": "https://github.com/acme/demo/commit/cccc333",
+            },
+            {
+                "sha": "dddd444",
+                "subject": "Merge pull request #101 from acme/feat",
+                "body": "",
+                "author_name": "Marc Andrei Regulacion",
+                "author_login": "Andrei",
+                "author_avatar": None,
+                "dt": datetime(2026, 11, 16, 8, 15, tzinfo=timezone.utc),
+                "url": "https://github.com/acme/demo/commit/dddd444",
+            },
+        ]
+        # Reverse input to confirm chronological oldest -> newest sorting
+        embeds = build_grouped_push_embeds(
+            owner="acme",
+            repo="demo",
+            branch="feat/cap-05",
+            commits=list(reversed(commits)),
+            compare_url="https://github.com/acme/demo/compare/000...ddd",
+            pushed_by_login="Andrei",
+            posted_pr_numbers={101},
+            ticket_lookup={"CAP-05": 9005, "CAP-07": 9007},
+        )
+        self.assertEqual(len(embeds), 1)
+        desc = embeds[0].description
+        self.assertLess(desc.index("aaaa111"), desc.index("bbbb222"))
+        self.assertNotIn("LAB15_USER", desc)
+        self.assertIn("[@Realwaan](https://github.com/Realwaan)", desc)
+        self.assertIn("+1 branch sync merge (`cccc333`)", desc)
+        self.assertNotIn("dddd444", desc)
+        self.assertIn("2 new commits to `feat/cap-05`", embeds[0].title)
+        fields = {f.name: f.value for f in embeds[0].fields}
+        self.assertIn("<#9005> (**CAP-05**)", fields["🎫 Linked Tickets"])
+        self.assertIn("<#9007> (**CAP-07**)", fields["🎫 Linked Tickets"])
+
+    async def test_grouped_push_chunks_large_commit_batches(self):
+        """Large 25-commit pushes chunk cleanly within Discord embed limits."""
+        commits = [
+            {
+                "sha": f"{i:07x}" + "a" * 33,
+                "subject": f"feat: step {i} implementation details for CAP-08",
+                "body": "",
+                "author_name": "dev",
+                "author_login": "devuser",
+                "author_avatar": None,
+                "dt": datetime(2026, 11, 16, 8, i, tzinfo=timezone.utc),
+                "url": f"https://github.com/acme/demo/commit/{i:07x}",
+            }
+            for i in range(25)
+        ]
+        embeds = build_grouped_push_embeds(
+            owner="acme",
+            repo="demo",
+            branch="main",
+            commits=commits,
+            ticket_lookup={"CAP-08": 9008},
+        )
+        self.assertEqual(len(embeds), 3)
+        for embed in embeds:
+            self.assertLessEqual(len(embed.description), 4096)
+            for field in embed.fields:
+                self.assertLessEqual(len(field.value), 1024)
+
+    async def test_github_get_uses_etag_cache_on_304(self):
+        """304 Not Modified reuses cached JSON payload without failing."""
+        clear_github_etag_cache()
+        mock_resp = MagicMock()
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.read.return_value = json.dumps([{"id": "ev-1"}]).encode("utf-8")
+        mock_resp.headers = {"ETag": '"etag-123"'}
+
+        err_304 = urllib.error.HTTPError(
+            url="https://api.github.com/repos/acme/demo/events",
+            code=304,
+            msg="Not Modified",
+            hdrs={},
+            fp=io.BytesIO(b""),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=[mock_resp, err_304]) as mock_open:
+            first = await github_get("https://api.github.com/repos/acme/demo/events")
+            second = await github_get("https://api.github.com/repos/acme/demo/events")
+
+        self.assertEqual(first, [{"id": "ev-1"}])
+        self.assertEqual(second, [{"id": "ev-1"}])
+        second_req = mock_open.call_args_list[1][0][0]
+        self.assertEqual(second_req.get_header("If-none-match"), '"etag-123"')
+        clear_github_etag_cache()
+
+    async def test_fetch_new_merged_prs_handles_out_of_order_merges(self):
+        """Passing last_merged_at catches older PR numbers merged after higher PR numbers."""
+        mock_prs = [
+            {
+                "number": 98,
+                "merged_at": "2026-06-09T14:00:00Z",
+                "title": "Older PR merged later",
+            },
+            {
+                "number": 102,
+                "merged_at": "2026-06-09T12:00:00Z",
+                "title": "Already posted PR",
+            },
+        ]
+        with patch("repo_updates.github_get", AsyncMock(return_value=mock_prs)):
+            prs, newest_pr = await fetch_new_merged_prs(
+                api_base="https://api.github.com/repos/acme/demo",
+                last_pr_id=102,
+                token=None,
+                last_merged_at="2026-06-09T12:00:00Z",
+            )
+        self.assertEqual([p["number"] for p in prs], [98])
+        self.assertEqual(newest_pr, 102)
+
+    async def test_fetch_new_repo_events_hydrates_push_pr_and_review(self):
+        """fetch_new_repo_events hydrates PushEvent via /compare plus PullRequestEvent & PullRequestReviewEvent."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        events_payload = [
+            {
+                "id": "300",
+                "type": "PullRequestReviewEvent",
+                "created_at": now_iso,
+                "actor": {"login": "qa_dev"},
+                "payload": {
+                    "action": "created",
+                    "pull_request": {"number": 12, "title": "feat: CAP-09 controls"},
+                    "review": {
+                        "id": 777,
+                        "state": "approved",
+                        "body": "Looks solid!",
+                        "user": {"login": "qa_dev"},
+                        "submitted_at": now_iso,
+                    },
+                },
+            },
+            {
+                "id": "200",
+                "type": "PullRequestEvent",
+                "created_at": now_iso,
+                "actor": {"login": "andrei"},
+                "payload": {
+                    "action": "opened",
+                    "number": 12,
+                    "pull_request": {"number": 12},
+                },
+            },
+            {
+                "id": "100",
+                "type": "PushEvent",
+                "created_at": now_iso,
+                "actor": {"login": "Realwaan"},
+                "payload": {
+                    "ref": "refs/heads/feat/cap-09",
+                    "before": "1111111",
+                    "head": "2222222",
+                    "commits": [],
+                },
+            },
+        ]
+
+        async def fake_get(url: str, token: str | None = None):
+            if "/events" in url:
+                return events_payload
+            if "/compare/1111111...2222222" in url:
+                return {
+                    "html_url": "https://github.com/acme/demo/compare/1111111...2222222",
+                    "commits": [
+                        {
+                            "sha": "2222222",
+                            "author": {"login": "Realwaan"},
+                            "commit": {
+                                "message": "feat: CAP-09 audit log",
+                                "author": {"name": "LAB15_USER ON WS25", "date": now_iso},
+                            },
+                        }
+                    ],
+                }
+            if "/pulls/12" in url:
+                return {
+                    "number": 12,
+                    "title": "feat: CAP-09 controls",
+                    "html_url": "https://github.com/acme/demo/pull/12",
+                    "user": {"login": "andrei"},
+                    "head": {"ref": "feat/cap-09"},
+                    "base": {"ref": "main"},
+                }
+            return None
+
+        with patch("repo_updates.github_get", new=fake_get):
+            events, newest_id = await fetch_new_repo_events(
+                api_base="https://api.github.com/repos/acme/demo",
+                repo_url_clean="https://github.com/acme/demo",
+                last_event_id=None,
+                token=None,
+                first_run_limit=10,
+            )
+
+        self.assertEqual(newest_id, "300")
+        self.assertEqual([e["kind"] for e in events], ["push", "pull_request", "pull_request_review"])
+        self.assertEqual(events[0]["branch"], "feat/cap-09")
+        self.assertEqual(events[0]["commits"][0]["sha"], "2222222")
+        self.assertEqual(events[1]["pr"]["title"], "feat: CAP-09 controls")
+
+        # Background poll with existing cursor skips events older than 15 minutes
+        stale_iso = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stale_events = [{**events_payload[0], "created_at": stale_iso}]
+        with patch("repo_updates.github_get", AsyncMock(return_value=stale_events)):
+            bg_events, bg_id = await fetch_new_repo_events(
+                api_base="https://api.github.com/repos/acme/demo",
+                repo_url_clean="https://github.com/acme/demo",
+                last_event_id=None,
+                token=None,
+                is_background_poll=True,
+                has_existing_cursor=True,
+            )
+        self.assertEqual(bg_events, [])
+        self.assertEqual(bg_id, "300")
+
+    async def test_fetch_commits_atom_fallback_parses_entries(self):
+        """Atom fallback parses GitHub commits.atom XML when REST /commits is unavailable."""
+        atom_xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <id>tag:github.com,2008:Grit::Commit/abc123456789</id>
+            <link type="text/html" rel="alternate" href="https://github.com/acme/demo/commit/abc123456789"/>
+            <title>feat: CAP-10 pay bills flow</title>
+            <updated>2026-11-16T08:10:00Z</updated>
+            <author>
+              <name>LAB15_USER ON WS27</name>
+              <uri>https://github.com/Realwaan</uri>
+            </author>
+          </entry>
+        </feed>"""
+        mock_resp = MagicMock()
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.read.return_value = atom_xml.encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            commits, newest = await fetch_commits_atom_fallback(
+                owner="acme",
+                repo="demo",
+                branch="main",
+                last_sha=None,
+                first_run_limit=5,
+            )
+
+        self.assertEqual(newest, "abc123456789")
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(commits[0]["author"]["login"], "Realwaan")
+        self.assertEqual(commits[0]["commit"]["message"], "feat: CAP-10 pay bills flow")
+
+    def test_find_project_updates_channel_prefers_capstone_category(self):
+        """When multiple #project-updates channels exist, prefer the Capstone category."""
+        top_ch = MagicMock(spec=discord.TextChannel)
+        top_ch.id = 1
+        top_ch.name = "project-updates"
+        top_ch.category_id = None
+        top_ch.category = None
+
+        ide_cat = MagicMock()
+        ide_cat.name = "IDE-a"
+        ide_ch = MagicMock(spec=discord.TextChannel)
+        ide_ch.id = 2
+        ide_ch.name = "project-updates"
+        ide_ch.category_id = 20
+        ide_ch.category = ide_cat
+
+        cap_cat = MagicMock()
+        cap_cat.name = "Capstone"
+        cap_ch = MagicMock(spec=discord.TextChannel)
+        cap_ch.id = 3
+        cap_ch.name = "project-updates"
+        cap_ch.category_id = 30
+        cap_ch.category = cap_cat
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.text_channels = [top_ch, ide_ch, cap_ch]
+
+        found = find_project_updates_channel(guild)
+        self.assertEqual(found, cap_ch)
 
 
 if __name__ == "__main__":

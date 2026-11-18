@@ -1,12 +1,14 @@
 """Comprehensive test suite for TicketsCog and lifecycle commands."""
 import unittest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock, call, patch
 import discord
 from cogs.tickets import TicketsCog, _safe_edit_thread_name
+from services.thread_rename_sync import clear_rename_sync_state, reconcile_stale_thread_titles
 
 
 class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        clear_rename_sync_state()
         self.bot = MagicMock()
         self.cog = TicketsCog(self.bot)
 
@@ -283,6 +285,115 @@ class TestTicketsCog(unittest.IsolatedAsyncioTestCase):
         embed = kwargs["embed"]
         self.assertIn("Implement Auth Flow", embed.title)
         self.assertIn("CLAIMED", embed.description)
+
+    async def test_safe_edit_thread_name_renames_already_archived_thread_when_closing(self):
+        """Archived threads are temporarily unarchived before renaming so Discord accepts [CLOSED]."""
+        self.thread.name = "[Reviewed] [Kesh] CAP-03 - Registration"
+        self.thread.archived = True
+
+        ok = await _safe_edit_thread_name(
+            self.thread, "[CLOSED] [Kesh] CAP-03 - Registration", archived=True, locked=True
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            self.thread.edit.await_args_list,
+            [
+                call(name="[CLOSED] [Kesh] CAP-03 - Registration", archived=False),
+                call(archived=True, locked=True),
+            ],
+        )
+
+    @patch("cogs.tickets.get_thread")
+    @patch("cogs.tickets.get_user_roles")
+    @patch("cogs.tickets.update_thread_status")
+    async def test_rate_limited_close_queues_pending_rename_and_reconciles(
+        self, mock_update, mock_roles, mock_get_thread
+    ):
+        """Rate-limited /closed still archives+locks immediately and retries [CLOSED] rename later."""
+        mock_roles.return_value = {"is_developer": False, "is_qa": False, "is_pm": True}
+        mock_get_thread.return_value = {
+            "thread_id": self.thread.id,
+            "ticket_name": "Implement Auth Flow",
+            "status": "REVIEWED",
+            "folder": "auth",
+            "reviewed_by_id": self.interaction.user.id,
+        }
+        self.thread.name = "[Reviewed] [Dev User] Implement Auth Flow"
+        self.thread.archived = False
+        self.thread.edit = AsyncMock(side_effect=[TimeoutError("10m cooldown"), None])
+
+        await self.cog.close_ticket.callback(self.cog, self.interaction)
+
+        self.assertEqual(
+            self.thread.edit.await_args_list[1],
+            call(archived=True, locked=True),
+        )
+
+        # Simulate Discord thread now archived/locked and cooldown elapsed
+        self.thread.archived = True
+        self.thread.locked = True
+        self.thread.edit = AsyncMock()
+        self.bot.get_channel.return_value = self.thread
+
+        reconciled = await reconcile_stale_thread_titles(self.bot, force=True)
+
+        self.assertEqual(reconciled, 1)
+        self.assertEqual(
+            self.thread.edit.await_args_list,
+            [
+                call(name="[CLOSED] [Dev User] Implement Auth Flow", archived=False),
+                call(archived=True, locked=True),
+            ],
+        )
+
+    async def test_reconcile_stale_thread_titles_fixes_stuck_reviewed_closed_threads(self):
+        """DB-backed reconciliation renames CLOSED threads stuck at [Reviewed] while skipping valid ones."""
+        t_stuck = MagicMock()
+        t_stuck.__class__ = discord.Thread
+        t_stuck.id = 1003
+        t_stuck.name = "[Reviewed] [Kesh] CAP-03 - Registration and password authentication"
+        t_stuck.archived = True
+        t_stuck.locked = True
+        t_stuck.edit = AsyncMock()
+
+        t_ok = MagicMock()
+        t_ok.__class__ = discord.Thread
+        t_ok.id = 1002
+        t_ok.name = "[CLOSED] [Kesh] CAP-02 - Persist wallet"
+        t_ok.archived = True
+        t_ok.locked = True
+        t_ok.edit = AsyncMock()
+
+        self.bot.get_channel.side_effect = lambda tid: {1003: t_stuck, 1002: t_ok}.get(tid)
+        threads_by_status = {
+            "CLOSED": [
+                {
+                    "thread_id": 1003,
+                    "status": "CLOSED",
+                    "ticket_name": "CAP-03 - Registration and password authentication",
+                    "reviewed_by_username": "Kesh",
+                },
+                {
+                    "thread_id": 1002,
+                    "status": "CLOSED",
+                    "ticket_name": "CAP-02 - Persist wallet",
+                    "reviewed_by_username": "Kesh",
+                },
+            ]
+        }
+
+        fixed = await reconcile_stale_thread_titles(self.bot, threads_by_status)
+
+        self.assertEqual(fixed, 1)
+        t_ok.edit.assert_not_called()
+        self.assertEqual(
+            t_stuck.edit.await_args_list,
+            [
+                call(name="[CLOSED] [Kesh] CAP-03 - Registration and password authentication", archived=False),
+                call(archived=True, locked=True),
+            ],
+        )
 
 
 if __name__ == "__main__":

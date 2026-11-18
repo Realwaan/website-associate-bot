@@ -5,6 +5,9 @@ import json
 from main import (
     github_webhook_handler,
     _process_github_push_payload,
+    _process_github_pull_request_payload,
+    _process_github_pr_review_payload,
+    replay_dead_letter_event,
     _strip_leading_bracket_prefixes,
 )
 
@@ -89,6 +92,88 @@ class TestMainWebhook(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["repo_owner"], "team")
         self.assertEqual(kwargs["repo_name"], "awesome-hackathon")
         self.assertEqual(kwargs["branch"], "main")
+
+    @patch("main.get_setting")
+    @patch("main.bot")
+    @patch("repo_updates.post_push_commits_from_payload")
+    async def test_process_push_payload_ignores_deleted_branch(self, mock_post, mock_bot, mock_get_setting):
+        """Branch deletion push events are ignored cleanly."""
+        payload = {
+            "deleted": True,
+            "ref": "refs/heads/feat/old",
+            "repository": {"name": "repo", "owner": {"login": "team"}},
+            "commits": [{"id": "abc", "message": "unused"}],
+        }
+        await _process_github_push_payload(payload)
+        mock_post.assert_not_called()
+
+    @patch("main.bot")
+    def test_webhook_pr_opened_and_review_scheduled(self, mock_bot):
+        """Opened pull_request and submitted pull_request_review webhooks schedule handlers."""
+        mock_bot.loop = MagicMock()
+        mock_bot.loop.is_closed.return_value = False
+
+        def _mock_schedule(coro, loop):
+            coro.close()
+            return MagicMock()
+
+        pr_body = json.dumps({
+            "action": "opened",
+            "repository": {"name": "OTOG", "owner": {"login": "Realwaan"}},
+            "pull_request": {"number": 19, "title": "feat: CAP-10 pay bills"},
+        }).encode("utf-8")
+        review_body = json.dumps({
+            "action": "submitted",
+            "repository": {"name": "OTOG", "owner": {"login": "Realwaan"}},
+            "pull_request": {"number": 19, "title": "feat: CAP-10 pay bills"},
+            "review": {"id": 55, "state": "approved", "body": "LGTM", "user": {"login": "qa"}},
+        }).encode("utf-8")
+
+        with patch("webhook_security.verify_github_signature", return_value=True), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=_mock_schedule):
+            code1, msg1 = github_webhook_handler(pr_body, {"X-GitHub-Event": "pull_request"})
+            code2, msg2 = github_webhook_handler(review_body, {"X-GitHub-Event": "pull_request_review"})
+
+        self.assertEqual(code1, 200)
+        self.assertIn("opened", msg1)
+        self.assertEqual(code2, 200)
+        self.assertIn("review", msg2.lower())
+
+    @patch("main.get_setting")
+    @patch("main.bot")
+    @patch("repo_updates.post_pull_request_from_payload", new_callable=AsyncMock)
+    @patch("repo_updates.post_pr_review_from_payload", new_callable=AsyncMock)
+    async def test_pr_and_review_payload_processors_and_dead_letter_replay(
+        self, mock_review_post, mock_pr_post, mock_bot, mock_get_setting
+    ):
+        """PR/review processors and replay_dead_letter_event dispatch directly to card posters."""
+        mock_get_setting.return_value = "8888"
+        mock_channel = MagicMock()
+        mock_channel.name = "project-updates"
+        mock_bot.get_channel.return_value = mock_channel
+        mock_pr_post.return_value = True
+        mock_review_post.return_value = True
+
+        pr_payload = {
+            "action": "closed",
+            "repository": {"name": "OTOG", "owner": {"login": "Realwaan"}},
+            "pull_request": {"number": 7, "title": "feat: CAP-07 wallet", "merged": True},
+            "sender": {"login": "Realwaan"},
+        }
+        review_payload = {
+            "action": "submitted",
+            "repository": {"name": "OTOG", "owner": {"login": "Realwaan"}},
+            "pull_request": {"number": 7, "title": "feat: CAP-07 wallet"},
+            "review": {"id": 88, "state": "changes_requested", "body": "Check null balance", "user": {"login": "qa"}},
+        }
+
+        await _process_github_pull_request_payload(pr_payload)
+        await _process_github_pr_review_payload(review_payload)
+        await replay_dead_letter_event("pull_request", pr_payload, "dl-1")
+        await replay_dead_letter_event("pull_request_review", review_payload, "dl-2")
+
+        self.assertEqual(mock_pr_post.await_count, 2)
+        self.assertEqual(mock_review_post.await_count, 2)
 
 
 if __name__ == "__main__":

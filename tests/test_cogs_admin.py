@@ -252,6 +252,87 @@ class TestAdminCog(unittest.IsolatedAsyncioTestCase):
         self.interaction.followup.send.assert_awaited_once()
         self.assertIn("Posted the current weekly task roadmap", self.interaction.followup.send.call_args.args[0])
 
+    @patch("cogs.admin.mark_webhook_dead_letter_retry")
+    @patch("cogs.admin.get_due_webhook_dead_letters")
+    @patch("cogs.admin.get_threads_by_status")
+    @patch("cogs.admin.set_setting")
+    @patch("cogs.admin.get_setting")
+    @patch("cogs.admin.get_setting_across_guilds")
+    @patch("repo_updates.post_project_updates", new_callable=AsyncMock)
+    @patch("main.replay_dead_letter_event", new_callable=AsyncMock)
+    async def test_auto_updates_task_autodiscovers_channel_and_replays_dead_letters(
+        self,
+        mock_replay,
+        mock_post_updates,
+        mock_get_across,
+        mock_get_setting,
+        mock_set_setting,
+        mock_get_threads,
+        mock_due_dl,
+        mock_mark_dl,
+    ):
+        """auto_updates_task replays due dead-letters, auto-discovers #project-updates, and passes ticket lookup."""
+        mock_due_dl.return_value = [
+            {"id": 42, "event_type": "push", "payload_json": {"commits": []}, "delivery_id": "dl-42"}
+        ]
+        mock_get_across.return_value = []
+        mock_get_setting.return_value = None
+        mock_get_threads.return_value = {
+            "OPEN": [{"ticket_name": "CAP-07 - Cash in/out", "thread_id": 7007}]
+        }
+        mock_post_updates.return_value = (True, "ok", 0, 0)
+
+        project_ch = MagicMock(spec=discord.TextChannel)
+        project_ch.id = 9991
+        project_ch.name = "project-updates"
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 123456
+        guild.text_channels = [project_ch]
+        self.bot.guilds = [guild]
+        self.bot.get_channel.return_value = project_ch
+
+        await self.cog.auto_updates_task()
+
+        mock_replay.assert_awaited_once_with("push", {"commits": []}, "dl-42")
+        mock_mark_dl.assert_called_once_with(42, success=True)
+        mock_set_setting.assert_any_call("commit_channel_id", "9991", 123456)
+        mock_post_updates.assert_awaited_once()
+        kwargs = mock_post_updates.call_args.kwargs
+        self.assertEqual(kwargs["target_channel"], project_ch)
+        self.assertEqual(kwargs["feed_type"], "all")
+        self.assertEqual(kwargs["ticket_lookup"], {"CAP-07": 7007, "CAP-7": 7007})
+        self.assertTrue(kwargs["is_background_poll"])
+
+    @patch("cogs.admin.get_threads_by_status")
+    async def test_weekly_reminder_closed_threads_use_jump_links_to_prevent_unknown(self, mock_get_threads):
+        """CLOSED (archived) threads use direct Discord jump URLs instead of <#id> so they never show #unknown."""
+        from datetime import date
+
+        mock_get_threads.return_value = {
+            "OPEN": [],
+            "CLAIMED": [],
+            "PENDING-REVIEW": [],
+            "REVIEWED": [],
+            "CLOSED": [
+                {
+                    "status": "CLOSED",
+                    "ticket_name": "CAP-03 - Registration and password authentication",
+                    "thread_id": 1003,
+                    "guild_id": 555666,
+                    "reviewed_by_username": "Kesh",
+                }
+            ],
+        }
+        embed = await self.cog._build_weekly_reminder_embed(
+            guild_id=555666,
+            folder="otog-capstone",
+            today_pht=date(2026, 11, 18),
+        )
+        week1_text = next(f.value for f in embed.fields if "Week 1" in f.name)
+        self.assertIn("[🔒 [CLOSED] [Kesh] CAP-03](https://discord.com/channels/555666/1003)", week1_text)
+        self.assertNotIn("<#1003>", week1_text)
+
 
 if __name__ == "__main__":
     unittest.main()

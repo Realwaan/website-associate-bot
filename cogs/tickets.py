@@ -13,6 +13,10 @@ from database import (
 )
 
 from services.authorization import get_user_roles
+from services.thread_rename_sync import (
+    format_status_thread_name,
+    safe_edit_thread_name as _safe_edit_thread_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,61 +31,6 @@ async def safe_defer(interaction: discord.Interaction):
                 logger.warning(f"Failed to defer interaction: {e}")
         except Exception as e:
             logger.warning(f"Unexpected error in safe_defer: {e}")
-
-async def _safe_edit_thread_name(thread: discord.Thread, new_name: str, **kwargs) -> bool:
-    """Safely edit thread name and properties with Discord 429/503 rate-limit and gateway resilience."""
-    target_name = (new_name or "")[:100]
-    current_name = getattr(thread, "name", None)
-
-    # 1. No-op short-circuit: if the thread name is already identical and no extra properties to edit,
-    # skip API call completely to preserve the 2 renames / 10 min rate limit and avoid 503 gateway errors.
-    if current_name == target_name and not kwargs:
-        return True
-
-    # Build edit arguments
-    edit_kwargs = dict(kwargs)
-    # Only send name if it actually changes, reducing risk of rename rate limits
-    if current_name != target_name:
-        edit_kwargs["name"] = target_name
-
-    # If the thread is archived and we're not explicitly requesting archive, unarchive first or along
-    if getattr(thread, "archived", False) and not edit_kwargs.get("archived", False):
-        edit_kwargs["archived"] = False
-
-    # If edit_kwargs is empty (nothing actually changed), return True
-    if not edit_kwargs:
-        return True
-
-    try:
-        # Discord enforces a strict limit: maximum 2 thread renames every 10 minutes.
-        # discord.py's HTTP client automatically sleeps for retry_after (up to 600s) on 429
-        # or hangs on 503 gateway drops. A 2.0s timeout ensures the command responds immediately.
-        await asyncio.wait_for(thread.edit(**edit_kwargs), timeout=2.0)
-        return True
-    except (asyncio.TimeoutError, TimeoutError):
-        logger.warning(
-            "Discord thread edit timed out (>2.0s) on thread %s (Discord 10-minute rename limit or gateway delay active). Skipping rename to keep bot responsive.",
-            getattr(thread, "id", "unknown"),
-        )
-        if "name" in edit_kwargs and len(edit_kwargs) > 1:
-            fallback_kwargs = {k: v for k, v in edit_kwargs.items() if k != "name"}
-            try:
-                await asyncio.wait_for(thread.edit(**fallback_kwargs), timeout=2.0)
-            except Exception as e:
-                logger.warning("Could not apply thread properties without name on %s: %s", getattr(thread, "id", "unknown"), e)
-        return False
-    except discord.HTTPException as exc:
-        if exc.status in (429, 500, 502, 503, 504):
-            logger.warning(
-                "Discord API HTTP %s hit while editing thread %s (%s). Proceeding with database update.",
-                exc.status, getattr(thread, "id", "unknown"), exc
-            )
-        else:
-            logger.warning("Discord API error editing thread %s: %s", getattr(thread, "id", "unknown"), exc)
-        return False
-    except Exception as exc:
-        logger.warning("Unexpected error editing thread %s: %s", getattr(thread, "id", "unknown"), exc)
-        return False
 
 class TicketsCog(commands.Cog, name="Tickets"):
     """Handles ticket status workflow and assignment commands."""
@@ -116,7 +65,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
             member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
             username = member.display_name if member else interaction.user.name
             ticket_name = thread_info['ticket_name']
-            new_name = f"[CLAIMED] [{username}] {ticket_name}"
+            new_name = format_status_thread_name("CLAIMED", ticket_name, username)
 
             await asyncio.to_thread(
                 update_thread_status,
@@ -169,7 +118,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
                 return
 
             ticket_name = thread_info['ticket_name']
-            new_name = f"[OPEN] {ticket_name}"
+            new_name = format_status_thread_name("OPEN", ticket_name)
 
             await asyncio.to_thread(
                 update_thread_status,
@@ -222,7 +171,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
             member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
             username = member.display_name if member else interaction.user.name
             ticket_name = thread_info['ticket_name']
-            new_name = f"[Pending-Review] [{username}] {ticket_name}"
+            new_name = format_status_thread_name("PENDING-REVIEW", ticket_name, username)
 
             await asyncio.to_thread(
                 update_thread_status,
@@ -275,7 +224,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
             dev_id = thread_info['resolved_by_id']
             dev_username = thread_info['resolved_by_username'] or interaction.user.name
             ticket_name = thread_info['ticket_name']
-            new_name = f"[CLAIMED] [{dev_username}] {ticket_name}"
+            new_name = format_status_thread_name("CLAIMED", ticket_name, dev_username)
 
             await asyncio.to_thread(
                 update_thread_status,
@@ -329,7 +278,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
             member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
             qa_username = member.display_name if member else interaction.user.name
             ticket_name = thread_info['ticket_name']
-            new_name = f"[Reviewed] [{qa_username}] {ticket_name}"
+            new_name = format_status_thread_name("REVIEWED", ticket_name, qa_username)
 
             await asyncio.to_thread(
                 update_thread_status,
@@ -379,7 +328,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
             qa_id = thread_info.get('reviewed_by_id')
             dev_username = thread_info.get('resolved_by_username') or 'Dev'
             ticket_name = thread_info.get('ticket_name') or 'Ticket'
-            new_name = f"[Pending-Review] [{dev_username}] {ticket_name}"
+            new_name = format_status_thread_name("PENDING-REVIEW", ticket_name, dev_username)
 
             await asyncio.to_thread(
                 update_thread_status,
@@ -437,7 +386,7 @@ class TicketsCog(commands.Cog, name="Tickets"):
             member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
             username = member.display_name if member else interaction.user.name
             ticket_name = thread_info.get('ticket_name') or 'Ticket'
-            new_name = f"[CLOSED] [{username}] {ticket_name}"
+            new_name = format_status_thread_name("CLOSED", ticket_name, username)
 
             await asyncio.to_thread(update_thread_status, thread.id, "CLOSED", expected=thread_info)
 
@@ -448,9 +397,17 @@ class TicketsCog(commands.Cog, name="Tickets"):
             )
             embed.add_field(name="Final Status", value=f"`[CLOSED] [{username}]`", inline=True)
             embed.set_footer(text="CapStoneFlow • Sprint Milestone Achieved")
-            await interaction.followup.send(embed=embed)
+            sent_msg = await interaction.followup.send(embed=embed)
 
-            await _safe_edit_thread_name(thread, new_name, archived=True, locked=True)
+            renamed = await _safe_edit_thread_name(thread, new_name, archived=True, locked=True)
+            if not renamed and sent_msg is not None and asyncio.iscoroutinefunction(getattr(sent_msg, "edit", None)):
+                try:
+                    embed.set_footer(
+                        text="CapStoneFlow • Closed! Discord 10m rename cooldown active — [CLOSED] title queued & will auto-update."
+                    )
+                    await sent_msg.edit(embed=embed)
+                except Exception as edit_exc:
+                    logger.debug("Could not update /closed footer note on %s: %s", thread.id, edit_exc)
         except Exception as e:
             logger.error(f"Error in /closed: {e}")
             try:
