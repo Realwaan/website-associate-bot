@@ -1,30 +1,28 @@
 # Manipulate the Ctrl+S save flow
 
-**Dependencies:** 01
+**Dependencies:** 01, 02
 
 ## Problem
 
-Saving is currently a normal, instant action. The outline wants Ctrl+S to second-guess the user ("Saving... but are you really done though?") with randomized manipulation — while still being a notepad that *works perfectly*. The file must always end up saved.
+In a normal editor, `Ctrl+S` quietly saves the document. In YapPad, saving must interrogate the user—either saving normally, demanding they rate their own work `/10` before downloading, or stalling for a 5-second dramatic countdown with suspense music—while always delivering the saved `.txt` download at the end.
 
 ## Potentially Related Files
 
-- `editor.py` - Ctrl+S binding and save routine from ticket 01
-- `popups.py` - `show_modal()` for the rating prompt, `say()` for comments
-- `sounds.py` - optional dramatic sting during the delay (ticket 10)
+- `js/modals.js` - `openSaveFlow(mode)` (`normal` / `rate` / `delay`)
+- `js/app.js` - `Ctrl+S` interception (`e.preventDefault()`), `.txt` Blob download helper, `Demo` menu triggers
+- `js/audio.js` - `playSuspenseMusic` and `playDisappointmentDing`
 
 ## What to Fix
 
-1. Wrap the existing save routine so Ctrl+S first `say()`s "Saving... but are you really done though?".
-2. Randomly pick one of three branches (roughly equal odds): normal save, rating prompt, or dramatic delay.
-3. Rating prompt: modal asks "Rate your work before I save it. /10"; accept 1–10, react to the score, then save.
-4. Dramatic delay: show "Saving..." with a 5-second countdown in the status bar (play the dramatic sound if available), then save.
-5. Prevent a second Ctrl+S from starting another save while one is in progress.
-6. Reset the `dirty` flag only after the file is written.
+1. Intercept `Ctrl+S` (`Cmd+S`) and `File → Save .txt` in `js/app.js` and route through `YP.Modals.openSaveFlow()`.
+2. Support three save modes (randomly selected on `Ctrl+S`, or explicitly chosen from `Demo → Save Sabotage: Rate /10` and `Demo → Save Sabotage: 5s Suspense`): `normal`, `rate`, and `delay`.
+3. In `rate` mode, require the user to rate their writing `1–10`, mock their chosen score (especially high scores), and then trigger the `.txt` download.
+4. In `delay` mode, show a 5-second dramatic countdown bar while playing `playSuspenseMusic()` before triggering the `.txt` download.
+5. Clear the unsaved `dirty` state once the `.txt` download completes.
 
 ## Acceptance Criteria
 
-- [ ] Pressing Ctrl+S 10 times shows at least two different save branches.
-- [ ] In every branch, the file on disk contains the latest text afterwards.
-- [ ] The rating prompt rejects values outside 1–10 and reacts to the given score.
-- [ ] The dramatic delay saves after about 5 seconds without freezing the window.
-- [ ] Pressing Ctrl+S during an in-progress save does not trigger a second save.
+- [ ] Pressing `Ctrl+S` prevents the browser's default save-page dialog and opens `openSaveFlow`.
+- [ ] `rate` mode validates a `1–10` score, delivers a snarky reaction to the rating, and downloads the `.txt` file.
+- [ ] `delay` mode runs a 5-second suspense countdown with audio before downloading the `.txt` file.
+- [ ] Both `Demo → Save Sabotage: Rate /10` and `Demo → Save Sabotage: 5s Suspense` trigger their respective flows directly.

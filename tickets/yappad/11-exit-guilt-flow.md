@@ -1,32 +1,29 @@
 # Block exit with a 3-step guilt flow plus i_remember.txt
 
-**Dependencies:** 01, 10
+**Dependencies:** 01, 02, 10
 
 ## Problem
 
-Closing the window currently just closes it. The demo's finale (steps 7–8) needs YapPad to resist being closed with unsaved work, escalate across three confirmations, and leave a passive-aggressive note behind on the desktop. This is the closing laugh of the presentation.
+Closing YapPad should be a memorable stage finale. Clicking the window `✕` button (or `File → Exit`) must trap the user in a 3-step guilt confirmation dialog, play a synthesized sad violin, auto-download `i_remember.txt`, save a persistent grudge in `localStorage`, and transition to the staring-eyes Abandoned Desktop screen.
 
 ## Potentially Related Files
 
-- `editor.py` - `WM_DELETE_WINDOW` protocol handler, `dirty` flag, File → Exit
-- `popups.py` - `show_modal()` for the three confirmation steps
-- `sounds.py` - `violin` on close without saving
+- `js/modals.js` - `openExitFlow` (3-step modal chain, `i_remember.txt` download, grudge persistence)
+- `index.html` - window chrome `✕` button and `#abandoned-screen` overlay
+- `js/app.js` - startup grudge detector (`yp_remembers_close` / `sn_remembers_close`), `beforeunload` listener, `Demo → Reset Grudge Memory`
+- `js/audio.js` - `playSadViolin`
 
 ## What to Fix
 
-1. Register a `WM_DELETE_WINDOW` handler and route File → Exit through it.
-2. If there are no unsaved changes, close immediately (still write the note).
-3. If unsaved, show modal step 1: "Are you sure?" (Yes / No).
-4. On Yes, step 2: "Are you REALLY sure?"; on Yes, step 3: "The notepad will remember this." (OK).
-5. Choosing No at any step cancels and returns to the editor with text intact.
-6. Play the `violin` sound when closing without saving.
-7. On close, write `i_remember.txt` containing "You closed me. I'm fine. Everything is fine." to `~/Desktop`, falling back to the home directory if no Desktop folder exists.
-8. Never overwrite an unrelated file: if `i_remember.txt` exists, append a new line with a timestamp.
+1. Wire the window chrome `✕` button and `File → Exit` to `YP.Modals.openExitFlow()`.
+2. Present 3 escalating confirmation steps ("Are you sure?", "Are you REALLY sure?", "YapPad will remember this.") while playing `playSadViolin()`.
+3. On completion of Step 3, trigger a browser download of `i_remember.txt` containing `"You closed me. I'm fine. Everything is fine."` (plus timestamp and close count).
+4. Persist `sn_remembers_close = "true"` / `yp_remembers_close = "true"` and increment `sn_close_count` / `yp_close_count` in `localStorage`.
+5. Reveal `#abandoned-screen` with staring eyes and a button to sheepishly reopen YapPad.
+6. On next load, if the grudge flag is set, start at a higher escalation stage and greet the user with a grudge remark; allow resetting via `Demo → Reset Grudge Memory`.
 
 ## Acceptance Criteria
 
-- [ ] Closing with unsaved changes shows exactly three escalating dialogs before the app exits.
-- [ ] Choosing No at any step keeps the app open with the text unchanged.
-- [ ] Closing with no unsaved changes exits without any dialogs.
-- [ ] After exit, `i_remember.txt` exists on the Desktop (or home folder) with the expected line.
-- [ ] Closing twice appends a second line instead of overwriting the file.
+- [ ] Clicking `✕` walks through all 3 confirmation steps and can be canceled at Steps 1–2.
+- [ ] Completing Step 3 downloads `i_remember.txt`, sets the grudge keys in `localStorage`, and shows `#abandoned-screen`.
+- [ ] Reloading after an exit displays the grudge greeting, and `Demo → Reset Grudge Memory` clears the grudge state back to Stage 0.

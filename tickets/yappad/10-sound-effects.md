@@ -1,31 +1,27 @@
-# Play sound effects for judgment events
+# Synthesize procedural Web Audio sound effects
 
-**Dependencies:** 03, 05, 06
+**Dependencies:** 01
 
 ## Problem
 
-Audible sighs and dramatic stings make the judgment land in a room full of people — text alone is easy to miss during a demo. There is no audio layer yet. It must never crash the app on laptops without audio devices or with missing files.
+Loading external `.mp3` files can fail on `file://` origins or flaky venue Wi-Fi. YapPad needs a zero-asset procedural Web Audio API synthesizer (`js/audio.js`) that generates all 13 comedic sound effects in the browser and degrades gracefully if Web Audio is unavailable or muted.
 
 ## Potentially Related Files
 
-- `sounds.py` - `pygame.mixer` wrapper with `play(name)` (new)
-- `sounds/` - `sigh.mp3`, `ding.mp3`, `dramatic.mp3`, `violin.mp3`
-- `judge.py` - emits `slow_typing`, `grammar_error`, `mass_delete` events
-- `README.md` - credits for sound sources
+- `js/audio.js` - `YP.Audio` procedural Web Audio synthesizer and `localStorage` persistence
+- `index.html` - audio mute/volume controls in the window chrome / menu
+- `js/app.js` - wires sound triggers to typing, grammar, ragebait, save, and exit events
 
 ## What to Fix
 
-1. Create `sounds.py` that initializes `pygame.mixer` once and preloads clips from `sounds/`.
-2. Expose `play(name)`; if mixer init fails or the file is missing, silently no-op (log once).
-3. Map events: `slow_typing` → `sigh`, `grammar_error` → `ding`, `mass_delete` → `dramatic`, close-without-save → `violin`.
-4. Rate-limit each sound (e.g. sigh at most once per 10s) so audio doesn't stack.
-5. Add a View → Mute toggle.
-6. Source four royalty-free/CC0 clips (each under 5s, under 200 KB) and credit them in the README.
+1. Build `YP.Audio` in `js/audio.js` using `AudioContext` oscillators, gain envelopes, and noise buffers with zero external audio asset dependencies.
+2. Implement all 13 synthesizer cues: `playSigh`, `playDisappointmentDing`, `playPanicPip`, `playGuiltPop`, `playOrchestralSting`, `playSuspenseMusic`, `playSadViolin`, `playAngryBuzz`, `playSupportiveChime`, `playRoastPop`, `playRageBuzzer`, `playCornerZip`, and `playShrinkSqueak`.
+3. Persist `{ enabled, volume }` in `localStorage` (`yp_audio_config` / `sn_audio_config`).
+4. Resume `AudioContext` cleanly on the first user gesture and silently no-op in headless/Node environments where `AudioContext` is absent.
+5. Add a quick Mute/Unmute toggle button in the top chrome.
 
 ## Acceptance Criteria
 
-- [ ] Slow typing plays a sigh; a typo plays a ding; select-all delete plays the dramatic sting.
-- [ ] Deleting a file from `sounds/` does not crash the app — that sound is just silent.
-- [ ] The app starts and runs normally on a machine with no audio device.
-- [ ] The Mute toggle silences all sounds immediately.
-- [ ] All four clips have a CC0 or royalty-free source listed in the README.
+- [ ] `YP.Audio` exposes all 13 sound methods and runs without loading any external `.mp3` or `.wav` files.
+- [ ] Calling any `YP.Audio.play*()` method in Node or when muted never throws an exception.
+- [ ] Toggling Mute updates `localStorage` and silences all cues immediately.

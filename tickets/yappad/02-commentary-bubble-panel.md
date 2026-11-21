@@ -1,4 +1,4 @@
-# Build the non-blocking commentary bubble
+# Build the commentary panel with toast notifications
 
 **[PRIORITY]**
 
@@ -6,28 +6,28 @@
 
 ## Problem
 
-Almost every YapPad feature "talks" to the user. If each comment were a modal `messagebox`, typing would freeze on every backspace or typo and the demo would stall. The notepad needs one shared, non-blocking speech bubble that any module can push a line to, plus a single helper for the few moments that are allowed to be modal (meltdown, save prompt, exit flow).
+YapPad constantly judges the user while they type. It needs a dedicated in-window Margin Notes feed (`#commentary-panel`), a floating toast stack (`#toast-stack`) for quick barbs, and a shared modal overlay (`#modal-overlay`) for blocking flows so routine commentary never steals focus from `#editor-textarea`.
 
 ## Potentially Related Files
 
-- `popups.py` - bubble widget, message queue, modal helper
-- `editor.py` - docks the bubble panel into the main window
-- `mood.py` - later supplies the current mood for bubble styling
+- `index.html` - `#commentary-panel`, `#toast-stack`, `#modal-overlay` markup
+- `styles.css` - commentary card animations, mood border/badge styling, toast transitions
+- `js/app.js` - `addCommentary(text, meta)` and `showToast(text, tone)` helpers
+- `js/modals.js` - shared modal open/close lifecycle on `#modal-overlay`
 
 ## What to Fix
 
-1. Create a `Bubble` panel in `popups.py` docked at the right or top of the editor window (never covering the text cursor).
-2. Expose `say(text, source=None)` that queues a message; show one message at a time.
-3. Auto-dismiss each message after ~4 seconds, then show the next queued one.
-4. Cap the queue (e.g. 5) and drop the oldest lines so the bubble never lags far behind the user.
-5. Make sure showing a message never steals keyboard focus from the `Text` widget.
-6. Support a mood color/emoji prefix via an optional `style` argument (default neutral).
-7. Add `show_modal(title, text, buttons)` helper wrapping a `Toplevel` dialog for the three modal flows.
+1. Build `#commentary-panel` as a live Margin Notes sidebar showing timestamped judgment cards with mood badges and category tags.
+2. Expose `addCommentary(text, options)` on `YP.App` to prepend a card, cap the visible history so the DOM stays fast, and highlight new entries.
+3. Build `#toast-stack` for non-blocking floating notifications that auto-dismiss after ~4 seconds.
+4. Ensure neither `addCommentary` nor `showToast` steals keyboard focus or cursor selection from `#editor-textarea`.
+5. Build the reusable `#modal-overlay` manager in `js/modals.js` for blocking dialogs (save sabotage, meltdown, exit trap, AI settings, scoreboard).
+6. Add a "Clear Notes" control in `#commentary-panel` that snarkily reacts when clicked.
 
 ## Acceptance Criteria
 
-- [ ] Calling `say("test")` from anywhere shows the line in the bubble within 100 ms.
-- [ ] Typing continues uninterrupted while bubble messages appear and disappear.
-- [ ] Each message disappears on its own after about 4 seconds.
-- [ ] Pushing 20 messages rapidly shows at most 5 queued lines, not 20.
-- [ ] `show_modal()` blocks input to the editor until a button is pressed and returns the chosen button.
+- [ ] Calling `addCommentary()` prepends a styled card in `#commentary-panel` within 50 ms.
+- [ ] Typing in `#editor-textarea` continues uninterrupted while commentary cards and toasts appear.
+- [ ] Toasts in `#toast-stack` auto-dismiss after ~4 seconds and cap stack height.
+- [ ] Opening a modal via `YP.Modals` displays `#modal-overlay` and traps action until dismissed.
+- [ ] All user-derived strings rendered in commentary cards or toasts are HTML-escaped.

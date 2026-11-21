@@ -4,29 +4,27 @@
 
 ## Problem
 
-Category A (Most Frustrating) needs the notepad to react emotionally when the user removes text. Right now deleting is silent, so the most relatable frustration beat in the demo (steps 4–5: backspace guilt trip and select-all meltdown) has nothing to show.
+Category A (Most Frustrating) requires YapPad to punish self-doubt. Every Backspace should increment the live telemetry counter and guilt-trip the user, every 5th Backspace should pop a center rage intervention, and deleting the whole document should trigger a dramatic emotional meltdown modal.
 
 ## Potentially Related Files
 
-- `judge.py` - BackSpace/Delete counters and timing window
-- `popups.py` - guilt-trip lines and the meltdown dialog
-- `editor.py` - `<BackSpace>` and `<Delete>` bindings on the `Text` widget
+- `js/app.js` - `keydown` Backspace/Delete counter, mass-delete detector, 5th-backspace hook
+- `js/modals.js` - `openBackspaceIntervention` and `openMeltdownModal`
+- `js/ragebait.js` - center ragebait popup integration on every 5th Backspace
+- `js/audio.js` - `playGuiltPop`, `playRageBuzzer`, `playOrchestralSting`
 
 ## What to Fix
 
-1. Bind `<BackSpace>` and `<Delete>` in `editor.py` and forward the events to `judge.py`.
-2. On a single backspace, `say()` a guilt-trip line in the bubble (no modal), rate-limited to one every 3 seconds (e.g. "Are you sure? You worked so hard on that.").
-3. After 5+ backspaces within 10 seconds, escalate to "pattern" lines (e.g. "Deleting again? This is becoming a pattern.").
-4. Detect a mass delete: delete/backspace while the selection covers the entire buffer.
-5. On a mass delete, open a modal meltdown via `show_modal()` with "...You selected everything. And deleted it. I need a moment."
-6. Inside the meltdown, show a fake "Notepad is processing its emotions" progress bar that fills over ~3 seconds before the dialog closes.
-7. Make sure the deletion itself still happens — this ticket judges deletions, it never blocks them.
-8. Emit `backspace` and `mass_delete` events for the sound and mood tickets.
+1. Increment the live `Backspaces` counter in the telemetry ribbon on every `Backspace` or `Delete` keypress.
+2. Fire a guilt-trip commentary card / toast + `playGuiltPop()` on single backspaces (rate-limited so normal editing stays readable).
+3. On every `5th` Backspace, trigger the center ragebait intervention (`showCenterRagebait` / `openBackspaceIntervention`) with `playRageBuzzer()`.
+4. Detect a mass delete (Select-All + `Backspace`/`Delete` when the buffer has content, or `Demo → Trigger Mass-Delete Meltdown`).
+5. Open `openMeltdownModal` in `js/modals.js` with `playOrchestralSting()`, showing "...You selected everything. And deleted it. I need a moment."
+6. Render a fake "YapPad is processing its emotions..." progress bar inside the meltdown modal before returning control.
 
 ## Acceptance Criteria
 
-- [ ] A single backspace shows a guilt-trip line in the bubble without stealing focus.
-- [ ] No more than one guilt-trip line appears every 3 seconds.
-- [ ] 5 backspaces within 10 seconds produce a "pattern" line.
-- [ ] Ctrl+A then Backspace opens the meltdown modal with a progress bar that completes in about 3 seconds.
-- [ ] After the meltdown closes, the text is actually deleted.
+- [ ] Pressing `Backspace` increments the telemetry ribbon counter and logs a guilt-trip comment.
+- [ ] Every `5th` Backspace opens the center ragebait intervention popup.
+- [ ] `Ctrl+A` followed by `Backspace`/`Delete` opens the meltdown modal with the animated emotional-processing progress bar.
+- [ ] `Demo → Trigger Mass-Delete Meltdown` launches the meltdown modal on demand for stage demos.
